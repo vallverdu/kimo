@@ -11,7 +11,10 @@
 - [x] Do not leak kimo's token or a parent agent's `CLAUDE_CODE_*` environment into sessions.
 - [ ] Pin Codex sessions to their conversation (read the id from `~/.codex/sessions` after start) instead of `resume --last`.
 - [ ] Rename sessions, edit args/folder, reorder or pin them.
-- [ ] Folder picker / recent git worktrees on the server for the "new session" sheet.
+- [x] Projects: new folder (+ git init), existing folder, clone in a visible terminal; branch and agents per project.
+- [x] Folder picker on the server for new sessions and projects.
+- [ ] Project templates (copy a starter from ~/templates) and per-project default agent/account.
+- [ ] Worktrees: create a git worktree per agent from a project.
 
 ## Account & Subscription Management
 
@@ -54,4 +57,11 @@
 - [ ] Webhooks for server-side apps (POST events to a URL) in addition to SSE.
 - [ ] Per-key limits (which folders/sessions an app may touch) and an audit log of app actions.
 - [ ] TypeScript types for the SDK; publish it as a package as well.
-- [ ] Systemd user unit + install script.
+- [x] Systemd user unit (`contrib/kimo.service`).
+- [x] Use kimo on the server itself without logging in (the machine is the owner).
+- [x] Pair phones and other devices with a QR code (Devices tab, `kimo pair`); unpair anytime.
+- [x] Show every address kimo is reachable on (LAN, Tailscale IP/HTTPS, ZeroTier); listen on all networks by default.
+- [x] One-tap HTTPS on the tailnet (`tailscale serve` on a free port) so phones can install the app.
+- [ ] `kimo install` command (writes the unit, enables lingering) instead of manual steps.
+- [ ] Show the pairing QR on the server's terminal at first start when no device is paired.
+- [ ] mDNS (`kimo.local`) so LAN devices find kimo without an IP.
