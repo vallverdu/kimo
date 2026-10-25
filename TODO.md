@@ -40,5 +40,18 @@
 - [x] Ensure seamless integration with Tailscale or Zerotier for mobile access.
 - [ ] Push notifications when an agent waits for input, finishes or hits a limit (Web Push from the server).
 - [ ] "Needs attention" view: sessions whose last output is a question/permission prompt, with quick replies via `/input`.
-- [ ] Event stream (SSE) instead of 2 s polling.
+- [x] Event stream (SSE) instead of 2 s polling (`/api/events`, used by kimo's own PWA).
+
+## Platform for other PWAs
+
+- [x] Per-app keys bound to origins and a scope (read / control), revocable, managed in the Apps tab.
+- [x] CORS for listed origins; cross-site requests always need a key (closes the localhost-without-token hole).
+- [x] JS SDK served by kimo (`/sdk/kimo.js`) and an embeddable `<kimo-terminal>` element; kimo's own PWA uses both.
+- [x] `last_output_at` per session so apps can show "quiet for".
+- [x] Example app on another origin (`examples/agent-board`).
+- [ ] Connect Everpano and the project manager (agents per project/company, links from tasks to sessions).
+- [ ] Richer events: per-session `waiting for input`, `finished`, `limit reached` (parsed from output) for app notifications.
+- [ ] Webhooks for server-side apps (POST events to a URL) in addition to SSE.
+- [ ] Per-key limits (which folders/sessions an app may touch) and an audit log of app actions.
+- [ ] TypeScript types for the SDK; publish it as a package as well.
 - [ ] Systemd user unit + install script.
