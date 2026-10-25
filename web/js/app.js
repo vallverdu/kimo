@@ -6,7 +6,21 @@ import { $, esc, mb, shortPath, toast } from './ui.js';
 import { initProjects } from './projects.js';
 import { initDevices } from './devices.js';
 
-const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, view: 'agents' };
+const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, usage: [], view: 'agents' };
+
+const kTokens = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+function usageText(u) {
+  if (!u) return '';
+  const limits = u.limits?.limits || [];
+  if (limits.length) {
+    return limits.map(l => {
+      const left = Math.max(0, l.resets_at - Date.now() / 1000), d = Math.floor(left / 86400), h = Math.floor(left % 86400 / 3600);
+      const window = l.window_minutes === 10080 ? 'weekly' : l.window_minutes === 300 ? '5-hour' : `${l.window_minutes / 60} h`;
+      return `${Math.round(l.used_percent)}% of ${window} limit, resets in ${d ? `${d} d ${h} h` : `${h} h`}`;
+    }).join(' · ');
+  }
+  return u.tokens_7d ? `${kTokens(u.tokens_5h)} tokens in 5 h · ${kTokens(u.tokens_7d)} in 7 days` : 'no usage through kimo in 7 days';
+}
 const VIEWS = ['agents', 'projects', 'accounts', 'devices', 'apps'];
 
 // ----- rendering -----
@@ -74,7 +88,8 @@ function renderAccounts() {
     const signed = a.signed_in === null ? '' : `<span class="ui-badge ${a.signed_in ? 'running' : 'paused'}">${a.signed_in ? 'signed in' : 'not signed in'}</span>`;
     return `<li data-account="${esc(a.id)}" data-provider="${a.provider}">
       <span class="k-name" style="cursor:default">${esc(a.name)}</span>${signed || '<span></span>'}
-      <div class="k-meta"><span>${a.provider}</span><span><span class="k-num">${a.sessions}</span> sessions</span></div>
+      <div class="k-meta"><span>${a.provider}</span><span><span class="k-num">${a.sessions}</span> sessions</span>
+        <span class="k-usage">${esc(usageText(state.usage.find(u => (u.account ?? 'default') === a.id && u.provider === a.provider)))}</span></div>
       <div class="k-actions">
         ${a.id !== 'default' ? `<button class="ui-button ${a.signed_in ? 'ghost ' : ''}k-small" data-do="login">sign in</button>` : ''}
         ${a.sessions && targets.length ? `<select data-do="move-target" aria-label="Move to">${targets.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select><button class="ui-button ghost k-small" data-do="move">move sessions</button>` : ''}
@@ -107,8 +122,9 @@ function render() {
 
 async function refresh() {
   try {
-    [state.sessions, state.accounts, state.status, state.apps, state.projects] = await Promise.all([
+    [state.sessions, state.accounts, state.status, state.apps, state.projects, state.usage] = await Promise.all([
       api.sessions(), api.accounts(), api.status(), api.clients().catch(() => []), api.projects().catch(() => []),
+      api.usage().catch(() => []),
     ]);
     render();
     return true;

@@ -33,6 +33,7 @@ enum Msg {
     Devices(Value),
     Network(Value),
     Apps(Value),
+    Usage(Value),
     Pairing(String, u64),
     /// Folder listing for the project dialog's picker.
     Folder(Value),
@@ -92,6 +93,7 @@ pub struct KimoApp {
     devices: Vec<Value>,
     network: Value,
     apps: Vec<Value>,
+    usage: Vec<Value>,
     terminals: Vec<TerminalView>,
     active: usize,
     toasts: Vec<(String, bool, Instant)>,
@@ -143,6 +145,64 @@ fn short_path(path: &str, max: usize) -> String {
     format!("…/{out}")
 }
 
+/// 1.2M, 340k, 900.
+pub fn tokens(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{:.0}k", n as f64 / 1e3),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+/// "3 d 4 h", "2 h 10 min", "5 min" until a unix-seconds time.
+pub fn until(unix_secs: u64, now_secs: u64) -> String {
+    let left = unix_secs.saturating_sub(now_secs);
+    let (d, h, m) = (left / 86_400, left % 86_400 / 3600, left % 3600 / 60);
+    if d > 0 {
+        format!("{d} d {h} h")
+    } else if h > 0 {
+        format!("{h} h {m} min")
+    } else {
+        format!("{m} min")
+    }
+}
+
+/// One line describing an account's usage.
+fn usage_line(u: &Value) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let limits: Vec<String> = u["limits"]["limits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|l| {
+            let window = match l["window_minutes"].as_u64().unwrap_or(0) {
+                10_080 => "weekly".to_string(),
+                300 => "5-hour".to_string(),
+                m => format!("{} h", m / 60),
+            };
+            format!(
+                "{:.0}% of {window} limit, resets in {}",
+                l["used_percent"].as_f64().unwrap_or(0.0),
+                until(l["resets_at"].as_u64().unwrap_or(0), now)
+            )
+        })
+        .collect();
+    if !limits.is_empty() {
+        return limits.join(" · ");
+    }
+    let (h5, d7) = (
+        u["tokens_5h"].as_u64().unwrap_or(0),
+        u["tokens_7d"].as_u64().unwrap_or(0),
+    );
+    if d7 == 0 {
+        "no usage through kimo in 7 days".into()
+    } else {
+        format!("{} tokens in 5 h · {} in 7 days", tokens(h5), tokens(d7))
+    }
+}
+
 /// The folder a dropped file or folder stands for (a dropped file means its folder).
 pub fn drop_target(path: &Path) -> Option<PathBuf> {
     if path.is_dir() {
@@ -169,7 +229,10 @@ impl KimoApp {
         }
         let logo = ctx.load_texture(
             "kimo-logo",
-            egui::ColorImage::from_rgba_unmultiplied([64, 64], include_bytes!("../../assets/icons/logo-64.rgba")),
+            egui::ColorImage::from_rgba_unmultiplied(
+                [64, 64],
+                include_bytes!("../../assets/icons/logo-64.rgba"),
+            ),
             egui::TextureOptions::LINEAR,
         );
         let app = Self {
@@ -188,6 +251,7 @@ impl KimoApp {
             devices: vec![],
             network: Value::Null,
             apps: vec![],
+            usage: vec![],
             terminals: vec![],
             active: 0,
             toasts: vec![],
@@ -286,6 +350,7 @@ impl KimoApp {
                     self.network = v;
                 }
                 Msg::Apps(v) => self.apps = v.as_array().cloned().unwrap_or_default(),
+                Msg::Usage(v) => self.usage = v.as_array().cloned().unwrap_or_default(),
                 Msg::Folder(listing) => {
                     if let Some(form) = self.project_form.as_mut() {
                         form.listing = Some(listing);
@@ -315,7 +380,8 @@ impl KimoApp {
     fn refresh_view(&mut self) {
         self.last_projects = Instant::now() - Duration::from_secs(60);
         match self.view {
-            View::Terminals | View::Subscriptions => {}
+            View::Terminals => {}
+            View::Subscriptions => self.job(|c| Ok(Msg::Usage(c.get("/usage")?))),
             View::Skills => self.job(|c| Ok(Msg::Skills(c.get("/skills")?))),
             View::Settings => {
                 self.job(|c| Ok(Msg::Settings(Box::new(c.get("/settings")?))));
@@ -385,7 +451,10 @@ impl KimoApp {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.add(egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), [30.0, 30.0])));
+            ui.add(egui::Image::new(egui::load::SizedTexture::new(
+                self.logo.id(),
+                [30.0, 30.0],
+            )));
             ui.label(RichText::new("kimo").size(20.0).color(theme::INK));
             ui.label(
                 RichText::new("AGENT ENVIRONMENT")
@@ -784,7 +853,7 @@ impl KimoApp {
                 "sessions": sessions.iter().filter(|x| s(x, "kind") == *p && x["account"].is_null()).count() }))
             .collect();
         rows.extend(accounts.iter().cloned());
-        egui::Grid::new("accounts").num_columns(4).spacing([18.0, 10.0]).striped(false).show(ui, |ui| {
+        egui::Grid::new("accounts").num_columns(5).spacing([18.0, 10.0]).striped(false).show(ui, |ui| {
             for a in &rows {
                 let (id, provider) = (s(a, "id").to_string(), s(a, "provider").to_string());
                 ui.label(RichText::new(s(a, "name")).color(theme::INK).size(14.0));
@@ -794,6 +863,10 @@ impl KimoApp {
                     Some(false) => { ui.label(RichText::new("not signed in").size(11.0).color(theme::WARN)); }
                     None => { ui.label(""); }
                 }
+                let key = if id == "default" { Value::Null } else { Value::String(id.clone()) };
+                let usage = self.usage.iter().find(|u| u["account"] == key && s(u, "provider") == provider);
+                let reached = usage.and_then(|u| u["limits"]["reached"].as_str()).is_some();
+                ui.label(RichText::new(usage.map(usage_line).unwrap_or_default()).size(11.0).color(if reached { theme::BAD } else { theme::TEAL }));
                 ui.horizontal(|ui| {
                     if id != "default" && ui.button("sign in").on_hover_text("opens a terminal with this account's login").clicked() {
                         let id = id.clone();
@@ -851,7 +924,7 @@ impl KimoApp {
             }
         });
         ui.label(
-            RichText::new("Usage per subscription is coming next (see TODO).")
+            RichText::new("Usage counts the agents run through kimo: Claude tokens from their transcripts, Codex plan limits as Codex reports them.")
                 .size(11.0)
                 .color(theme::MUTED),
         );
@@ -1400,6 +1473,22 @@ mod tests {
         assert_eq!(drop_target(tmp.path()).as_deref(), Some(tmp.path()));
         assert_eq!(drop_target(&file).as_deref(), Some(tmp.path()));
         assert_eq!(drop_target(Path::new("/no/such/place/file")), None);
+    }
+
+    #[test]
+    fn usage_text() {
+        assert_eq!(tokens(950), "950");
+        assert_eq!(tokens(340_400), "340k");
+        assert_eq!(tokens(1_250_000), "1.2M");
+        assert_eq!(until(1000 + 3 * 86_400 + 4 * 3600, 1000), "3 d 4 h");
+        assert_eq!(until(1000 + 7800, 1000), "2 h 10 min");
+        assert_eq!(until(10, 20), "0 min");
+        let codex = serde_json::json!({"limits":{"limits":[{"used_percent":15.0,"window_minutes":10080,"resets_at":0}]}});
+        assert!(usage_line(&codex).starts_with("15% of weekly limit"));
+        assert_eq!(
+            usage_line(&serde_json::json!({"tokens_5h":0,"tokens_7d":0})),
+            "no usage through kimo in 7 days"
+        );
     }
 
     #[test]

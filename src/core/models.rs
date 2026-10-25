@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Which agent CLI an account or a session belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Claude,
@@ -233,6 +233,23 @@ pub struct Settings {
     pub extra: Map<String, Value>,
 }
 
+/// One start-to-stop of an agent session under one account (for usage per subscription).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Run {
+    pub session: String,
+    pub provider: Provider,
+    /// `None` = the provider's default login.
+    #[serde(default)]
+    pub account: Option<String>,
+    pub cwd: String,
+    /// Unix milliseconds.
+    pub started_at: u64,
+    #[serde(default)]
+    pub ended_at: Option<u64>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// Everything kimo persists in `~/.kimo/state.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
@@ -248,6 +265,9 @@ pub struct State {
     pub devices: Vec<Device>,
     #[serde(default)]
     pub settings: Settings,
+    /// Recent agent runs, newest last (capped).
+    #[serde(default)]
+    pub runs: Vec<Run>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

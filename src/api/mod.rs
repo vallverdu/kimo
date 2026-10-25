@@ -108,6 +108,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/qr", get(qr))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/agents", get(agents))
+        .route("/usage", get(usage))
         .route(
             "/skills",
             get(list_skills).post(install_skill).delete(remove_skill),
@@ -590,6 +591,15 @@ async fn put_settings(
     Json(body): Json<crate::core::models::Settings>,
 ) -> ApiResult<serde_json::Value> {
     Ok(Json(json!(app.manager.set_settings(body)?)))
+}
+
+/// Usage per subscription (Claude tokens, Codex plan limits) of the agents run through kimo.
+async fn usage(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let list = tokio::task::spawn_blocking(move || manager.usage())
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(list)))
 }
 
 /// Agent CLIs installed on this machine, with versions.

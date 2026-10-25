@@ -9,3 +9,4 @@ pub mod network;
 pub mod procfs;
 pub mod scrollback;
 pub mod skills;
+pub mod usage;

@@ -5,7 +5,7 @@
 use crate::core::launch::{self, Launch};
 use crate::core::lifecycle::{self, Action};
 use crate::core::models::{
-    Account, Client, Provider, Scope, SessionKind, SessionSpec, SessionStatus, State,
+    Account, Client, Provider, Run, Scope, SessionKind, SessionSpec, SessionStatus, State,
 };
 use crate::core::procfs::cpu_percent;
 use crate::core::scrollback::Scrollback;
@@ -110,6 +110,21 @@ pub struct Manager {
     changes: watch::Sender<u64>,
     /// One-time pairing codes and when they expire (memory only).
     pub(crate) pairing: Mutex<HashMap<String, Instant>>,
+}
+
+/// Runs kept for usage (the oldest are dropped).
+const MAX_RUNS: usize = 2000;
+
+/// Close the open run of a session, if any.
+fn end_run(state: &mut State, session: &str, at: u64) {
+    if let Some(run) = state
+        .runs
+        .iter_mut()
+        .rev()
+        .find(|r| r.session == session && r.ended_at.is_none())
+    {
+        run.ended_at = Some(at);
+    }
 }
 
 fn now_ms() -> u64 {
@@ -471,6 +486,22 @@ impl Manager {
         if let Some(s) = inner.state.sessions.iter_mut().find(|s| s.id == id) {
             s.started_once = true;
         }
+        // Remember which account this run uses (usage per subscription).
+        if let (Some(provider), None) = (spec.kind.provider(), &spec.command) {
+            let now = now_ms();
+            end_run(&mut inner.state, id, now);
+            inner.state.runs.push(Run {
+                session: id.to_string(),
+                provider,
+                account: spec.account.clone(),
+                cwd: spec.cwd.clone(),
+                started_at: now,
+                ended_at: None,
+                extra: Default::default(),
+            });
+            let excess = inner.state.runs.len().saturating_sub(MAX_RUNS);
+            inner.state.runs.drain(..excess);
+        }
         self.save(&inner)
     }
 
@@ -593,7 +624,8 @@ impl Manager {
         }
         live.status = SessionStatus::Exited;
         live.usage = Usage::default();
-        self.changed();
+        end_run(&mut inner.state, id, now_ms());
+        let _ = self.save(&inner);
     }
 
     /// End the session's processes (SIGHUP/SIGTERM, then SIGKILL after 3 s) and wait for them.
@@ -635,8 +667,8 @@ impl Manager {
             live.scrollback.lock().unwrap().push(note);
             let _ = live.output.send(Bytes::from_static(note));
         }
-        self.changed();
-        Ok(())
+        end_run(&mut inner.state, id, now_ms());
+        self.save(&inner)
     }
 
     // ----- terminal I/O -----

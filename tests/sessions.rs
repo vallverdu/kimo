@@ -93,8 +93,10 @@ async fn pause_switch_account_stop_and_continue() {
             "#!/bin/sh\n",
             "echo \"CFG=$CLAUDE_CONFIG_DIR ARGS=$*\"\n",
             // Like Claude: a conversation started with --session-id gets a transcript.
-            "if [ \"$1\" = --session-id ]; then mkdir -p \"$CLAUDE_CONFIG_DIR/projects/w\"; ",
-            "touch \"$CLAUDE_CONFIG_DIR/projects/w/$2.jsonl\"; fi\n",
+            "if [ \"$1\" = --session-id ] || [ \"$1\" = --resume ]; then mkdir -p \"$CLAUDE_CONFIG_DIR/projects/w\"; ",
+            // One assistant message with usage per start, timestamped like Claude Code does.
+            "printf '{\"type\":\"assistant\",\"timestamp\":\"%s\",\"message\":{\"id\":\"m%s\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":100}}}\\n' ",
+            "\"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\" \"$$\" >> \"$CLAUDE_CONFIG_DIR/projects/w/$2.jsonl\"; fi\n",
             "exec sleep 60\n"
         ),
     )
@@ -166,6 +168,20 @@ async fn pause_switch_account_stop_and_continue() {
         .accounts()
         .iter()
         .any(|acc| acc.account.id == b.id && acc.sessions == 1));
+
+    // Usage per subscription: the message before the move counts for A, the one after for B.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let usage = m.usage();
+    let of = |id: &str| {
+        usage
+            .iter()
+            .find(|u| u.account.as_deref() == Some(id))
+            .unwrap()
+            .clone()
+    };
+    assert_eq!((of(&a.id).messages_7d, of(&a.id).tokens_7d), (1, 15));
+    assert_eq!((of(&b.id).messages_7d, of(&b.id).tokens_5h), (1, 15));
+    assert_eq!(of(&b.id).detail_7d.cache_read, 100);
 
     // Stop frees the processes; start continues.
     m.sample();

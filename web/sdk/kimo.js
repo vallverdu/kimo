@@ -83,6 +83,8 @@ export class Kimo {
 
   // Accounts
   accounts() { return this.request('GET', '/accounts'); }
+  /** Usage per account: Claude tokens (5 h / 7 days) and Codex plan limits, for agents run through kimo. */
+  usage() { return this.request('GET', '/usage'); }
   /** Move every session of an account (or 'default') to another one (null = default login). */
   moveSessions(from, to) { return this.request('POST', `/accounts/${enc(from)}/move`, { to }); }
 
