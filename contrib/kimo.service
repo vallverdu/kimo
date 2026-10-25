@@ -1,0 +1,22 @@
+# kimo as a user service: starts at boot (with lingering) and restarts on failure.
+#   cargo install --path .                       # puts kimo in ~/.cargo/bin
+#   mkdir -p ~/.config/systemd/user && cp contrib/kimo.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now kimo
+#   loginctl enable-linger $USER                 # keep it running when you are logged out
+#   journalctl --user -u kimo -f                 # logs
+[Unit]
+Description=kimo agent environment
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.cargo/bin/kimo
+Restart=on-failure
+# Agents need the same tools as your shell (claude, codex, git, node…).
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=RUST_LOG=kimo=info
+# Settings, see .env.example (e.g. KIMO_BIND=tailscale, KIMO_PROJECTS_DIR=%h/dev):
+# EnvironmentFile=%h/.kimo/env
+
+[Install]
+WantedBy=default.target
