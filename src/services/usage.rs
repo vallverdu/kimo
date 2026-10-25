@@ -37,7 +37,7 @@ fn lines(path: &Path) -> impl Iterator<Item = String> {
 }
 
 /// Codex session logs modified in the last `days` days.
-fn codex_logs(home: &Path, since: u64) -> Vec<PathBuf> {
+pub(crate) fn codex_logs(home: &Path, since: u64) -> Vec<PathBuf> {
     let mut out = vec![];
     let mut stack = vec![home.join("sessions")];
     while let Some(dir) = stack.pop() {

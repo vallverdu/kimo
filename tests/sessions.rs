@@ -103,30 +103,10 @@ async fn shell_session_echoes_input() {
 #[tokio::test]
 async fn pause_switch_account_stop_and_continue() {
     let tmp = tempfile::tempdir().unwrap();
-    let (bin, work) = (tmp.path().join("bin"), tmp.path().join("work"));
-    std::fs::create_dir_all(&bin).unwrap();
+    let work = tmp.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(tmp.path().join("home")).unwrap();
-    let fake = bin.join("claude");
-    std::fs::write(
-        &fake,
-        concat!(
-            "#!/bin/sh\n",
-            "echo \"CFG=$CLAUDE_CONFIG_DIR ARGS=$*\"\n",
-            // Like Claude: a conversation started with --session-id gets a transcript.
-            "if [ \"$1\" = --session-id ] || [ \"$1\" = --resume ]; then mkdir -p \"$CLAUDE_CONFIG_DIR/projects/w\"; ",
-            // One assistant message with usage per start, timestamped like Claude Code does.
-            "printf '{\"type\":\"assistant\",\"timestamp\":\"%s\",\"message\":{\"id\":\"m%s\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":100}}}\\n' ",
-            "\"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\" \"$$\" >> \"$CLAUDE_CONFIG_DIR/projects/w/$2.jsonl\"; fi\n",
-            "exec sleep 60\n"
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    std::env::set_var(
-        "PATH",
-        format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-    );
+    fake_agents();
 
     let m = manager(tmp.path());
     let a = m.add_account("Work Max", Provider::Claude).unwrap();
@@ -266,5 +246,85 @@ async fn agent_settings_reach_the_command_line() {
     // Custom commands never get the agent preferences.
     m.act(&s.spec.id, Action::Start).await.unwrap();
     wait_for(&m, &s.spec.id, "CODEX ARGS=\r\n").await;
+    m.delete(&s.spec.id).await.unwrap();
+}
+
+/// Fake `claude` and `codex` on PATH, set up once for every test (tests run in parallel and
+/// share the process environment).
+fn fake_agents() {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        let bin = std::env::temp_dir().join(format!("kimo-fake-agents-{}", std::process::id()));
+        std::fs::create_dir_all(&bin).unwrap();
+        let write = |name: &str, script: &str| {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        };
+        write(
+            "claude",
+            concat!(
+                "#!/bin/sh\n",
+                "echo \"CFG=$CLAUDE_CONFIG_DIR ARGS=$*\"\n",
+                // Like Claude: a conversation started with --session-id gets a transcript.
+                "if [ \"$1\" = --session-id ] || [ \"$1\" = --resume ]; then mkdir -p \"$CLAUDE_CONFIG_DIR/projects/w\"; ",
+                // One assistant message with usage per start, timestamped like Claude Code does.
+                "printf '{\"type\":\"assistant\",\"timestamp\":\"%s\",\"message\":{\"id\":\"m%s\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":100}}}\\n' ",
+                "\"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\" \"$$\" >> \"$CLAUDE_CONFIG_DIR/projects/w/$2.jsonl\"; fi\n",
+                "exec sleep 60\n"
+            ),
+        );
+        write(
+            "codex",
+            concat!(
+                "#!/bin/sh\n",
+                "echo \"CODEX ARGS=$*\"\n",
+                // Like Codex: a new session writes its log, whose first line names the session.
+                "if [ \"$1\" != resume ]; then d=\"$CODEX_HOME/sessions/2026/01/01\"; mkdir -p \"$d\"; t=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ); ",
+                "printf '{\"timestamp\":\"%s\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-%s\",\"cwd\":\"%s\",\"timestamp\":\"%s\"}}\\n' ",
+                "\"$t\" \"$$\" \"$PWD\" \"$t\" > \"$d/rollout-$$.jsonl\"; fi\n",
+                "exec sleep 60\n"
+            ),
+        );
+        let path = std::env::var("PATH").unwrap();
+        std::env::set_var("PATH", format!("{}:{path}", bin.display()));
+    });
+}
+
+#[tokio::test]
+async fn codex_sessions_learn_their_id_and_resume_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    fake_agents();
+    let m = manager(tmp.path());
+    // An account keeps the fake away from the real ~/.codex (its sessions link into the test home).
+    let acc = m.add_account("Team", Provider::Codex).unwrap();
+    let s = m
+        .create(
+            NewSession {
+                name: "cx".into(),
+                kind: SessionKind::Codex,
+                cwd: work.display().to_string(),
+                account: Some(acc.id.clone()),
+                args: vec![],
+                command: None,
+            },
+            true,
+        )
+        .unwrap();
+    wait_for(&m, &s.spec.id, "CODEX ARGS=\r\n").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    m.sample();
+    let id = m
+        .session(&s.spec.id)
+        .unwrap()
+        .spec
+        .conversation
+        .expect("codex id learned from its log");
+    assert!(id.starts_with("codex-"), "{id}");
+    m.act(&s.spec.id, Action::Restart).await.unwrap();
+    wait_for(&m, &s.spec.id, &format!("CODEX ARGS=resume {id}")).await;
     m.delete(&s.spec.id).await.unwrap();
 }

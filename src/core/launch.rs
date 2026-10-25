@@ -150,10 +150,11 @@ pub fn build(
                 ("claude".to_string(), args)
             }
             SessionKind::Codex => {
-                let args = if resume {
-                    vec!["resume".to_string(), "--last".to_string()]
-                } else {
-                    vec![]
+                // Codex picks its own id: kimo learns it from Codex's log after the first start.
+                let args = match (&spec.conversation, resume) {
+                    (Some(id), true) => vec!["resume".to_string(), id.clone()],
+                    (None, true) => vec!["resume".to_string(), "--last".to_string()],
+                    (_, false) => vec![],
                 };
                 ("codex".to_string(), args)
             }
@@ -228,6 +229,18 @@ mod tests {
         assert_eq!(fresh.args, vec!["--session-id", "c0ffee"]);
         let again = build(&s, None, Path::new("/k"), true, "sh", None).unwrap();
         assert_eq!(again.args, vec!["--resume", "c0ffee"]);
+    }
+
+    #[test]
+    fn codex_resumes_its_own_conversation_once_known() {
+        let mut s = spec(SessionKind::Codex, None);
+        s.conversation = Some("019a-codex-id".into());
+        let l = build(&s, None, Path::new("/k"), true, "sh", None).unwrap();
+        assert_eq!(l.args, vec!["resume", "019a-codex-id"]);
+        assert!(build(&s, None, Path::new("/k"), false, "sh", None)
+            .unwrap()
+            .args
+            .is_empty());
     }
 
     #[test]

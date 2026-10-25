@@ -878,6 +878,73 @@ impl Manager {
         }
         drop(inner);
         self.changed();
+        self.capture_codex_ids();
+    }
+
+    /// Learn the session id Codex chose for each new Codex session (from its log's first line),
+    /// so the session resumes exactly its own conversation.
+    fn capture_codex_ids(&self) {
+        let (pending, mut claimed) = {
+            let inner = self.lock();
+            let pending: Vec<(String, String, u64)> = inner
+                .state
+                .sessions
+                .iter()
+                .filter(|s| {
+                    s.kind == SessionKind::Codex && s.command.is_none() && s.conversation.is_none()
+                })
+                .filter(|s| inner.live.get(&s.id).is_some_and(|l| l.runtime.is_some()))
+                .filter_map(|s| {
+                    let run = inner.state.runs.iter().rev().find(|r| r.session == s.id)?;
+                    Some((s.id.clone(), s.cwd.clone(), run.started_at))
+                })
+                .collect();
+            let claimed: std::collections::HashSet<String> = inner
+                .state
+                .sessions
+                .iter()
+                .filter_map(|s| s.conversation.clone())
+                .collect();
+            (pending, claimed)
+        };
+        let Some(oldest) = pending.iter().map(|p| p.2).min() else {
+            return;
+        };
+        let home = launch::default_home(Provider::Codex, &self.cfg.user_home);
+        let mut found: Vec<(u64, String, String)> = vec![];
+        for log in crate::services::usage::codex_logs(&home, oldest.saturating_sub(5_000)) {
+            let first = std::fs::File::open(&log)
+                .ok()
+                .and_then(|f| std::io::BufRead::lines(std::io::BufReader::new(f)).next())
+                .and_then(|l| l.ok());
+            let Some(line) = first else { continue };
+            if let (Some((cwd, started)), Some(id)) = (
+                crate::core::usage::codex_meta(&line),
+                crate::core::usage::codex_session_id(&line),
+            ) {
+                found.push((started, cwd, id));
+            }
+        }
+        found.sort();
+        let mut assigned = vec![];
+        for (session, cwd, run_start) in pending {
+            if let Some((_, _, id)) = found.iter().find(|(started, c, id)| {
+                *c == cwd && *started + 5_000 >= run_start && !claimed.contains(id)
+            }) {
+                claimed.insert(id.clone());
+                assigned.push((session, id.clone()));
+            }
+        }
+        if assigned.is_empty() {
+            return;
+        }
+        let mut inner = self.lock();
+        for (session, id) in assigned {
+            if let Some(s) = inner.state.sessions.iter_mut().find(|s| s.id == session) {
+                s.conversation = Some(id);
+            }
+        }
+        let _ = self.save(&inner);
     }
 
     // ----- settings -----

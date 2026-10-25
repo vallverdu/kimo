@@ -140,6 +140,18 @@ pub fn codex_meta(line: &str) -> Option<(String, u64)> {
     ))
 }
 
+/// Codex's own session id from the first line of its session log.
+pub fn codex_session_id(line: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let p = &v["payload"];
+    (v["type"] == "session_meta").then(|| {
+        p["id"]
+            .as_str()
+            .or(p["session_id"].as_str())
+            .map(String::from)
+    })?
+}
+
 /// The run of `session` that was active at `at` (runs of one session never overlap).
 pub fn run_at<'a>(runs: &'a [Run], session: &str, at: u64) -> Option<&'a Run> {
     runs.iter().rev().find(|r| {
@@ -213,6 +225,15 @@ mod tests {
         assert_eq!(l.limits[0].used_percent, 15.0);
         let meta = r#"{"timestamp":"1970-01-01T00:00:03Z","type":"session_meta","payload":{"cwd":"/w","timestamp":"1970-01-01T00:00:03Z"}}"#;
         assert_eq!(codex_meta(meta), Some(("/w".into(), 3000)));
+        assert_eq!(
+            codex_session_id(r#"{"type":"session_meta","payload":{"id":"019a","cwd":"/w"}}"#)
+                .as_deref(),
+            Some("019a")
+        );
+        assert_eq!(
+            codex_session_id(r#"{"type":"event_msg","payload":{"id":"x"}}"#),
+            None
+        );
     }
 
     #[test]
