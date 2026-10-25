@@ -13,11 +13,27 @@ out, and without 26 idle agents eating 30 GB of RAM.
 Real run on a laptop: a Claude Code agent (≈650 MB, the reason stopping matters), two shells,
 one paused, one stopped; kimo itself uses 6 MB.
 
-| Agents | Terminal | Accounts | New session |
-|---|---|---|---|
-| ![Agents on a phone](docs/screenshots/phone-agents.png) | ![Claude Code in the phone terminal](docs/screenshots/phone-terminal.png) | ![Accounts](docs/screenshots/phone-accounts.png) | ![New session sheet](docs/screenshots/phone-new-session.png) |
+### On the phone
+
+| Agents | Every session | Claude Code in a terminal |
+|---|---|---|
+| ![Agents overview](docs/screenshots/phone-agents.png) | ![All sessions: running, paused, stopped](docs/screenshots/phone-agents-all.png) | ![Claude Code in the phone terminal](docs/screenshots/phone-terminal.png) |
+
+| Paused session | Accounts | New session |
+|---|---|---|
+| ![A paused session: frozen, no CPU](docs/screenshots/phone-paused.png) | ![Accounts and moving sessions](docs/screenshots/phone-accounts.png) | ![New session sheet](docs/screenshots/phone-new-session.png) |
+
+A session is *paused* (frozen with SIGSTOP, no CPU, memory kept) or *stopped* (memory freed,
+**continue** brings the conversation back). The terminal has a key bar and a compose box so an
+agent can be driven without a keyboard.
+
+### On the desktop
 
 ![Agents on desktop](docs/screenshots/desktop-agents.png)
+
+![A terminal on desktop: the test suite running inside kimo](docs/screenshots/desktop-terminal.png)
+
+![Accounts on desktop: move every session of a login to another subscription](docs/screenshots/desktop-accounts.png)
 
 ## What it does
 
