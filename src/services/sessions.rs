@@ -116,6 +116,12 @@ pub struct Manager {
     pub(crate) pairing: Mutex<HashMap<String, Instant>>,
 }
 
+/// A folder path with symlinks resolved (macOS `/var` → `/private/var`), so paths written by
+/// agents compare equal to the ones kimo started them in.
+pub(crate) fn canonical(path: &str) -> String {
+    std::fs::canonicalize(path).map_or_else(|_| path.to_string(), |p| p.display().to_string())
+}
+
 /// Runs kept for usage (the oldest are dropped).
 const MAX_RUNS: usize = 2000;
 
@@ -948,8 +954,9 @@ impl Manager {
         found.sort();
         let mut assigned = vec![];
         for (session, cwd, run_start) in pending {
+            let cwd = canonical(&cwd);
             if let Some((_, _, id)) = found.iter().find(|(started, c, id)| {
-                *c == cwd && *started + 5_000 >= run_start && !claimed.contains(id)
+                canonical(c) == cwd && *started + 5_000 >= run_start && !claimed.contains(id)
             }) {
                 claimed.insert(id.clone());
                 assigned.push((session, id.clone()));

@@ -296,7 +296,7 @@ fn fake_agents() {
                 // Like Codex: a new session writes its log, whose first line names the session.
                 "if [ \"$1\" != resume ]; then d=\"$CODEX_HOME/sessions/2026/01/01\"; mkdir -p \"$d\"; t=$(date -u +%Y-%m-%dT%H:%M:%S.000Z); ",
                 "printf '{\"timestamp\":\"%s\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-%s\",\"cwd\":\"%s\",\"timestamp\":\"%s\"}}\\n' ",
-                "\"$t\" \"$$\" \"$PWD\" \"$t\" > \"$d/rollout-$$.jsonl\"; fi\n",
+                "\"$t\" \"$$\" \"$(pwd -P)\" \"$t\" > \"$d/rollout-$$.jsonl\"; fi\n",
                 "exec sleep 60\n"
             ),
         );
@@ -308,8 +308,12 @@ fn fake_agents() {
 #[tokio::test]
 async fn codex_sessions_learn_their_id_and_resume_it() {
     let tmp = tempfile::tempdir().unwrap();
+    // Started through a symlinked folder: agents record the resolved path (as on macOS, where
+    // temporary folders live under /var → /private/var).
+    let real = tmp.path().join("real-work");
+    std::fs::create_dir_all(&real).unwrap();
     let work = tmp.path().join("work");
-    std::fs::create_dir_all(&work).unwrap();
+    std::os::unix::fs::symlink(&real, &work).unwrap();
     std::fs::create_dir_all(tmp.path().join("home")).unwrap();
     fake_agents();
     let m = manager(tmp.path());

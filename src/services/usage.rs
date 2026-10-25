@@ -150,10 +150,14 @@ impl Manager {
         }
 
         // Codex: limits and token totals from its session logs.
+        // Folders compared with symlinks resolved, as Codex records the resolved path.
         let codex_runs: Vec<Run> = runs
             .iter()
             .filter(|r| r.provider == Provider::Codex)
-            .cloned()
+            .map(|r| Run {
+                cwd: crate::services::sessions::canonical(&r.cwd),
+                ..r.clone()
+            })
             .collect();
         if !codex_runs.is_empty() {
             let home = default_home(Provider::Codex, &self.cfg.user_home);
@@ -162,6 +166,7 @@ impl Manager {
                 let Some((cwd, started)) = it.next().and_then(|l| codex_meta(&l)) else {
                     continue;
                 };
+                let cwd = crate::services::sessions::canonical(&cwd);
                 let Some(run) = codex_run_for(&codex_runs, &cwd, started) else {
                     continue;
                 };
