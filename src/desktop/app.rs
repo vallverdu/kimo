@@ -34,6 +34,10 @@ enum Msg {
     Network(Value),
     Apps(Value),
     Usage(Value),
+    /// Paired kimos with keys (from this machine's kimo): hosts the window connects to.
+    Hosts(Value),
+    /// Paired kimos with online state (Devices view).
+    Peers(Value),
     Pairing(String, u64),
     /// Folder listing for the project dialog's picker.
     Folder(Value),
@@ -77,11 +81,57 @@ struct Pairing {
     until: Instant,
 }
 
+/// A kimo the window talks to: its client and its live sessions.
+struct Host {
+    id: String,
+    name: String,
+    client: Client,
+    live: Arc<Mutex<Live>>,
+}
+
+impl Host {
+    fn connect(id: &str, name: &str, client: Client, ctx: &egui::Context) -> Self {
+        let live = Arc::new(Mutex::new(Live::default()));
+        let (l2, ctx) = (live.clone(), ctx.clone());
+        client.subscribe(move |update| {
+            if let Ok(mut l) = l2.lock() {
+                l.sessions = update["sessions"].as_array().cloned().unwrap_or_default();
+                l.accounts = update["accounts"].as_array().cloned().unwrap_or_default();
+                l.loaded = true;
+            }
+            ctx.request_repaint();
+        });
+        Self {
+            id: id.into(),
+            name: name.into(),
+            client,
+            live,
+        }
+    }
+
+    fn sessions(&self) -> Vec<Value> {
+        self.live
+            .lock()
+            .map(|l| l.sessions.clone())
+            .unwrap_or_default()
+    }
+
+    fn loaded(&self) -> bool {
+        self.live.lock().map(|l| l.loaded).unwrap_or(false)
+    }
+}
+
 pub struct KimoApp {
     ctx: egui::Context,
     logo: egui::TextureHandle,
-    client: Client,
-    live: Arc<Mutex<Live>>,
+    /// This kimo first, then the paired ones; `current` is the one the views show.
+    hosts: Vec<Host>,
+    current: usize,
+    last_hosts: Instant,
+    /// Paired kimos as the local server reports them (Devices view).
+    peer_info: Vec<Value>,
+    peer_url: String,
+    peer_code: String,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     view: View,
@@ -215,18 +265,7 @@ pub fn drop_target(path: &Path) -> Option<PathBuf> {
 impl KimoApp {
     pub fn new(ctx: egui::Context, client: Client) -> Self {
         let (tx, rx) = channel();
-        let live = Arc::new(Mutex::new(Live::default()));
-        {
-            let (live, ctx) = (live.clone(), ctx.clone());
-            client.subscribe(move |update| {
-                if let Ok(mut l) = live.lock() {
-                    l.sessions = update["sessions"].as_array().cloned().unwrap_or_default();
-                    l.accounts = update["accounts"].as_array().cloned().unwrap_or_default();
-                    l.loaded = true;
-                }
-                ctx.request_repaint();
-            });
-        }
+        let local = Host::connect("local", "this machine", client, &ctx);
         let logo = ctx.load_texture(
             "kimo-logo",
             egui::ColorImage::from_rgba_unmultiplied(
@@ -236,10 +275,14 @@ impl KimoApp {
             egui::TextureOptions::LINEAR,
         );
         let app = Self {
+            hosts: vec![local],
+            current: 0,
+            last_hosts: Instant::now() - Duration::from_secs(60),
+            peer_info: vec![],
+            peer_url: String::new(),
+            peer_code: String::new(),
             logo,
             ctx,
-            client,
-            live,
             tx,
             rx,
             view: View::Terminals,
@@ -280,7 +323,7 @@ impl KimoApp {
 
     /// Run an API call off the UI thread; its result comes back as a message.
     fn job(&self, f: impl FnOnce(&Client) -> Result<Msg> + Send + 'static) {
-        let (client, tx, ctx) = (self.client.clone(), self.tx.clone(), self.ctx.clone());
+        let (client, tx, ctx) = (self.client().clone(), self.tx.clone(), self.ctx.clone());
         std::thread::spawn(move || {
             let msg = f(&client).unwrap_or_else(|e| Msg::Error(e.to_string()));
             let _ = tx.send(msg);
@@ -304,28 +347,67 @@ impl KimoApp {
         self.toasts.push((text.into(), error, Instant::now()));
     }
 
+    fn client(&self) -> &Client {
+        &self.hosts[self.current].client
+    }
+
+    fn host(&self) -> &Host {
+        &self.hosts[self.current]
+    }
+
     fn sessions(&self) -> Vec<Value> {
-        self.live
-            .lock()
-            .map(|l| l.sessions.clone())
-            .unwrap_or_default()
+        self.host().sessions()
     }
 
     fn accounts(&self) -> Vec<Value> {
-        self.live
+        self.host()
+            .live
             .lock()
             .map(|l| l.accounts.clone())
             .unwrap_or_default()
     }
 
+    /// Show another kimo: its projects, sessions, subscriptions, skills and settings.
+    fn switch_host(&mut self, index: usize) {
+        if index == self.current || index >= self.hosts.len() {
+            return;
+        }
+        self.current = index;
+        self.projects.clear();
+        self.skills.clear();
+        self.usage.clear();
+        self.settings = None;
+        self.job(|c| Ok(Msg::Settings(Box::new(c.get("/settings")?))));
+        self.refresh_view();
+    }
+
+    /// Run a call on this machine's kimo whatever host is shown (pairing kimos).
+    fn local_job(&self, f: impl FnOnce(&Client) -> Result<Msg> + Send + 'static) {
+        let (client, tx, ctx) = (
+            self.hosts[0].client.clone(),
+            self.tx.clone(),
+            self.ctx.clone(),
+        );
+        std::thread::spawn(move || {
+            let msg = f(&client).unwrap_or_else(|e| Msg::Error(e.to_string()));
+            let _ = tx.send(msg);
+            ctx.request_repaint();
+        });
+    }
+
     fn open_session(&mut self, id: &str) {
         self.view = View::Terminals;
-        if let Some(i) = self.terminals.iter().position(|t| t.session_id == id) {
+        let host = self.host().id.clone();
+        if let Some(i) = self
+            .terminals
+            .iter()
+            .position(|t| t.session_id == id && t.host == host)
+        {
             self.active = i;
             return;
         }
         self.terminals
-            .push(TerminalView::open(&self.client, id, &self.ctx));
+            .push(TerminalView::open(self.client(), &host, id, &self.ctx));
         self.active = self.terminals.len() - 1;
     }
 
@@ -351,6 +433,27 @@ impl KimoApp {
                 }
                 Msg::Apps(v) => self.apps = v.as_array().cloned().unwrap_or_default(),
                 Msg::Usage(v) => self.usage = v.as_array().cloned().unwrap_or_default(),
+                Msg::Peers(v) => self.peer_info = v.as_array().cloned().unwrap_or_default(),
+                Msg::Hosts(v) => {
+                    let peers = v.as_array().cloned().unwrap_or_default();
+                    let current = self.host().id.clone();
+                    // Forget removed peers, connect new ones.
+                    self.hosts
+                        .retain(|h| h.id == "local" || peers.iter().any(|p| s(p, "id") == h.id));
+                    for p in &peers {
+                        if !self.hosts.iter().any(|h| h.id == s(p, "id")) {
+                            let client =
+                                Client::new(s(p, "url"), p["token"].as_str().map(String::from));
+                            self.hosts.push(Host::connect(
+                                s(p, "id"),
+                                s(p, "name"),
+                                client,
+                                &self.ctx,
+                            ));
+                        }
+                    }
+                    self.current = self.hosts.iter().position(|h| h.id == current).unwrap_or(0);
+                }
                 Msg::Folder(listing) => {
                     if let Some(form) = self.project_form.as_mut() {
                         form.listing = Some(listing);
@@ -388,6 +491,7 @@ impl KimoApp {
                 self.job(|c| Ok(Msg::Agents(c.get("/agents")?)));
             }
             View::Devices => {
+                self.local_job(|c| Ok(Msg::Peers(c.get("/peers")?)));
                 self.job(|c| Ok(Msg::Devices(c.get("/devices")?)));
                 self.job(|c| Ok(Msg::Network(c.get("/network")?)));
                 self.job(|c| Ok(Msg::Apps(c.get("/clients")?)));
@@ -399,6 +503,10 @@ impl KimoApp {
         if self.last_status.elapsed() > Duration::from_secs(3) {
             self.last_status = Instant::now();
             self.job(|c| Ok(Msg::Status(c.get("/status")?)));
+        }
+        if self.last_hosts.elapsed() > Duration::from_secs(15) {
+            self.last_hosts = Instant::now();
+            self.local_job(|c| Ok(Msg::Hosts(c.get("/peers/keys")?)));
         }
         if self.last_projects.elapsed() > Duration::from_secs(10) {
             self.last_projects = Instant::now();
@@ -461,7 +569,41 @@ impl KimoApp {
                     .size(10.0)
                     .color(theme::MUTED),
             );
-            ui.add_space(24.0);
+            ui.add_space(16.0);
+            // Which kimo the views show: this machine or a paired one.
+            let mut chosen = self.current;
+            let mut pair = false;
+            egui::ComboBox::from_id_salt("host")
+                .selected_text(
+                    RichText::new(format!("host: {}", self.host().name)).color(theme::INK),
+                )
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    for (i, h) in self.hosts.iter().enumerate() {
+                        let running = h
+                            .sessions()
+                            .iter()
+                            .filter(|x| s(x, "status") == "running")
+                            .count();
+                        let label = if h.loaded() {
+                            format!("{} · {running} running", h.name)
+                        } else {
+                            format!("{} · offline", h.name)
+                        };
+                        ui.selectable_value(&mut chosen, i, label);
+                    }
+                    ui.separator();
+                    pair = ui.selectable_label(false, "pair another kimo…").clicked();
+                });
+            if chosen != self.current {
+                self.switch_host(chosen);
+            }
+            if pair {
+                self.switch_host(0);
+                self.view = View::Devices;
+                self.refresh_view();
+            }
+            ui.add_space(16.0);
             for (view, label) in [
                 (View::Terminals, "Terminals"),
                 (View::Subscriptions, "Subscriptions"),
@@ -551,7 +693,7 @@ impl KimoApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    RichText::new(self.client.base())
+                    RichText::new(format!("{} · {}", self.host().name, self.client().base()))
                         .size(11.0)
                         .color(theme::MUTED),
                 );
@@ -701,25 +843,58 @@ impl KimoApp {
             });
             return;
         }
-        let sessions = self.sessions();
-        // Tabs of deleted sessions close by themselves.
-        if self.live.lock().map(|l| l.loaded).unwrap_or(false) {
-            self.terminals
-                .retain(|t| sessions.iter().any(|x| s(x, "id") == t.session_id));
-            if self.terminals.is_empty() {
-                return;
-            }
+        // Tabs of deleted sessions (or of forgotten hosts) close by themselves.
+        let hosts = &self.hosts;
+        self.terminals
+            .retain(|t| match hosts.iter().find(|h| h.id == t.host) {
+                Some(h) if h.loaded() => h.sessions().iter().any(|x| s(x, "id") == t.session_id),
+                Some(_) => true,
+                None => false,
+            });
+        if self.terminals.is_empty() {
+            return;
         }
         self.active = self.active.min(self.terminals.len() - 1);
+        // The toolbar acts on the active tab's host.
+        let tab_host = self.terminals[self.active].host.clone();
+        if let Some(i) = self.hosts.iter().position(|h| h.id == tab_host) {
+            self.switch_host(i);
+        }
+        let sessions = self.sessions();
+        // Each tab's session, from its own host.
+        let infos: Vec<(Option<Value>, String)> = self
+            .terminals
+            .iter()
+            .map(|t| {
+                let host = self.hosts.iter().find(|h| h.id == t.host);
+                let info = host.and_then(|h| {
+                    h.sessions()
+                        .into_iter()
+                        .find(|x| s(x, "id") == t.session_id)
+                });
+                (
+                    info,
+                    host.filter(|h| h.id != "local")
+                        .map(|h| h.name.clone())
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
         // Tabs.
         let mut close = None;
         ui.horizontal_wrapped(|ui| {
             for (i, t) in self.terminals.iter().enumerate() {
-                let info = sessions.iter().find(|x| s(x, "id") == t.session_id);
+                let (info, host_name) = (&infos[i].0, &infos[i].1);
+                let info = info.as_ref();
                 let name = info
                     .map(|x| s(x, "name"))
                     .unwrap_or(&t.session_id)
                     .to_string();
+                let name = if host_name.is_empty() {
+                    name
+                } else {
+                    format!("{name} · {host_name}")
+                };
                 let status = info.map(|x| s(x, "status")).unwrap_or("");
                 egui::Frame::new()
                     .stroke(egui::Stroke::new(
@@ -1271,6 +1446,45 @@ impl KimoApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(s(a, "url")));
                 });
             }
+            section(ui, "Other kimos");
+            ui.label(RichText::new("Pair this kimo with the ones on your other machines (lab box, Raspberry Pi, Mac mini): their agents appear here and in `kimo agents` as host/id, and agents can message each other across machines.").size(11.0).color(theme::MUTED));
+            let mut forget = None;
+            for p in &self.peer_info {
+                ui.horizontal(|ui| {
+                    dot(ui, if p["online"] == true { theme::GOOD } else { theme::MUTED });
+                    ui.label(RichText::new(s(p, "name")).color(theme::INK));
+                    ui.label(RichText::new(s(p, "url")).size(11.0).color(theme::MUTED));
+                    if let Some(n) = p["sessions"].as_u64() {
+                        ui.label(RichText::new(format!("{n} sessions")).size(11.0).color(theme::MUTED));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button(RichText::new("forget").color(theme::BAD)).clicked() {
+                            forget = Some(s(p, "id").to_string());
+                        }
+                    });
+                });
+            }
+            if let Some(id) = forget {
+                self.local_job(move |c| {
+                    c.delete(&format!("/peers/{id}"))?;
+                    Ok(Msg::Toast("Host forgotten".into()))
+                });
+                self.last_hosts = Instant::now() - Duration::from_secs(60);
+            }
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.peer_url).hint_text("http://100.x.y.z:7777").desired_width(240.0));
+                ui.add(egui::TextEdit::singleline(&mut self.peer_code).hint_text("pairing code (its QR / kimo pair)").desired_width(260.0));
+                if primary(ui, "pair").clicked() && !self.peer_url.trim().is_empty() && !self.peer_code.trim().is_empty() {
+                    let (url, code) = (self.peer_url.trim().to_string(), self.peer_code.trim().to_string());
+                    self.peer_code.clear();
+                    self.local_job(move |c| {
+                        let p = c.post("/peers", json!({ "url": url, "code": code }))?;
+                        Ok(Msg::Toast(format!("Paired with {}", s(&p, "name"))))
+                    });
+                    self.last_hosts = Instant::now() - Duration::from_secs(60);
+                }
+            });
+            ui.label(RichText::new("The code is the part after #pair= in the other kimo's pairing link (Devices → show QR code, or `kimo pair` there).").size(10.5).color(theme::MUTED));
             section(ui, "Paired devices");
             let mut unpair = None;
             for d in &self.devices {

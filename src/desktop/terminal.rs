@@ -32,6 +32,8 @@ impl EventListener for Responder {
 
 pub struct TerminalView {
     pub session_id: String,
+    /// The kimo host the session runs on (`local` or a peer id).
+    pub host: String,
     term: Term<Responder>,
     parser: Processor,
     link: TerminalLink,
@@ -114,7 +116,7 @@ pub fn indexed(i: u8) -> Color32 {
 }
 
 impl TerminalView {
-    pub fn open(client: &Client, session_id: &str, ctx: &egui::Context) -> Self {
+    pub fn open(client: &Client, host: &str, session_id: &str, ctx: &egui::Context) -> Self {
         let repaint = ctx.clone();
         let link = client.terminal(session_id, Arc::new(move || repaint.request_repaint()));
         let term = Term::new(
@@ -124,6 +126,7 @@ impl TerminalView {
         );
         Self {
             session_id: session_id.to_string(),
+            host: host.to_string(),
             term,
             parser: Processor::new(),
             link,
