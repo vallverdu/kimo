@@ -130,7 +130,7 @@ impl Manager {
                 id,
             });
         }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
         out.truncate(100);
         out
     }
@@ -216,7 +216,7 @@ impl Manager {
                 picked.push(c);
             }
         }
-        picked.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        picked.sort_by_key(|c| std::cmp::Reverse(c.updated_at));
         picked
             .iter()
             .enumerate()

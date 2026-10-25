@@ -77,11 +77,7 @@ pub fn claude_line(s: &mut Summary, line: &str) {
                 }
             }
         }
-        Some("assistant") => {
-            if s.cwd.is_none() {
-                s.cwd = v["cwd"].as_str().map(String::from);
-            }
-        }
+        Some("assistant") if s.cwd.is_none() => s.cwd = v["cwd"].as_str().map(String::from),
         _ => {}
     }
     if s.id.is_none() {
