@@ -258,7 +258,7 @@ impl Manager {
         if !std::path::Path::new(&cwd).is_dir() {
             bail!("folder not found: {cwd}");
         }
-        let spec = SessionSpec {
+        let mut spec = SessionSpec {
             id: slug(name),
             name: name.to_string(),
             kind: new.kind,
@@ -267,8 +267,12 @@ impl Manager {
             args: new.args,
             command: new.command.filter(|c| !c.is_empty()),
             started_once: false,
+            conversation: None,
             extra: Default::default(),
         };
+        if spec.kind == SessionKind::Claude && spec.command.is_none() {
+            spec.conversation = Some(uuid::Uuid::new_v4().to_string());
+        }
         {
             let mut inner = self.lock();
             Self::check_account(&inner.state, spec.kind, spec.account.as_deref())?;
@@ -379,7 +383,7 @@ impl Manager {
             &spec,
             account.as_ref(),
             &self.cfg.data_dir,
-            spec.started_once,
+            self.can_resume(&spec),
             &self.cfg.shell,
         )
         .map_err(|e| anyhow!(e))?;
@@ -420,11 +424,38 @@ impl Manager {
         self.save(&inner)
     }
 
+    /// Resume only a conversation that exists: a Claude session that never got a message has
+    /// no transcript, and `--resume` would fail, so it starts fresh with the same id.
+    fn can_resume(&self, spec: &SessionSpec) -> bool {
+        if !spec.started_once {
+            return false;
+        }
+        let Some(id) = spec
+            .conversation
+            .as_deref()
+            .filter(|_| spec.kind == SessionKind::Claude)
+        else {
+            return true;
+        };
+        let projects = launch::default_home(Provider::Claude, &self.cfg.user_home).join("projects");
+        let file = format!("{id}.jsonl");
+        std::fs::read_dir(projects)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|dir| dir.path().join(&file).exists())
+    }
+
     fn spawn(&self, id: &str, live: &Live, launch: &Launch) -> Result<Runtime> {
         let pair = native_pty_system().openpty(live.size)?;
         let mut cmd = CommandBuilder::new(&launch.program);
         cmd.args(&launch.args);
         cmd.cwd(&launch.cwd);
+        for (key, _) in std::env::vars_os() {
+            if key.to_str().is_some_and(launch::is_private_env) {
+                cmd.env_remove(key);
+            }
+        }
         for (k, v) in &launch.env {
             cmd.env(k, v);
         }

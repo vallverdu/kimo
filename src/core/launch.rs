@@ -60,6 +60,19 @@ pub fn login_command(provider: Provider) -> Vec<String> {
     }
 }
 
+/// Variables of kimo's own environment that must not reach sessions: state of a parent agent
+/// session (when kimo was started from inside Claude Code), config homes kimo sets itself per
+/// account, and kimo's access token.
+pub fn is_private_env(key: &str) -> bool {
+    key == "CLAUDECODE"
+        || key.starts_with("CLAUDE_CODE_")
+        || matches!(
+            key,
+            "CLAUDE_PID" | "CLAUDE_EFFORT" | "CLAUDE_CONFIG_DIR" | "CODEX_HOME"
+        )
+        || key.starts_with("KIMO_")
+}
+
 /// Default config home of a provider (where the user's normal login lives).
 pub fn default_home(provider: Provider, user_home: &Path) -> PathBuf {
     match provider {
@@ -74,8 +87,9 @@ pub fn account_home(data_dir: &Path, account_id: &str) -> PathBuf {
 }
 
 /// Build the launch for `spec`.
-/// `account` must be the spec's account (already resolved), `resume` continues the last
-/// conversation in the session's directory, `shell` is the user's login shell.
+/// `account` must be the spec's account (already resolved), `resume` continues the session's
+/// conversation (its own id for Claude, the folder's last one for Codex), `shell` is the
+/// user's login shell.
 pub fn build(
     spec: &SessionSpec,
     account: Option<&Account>,
@@ -106,10 +120,11 @@ pub fn build(
         _ => match spec.kind {
             SessionKind::Shell => (shell.to_string(), vec![]),
             SessionKind::Claude => {
-                let args = if resume {
-                    vec!["--continue".to_string()]
-                } else {
-                    vec![]
+                let args = match (&spec.conversation, resume) {
+                    (Some(id), true) => vec!["--resume".to_string(), id.clone()],
+                    (Some(id), false) => vec!["--session-id".to_string(), id.clone()],
+                    (None, true) => vec!["--continue".to_string()],
+                    (None, false) => vec![],
                 };
                 ("claude".to_string(), args)
             }
@@ -147,6 +162,7 @@ mod tests {
             args: vec![],
             command: None,
             started_once: false,
+            conversation: None,
             extra: Map::new(),
         }
     }
@@ -177,6 +193,16 @@ mod tests {
             .env
             .contains(&("CLAUDE_CONFIG_DIR".into(), "/k/accounts/work".into())));
         assert_eq!(l.cwd, "/work");
+    }
+
+    #[test]
+    fn claude_owns_its_conversation_id() {
+        let mut s = spec(SessionKind::Claude, None);
+        s.conversation = Some("c0ffee".into());
+        let fresh = build(&s, None, Path::new("/k"), false, "sh").unwrap();
+        assert_eq!(fresh.args, vec!["--session-id", "c0ffee"]);
+        let again = build(&s, None, Path::new("/k"), true, "sh").unwrap();
+        assert_eq!(again.args, vec!["--resume", "c0ffee"]);
     }
 
     #[test]
@@ -222,6 +248,28 @@ mod tests {
             (l.program.as_str(), l.args.clone()),
             ("htop", vec!["-d".into(), "10".into()])
         );
+    }
+
+    #[test]
+    fn parent_agent_state_and_token_are_private() {
+        for key in [
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            "KIMO_TOKEN",
+        ] {
+            assert!(is_private_env(key), "{key}");
+        }
+        for key in [
+            "PATH",
+            "HOME",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "CLAUDE",
+        ] {
+            assert!(!is_private_env(key), "{key}");
+        }
     }
 
     #[test]

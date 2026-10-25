@@ -8,13 +8,25 @@ It exists because attention is the bottleneck: you should be able to follow, pau
 continue dozens of agents from a phone, without logging out and in when a subscription runs
 out, and without 26 idle agents eating 30 GB of RAM.
 
+## Screenshots
+
+Real run on a laptop: a Claude Code agent (≈650 MB, the reason stopping matters), two shells,
+one paused, one stopped; kimo itself uses 6 MB.
+
+| Agents | Terminal | Accounts | New session |
+|---|---|---|---|
+| ![Agents on a phone](docs/screenshots/phone-agents.png) | ![Claude Code in the phone terminal](docs/screenshots/phone-terminal.png) | ![Accounts](docs/screenshots/phone-accounts.png) | ![New session sheet](docs/screenshots/phone-new-session.png) |
+
+![Agents on desktop](docs/screenshots/desktop-agents.png)
+
 ## What it does
 
 - **Terminals**: create Claude, Codex or shell sessions in any folder; open them full screen
   with a phone key bar (esc, tab, ^C, arrows) and a compose box for typing messages.
 - **Pause / stop / continue**: *pause* freezes the whole process tree (SIGSTOP: no CPU, memory
-  kept); *stop* ends it to free the memory; *continue* restarts the agent with `claude --continue`
-  / `codex resume --last`, so the conversation comes back.
+  kept); *stop* ends it to free the memory; *continue* brings the conversation back. Each Claude
+  session owns its conversation id (`--session-id`, then `--resume <id>`), so agents sharing a
+  folder never pick up each other's conversation; Codex uses `codex resume --last`.
 - **Accounts without logout**: each account gets its own config home
   (`~/.kimo/accounts/<id>`, via `CLAUDE_CONFIG_DIR` / `CODEX_HOME`); sign in once per account.
   Every account home links the default home's conversations and settings (`projects/`,
@@ -25,6 +37,8 @@ out, and without 26 idle agents eating 30 GB of RAM.
   machine free memory and kimo's own footprint (~5 MB RSS); a warning when memory runs low.
 - **Remote access**: `--bind tailscale | zerotier | lan | <ip>`; a token is required whenever
   kimo is not on localhost.
+- **Clean environment**: sessions do not inherit kimo's token or the state of a parent agent
+  session (`CLAUDECODE`, `CLAUDE_CODE_*`), so kimo can itself be started from an agent.
 - **API for your own tools**: everything the PWA does is a small JSON API (below).
 
 ## Run
@@ -81,6 +95,8 @@ tests/                 PTY integration tests with a fake `claude`
 
 ## Limitations
 
+- Codex sessions resume the folder's *last* Codex conversation (Codex has no way to set the
+  id up front): avoid two Codex sessions in the same folder for now.
 - Linux only for now (`/proc`, process groups).
 - Sessions live inside the kimo process: stopping kimo stops the agents (they continue with
   *continue* afterwards). A detachable session holder is on the TODO list.

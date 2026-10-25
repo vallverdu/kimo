@@ -7,7 +7,9 @@
 - [x] Develop a system for pausing and resuming terminal sessions. (pause = SIGSTOP, stop = free memory, continue = `--continue` / `resume --last`)
 - [x] Integrate with Tailscale or Zerotier for secure remote access. (`--bind tailscale|zerotier|lan|ip` + token)
 - [ ] Detachable session holder so agents survive a kimo restart/upgrade (separate tiny PTY daemon or re-attach via tmux).
-- [ ] Fall back to a fresh start when `--continue` finds no conversation (agent exits within a few seconds).
+- [x] Pin each Claude session to its own conversation (`--session-id` / `--resume <id>`); fresh start when the transcript does not exist yet.
+- [x] Do not leak kimo's token or a parent agent's `CLAUDE_CODE_*` environment into sessions.
+- [ ] Pin Codex sessions to their conversation (read the id from `~/.codex/sessions` after start) instead of `resume --last`.
 - [ ] Rename sessions, edit args/folder, reorder or pin them.
 - [ ] Folder picker / recent git worktrees on the server for the "new session" sheet.
 

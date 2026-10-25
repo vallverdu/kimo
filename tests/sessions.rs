@@ -87,7 +87,14 @@ async fn pause_switch_account_stop_and_continue() {
     let fake = bin.join("claude");
     std::fs::write(
         &fake,
-        "#!/bin/sh\necho \"CFG=$CLAUDE_CONFIG_DIR ARGS=$*\"\nexec sleep 60\n",
+        concat!(
+            "#!/bin/sh\n",
+            "echo \"CFG=$CLAUDE_CONFIG_DIR ARGS=$*\"\n",
+            // Like Claude: a conversation started with --session-id gets a transcript.
+            "if [ \"$1\" = --session-id ]; then mkdir -p \"$CLAUDE_CONFIG_DIR/projects/w\"; ",
+            "touch \"$CLAUDE_CONFIG_DIR/projects/w/$2.jsonl\"; fi\n",
+            "exec sleep 60\n"
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
@@ -113,7 +120,17 @@ async fn pause_switch_account_stop_and_continue() {
             true,
         )
         .unwrap();
-    wait_for(&m, &s.spec.id, &format!("accounts/{} ARGS=\r\n", a.id)).await;
+    let conv = s
+        .spec
+        .conversation
+        .clone()
+        .expect("claude sessions own a conversation id");
+    wait_for(
+        &m,
+        &s.spec.id,
+        &format!("accounts/{} ARGS=--session-id {conv}\r\n", a.id),
+    )
+    .await;
 
     // Pause freezes the process tree; resume thaws it.
     let pid = m.session(&s.spec.id).unwrap().pid.unwrap();
@@ -135,7 +152,7 @@ async fn pause_switch_account_stop_and_continue() {
     wait_for(
         &m,
         &s.spec.id,
-        &format!("accounts/{} ARGS=--continue", b.id),
+        &format!("accounts/{} ARGS=--resume {conv}", b.id),
     )
     .await;
     assert_eq!(
@@ -172,7 +189,7 @@ async fn pause_switch_account_stop_and_continue() {
         (SessionStatus::Stopped, true)
     );
     m.act(&s.spec.id, Action::Start).await.unwrap();
-    wait_for(&m, &s.spec.id, "ARGS=--continue").await;
+    wait_for(&m, &s.spec.id, &format!("ARGS=--resume {conv}")).await;
     m.delete(&s.spec.id).await.unwrap();
     assert!(m.session(&s.spec.id).is_none());
     m.delete_account(&a.id).unwrap();

@@ -70,6 +70,10 @@ pub struct SessionSpec {
     /// True once the session has run, so restarting continues the previous conversation.
     #[serde(default)]
     pub started_once: bool,
+    /// Claude conversation id owned by this session (`--session-id` / `--resume`), so a
+    /// restart never picks up another agent's conversation in the same folder.
+    #[serde(default)]
+    pub conversation: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
