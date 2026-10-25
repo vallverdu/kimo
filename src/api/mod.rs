@@ -117,6 +117,10 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
             get(list_skills).post(install_skill).delete(remove_skill),
         )
         .route("/skills/kimo", post(install_kimo_skill))
+        .route("/peers", get(list_peers).post(add_peer))
+        .route("/peers/keys", get(peer_keys))
+        .route("/peers/accept", post(accept_peer))
+        .route("/peers/{id}", axum::routing::delete(remove_peer))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     // Pairing is the way in for a new device: it needs a one-time code, not a key.
     let public = Router::new().route("/pair", post(pair));
@@ -251,6 +255,7 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "api": 1,
+        "host": app.manager.host_name(),
         "kimo_rss_bytes": stats::self_rss_bytes(),
         "mem_total_bytes": mem_total,
         "mem_available_bytes": mem_available,
@@ -259,14 +264,60 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
     }))
 }
 
-async fn list_sessions(State(app): State<App>) -> Json<serde_json::Value> {
-    Json(json!(app.manager.sessions()))
+/// Sessions of this kimo; with `?all=1` also those of paired kimos (ids `host/id`).
+async fn list_sessions(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    if q.get("all").is_some_and(|v| v == "1" || v == "true") {
+        let manager = app.manager.clone();
+        let all = tokio::task::spawn_blocking(move || manager.all_sessions())
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        return Ok(Json(json!(all)));
+    }
+    Ok(Json(json!(app.manager.sessions())))
+}
+
+fn enc(id: &str) -> String {
+    id.replace('%', "%25")
+        .replace('/', "%2F")
+        .replace(' ', "%20")
+        .replace('?', "%3F")
+        .replace('#', "%23")
+}
+
+/// Run a call on a paired kimo (for `host/id` sessions) and pass its answer through.
+async fn forward(
+    peer: crate::core::models::Peer,
+    method: &'static str,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> ApiResult<serde_json::Value> {
+    tokio::task::spawn_blocking(move || {
+        Manager::peer_client(&peer)
+            .call_timeout(method, &path, body.as_ref(), 60)
+            .map_err(|e| (peer.name, e))
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map(Json)
+    .map_err(|(host, e)| ApiError(StatusCode::BAD_GATEWAY, format!("{host}: {e}")))
+}
+
+/// The peer and path for a `host/id` session, if it is one.
+fn remote(app: &App, id: &str, path: &str) -> Option<(crate::core::models::Peer, String)> {
+    let (peer, rest) = app.manager.remote(id)?;
+    Some((peer, format!("/sessions/{}{path}", enc(&rest))))
 }
 
 async fn get_session(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "") {
+        return forward(peer, "GET", path, None).await;
+    }
     // By id, name or unique id prefix (what people and agents type).
     app.manager
         .resolve(&id)
@@ -297,6 +348,9 @@ async fn delete_session(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "") {
+        return forward(peer, "DELETE", path, None).await;
+    }
     app.manager.delete(&id).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -311,6 +365,9 @@ async fn session_action(
     Path(id): Path<String>,
     Json(body): Json<ActionBody>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "/action") {
+        return forward(peer, "POST", path, Some(json!({ "action": body.action }))).await;
+    }
     Ok(Json(json!(app.manager.act(&id, body.action).await?)))
 }
 
@@ -329,6 +386,9 @@ async fn session_account(
     Path(id): Path<String>,
     Json(body): Json<AccountBody>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "/account") {
+        return forward(peer, "POST", path, Some(json!({ "account": body.account }))).await;
+    }
     Ok(Json(json!(
         app.manager
             .set_account(&id, account_id(body.account))
@@ -347,6 +407,9 @@ async fn session_input(
     Path(id): Path<String>,
     Json(body): Json<InputBody>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "/input") {
+        return forward(peer, "POST", path, Some(json!({ "text": body.text }))).await;
+    }
     app.manager
         .session(&id)
         .ok_or_else(|| not_found("session"))?;
@@ -368,6 +431,23 @@ async fn session_message(
     Path(id): Path<String>,
     Json(body): Json<MessageBody>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "/message") {
+        // Over there, a local sender is `<our name there>/<id>` so the answer finds its way back.
+        let from = body.from.as_deref().map(|f| match app.manager.resolve(f) {
+            Ok(s) => format!("{}/{}", peer.self_name, s.spec.id),
+            Err(_) => f.to_string(),
+        });
+        let to = id.clone();
+        let mut answer = forward(
+            peer,
+            "POST",
+            path,
+            Some(json!({ "text": body.text, "from": from })),
+        )
+        .await?;
+        answer.0["to"] = json!(to);
+        return Ok(answer);
+    }
     let to = app
         .manager
         .message(&id, &body.text, body.from.as_deref())
@@ -380,6 +460,9 @@ async fn session_reply(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "/reply") {
+        return forward(peer, "GET", path, None).await;
+    }
     let manager = app.manager.clone();
     let reply = tokio::task::spawn_blocking(move || manager.reply(&id))
         .await
@@ -397,6 +480,9 @@ async fn session_screen(
         .and_then(|l| l.parse().ok())
         .unwrap_or(40)
         .min(2000);
+    if let Some((peer, path)) = remote(&app, &id, &format!("/screen?lines={lines}")) {
+        return forward(peer, "GET", path, None).await;
+    }
     Ok(Json(json!(app.manager.screen(&id, lines)?)))
 }
 
@@ -708,6 +794,88 @@ async fn remove_skill(
 ) -> ApiResult<serde_json::Value> {
     let path = q.get("path").ok_or_else(|| not_found("path"))?;
     Ok(Json(json!({ "backup": app.manager.remove_skill(path)? })))
+}
+
+async fn list_peers(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let peers = tokio::task::spawn_blocking(move || manager.peers())
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(peers)))
+}
+
+/// Peers with their keys, for the owner's own apps (the window connects to every host).
+async fn peer_keys(State(app): State<App>) -> Json<serde_json::Value> {
+    Json(json!(app.manager.peer_list()))
+}
+
+#[derive(Deserialize)]
+struct AddPeer {
+    url: String,
+    code: String,
+    /// Where the other kimo reaches this one (default: picked from our addresses).
+    #[serde(default)]
+    my_url: Option<String>,
+}
+
+async fn add_peer(
+    State(app): State<App>,
+    Json(body): Json<AddPeer>,
+) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let bound = app.bound;
+    let peer = tokio::task::spawn_blocking(move || {
+        let my_url = match body.my_url.filter(|u| !u.trim().is_empty()) {
+            Some(u) => u,
+            None => {
+                let info = crate::services::network::info(bound, manager.port());
+                let candidates: Vec<(crate::core::network::NetKind, String)> = info
+                    .addresses
+                    .iter()
+                    .filter(|a| !a.https)
+                    .map(|a| (a.kind, a.url.clone()))
+                    .collect();
+                crate::core::network::pick_address(&candidates, &body.url).ok_or_else(|| {
+                    anyhow::anyhow!("this kimo only listens on localhost: start it with --bind all")
+                })?
+            }
+        };
+        manager.add_peer(&body.url, &body.code, &my_url)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(
+        json!({ "id": peer.id, "name": peer.name, "url": peer.url }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct AcceptPeer {
+    name: String,
+    url: String,
+    token: String,
+}
+
+/// Called by a kimo that just paired with this one: it registers itself with a key for it.
+async fn accept_peer(
+    State(app): State<App>,
+    Json(body): Json<AcceptPeer>,
+) -> ApiResult<serde_json::Value> {
+    let peer = app
+        .manager
+        .accept_peer(&body.name, &body.url, &body.token)?;
+    // `accepted_as`: the prefix under which this kimo lists the caller's agents.
+    Ok(Json(
+        json!({ "host": app.manager.host_name(), "accepted_as": peer.id }),
+    ))
+}
+
+async fn remove_peer(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    app.manager.remove_peer(&id)?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// Terminal websocket: binary frames carry raw bytes both ways; text frames carry control

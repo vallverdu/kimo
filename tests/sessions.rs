@@ -15,6 +15,7 @@ fn manager(root: &Path) -> Arc<Manager> {
         scrollback_bytes: 64 * 1024,
         projects_dir: root.join("home/dev"),
         port: 7777,
+        host_name: "test".into(),
     })
     .unwrap()
 }

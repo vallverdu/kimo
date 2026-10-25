@@ -1,9 +1,9 @@
 //! Session state machine: which user actions are allowed in which status.
 
 use super::models::SessionStatus;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     /// Start a stopped/exited session (continuing its conversation when it ran before).

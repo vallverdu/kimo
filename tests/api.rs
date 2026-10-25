@@ -20,6 +20,7 @@ fn router(tmp: &std::path::Path, admin_token: Option<&str>) -> axum::Router {
         scrollback_bytes: 1024,
         projects_dir: tmp.join("home/dev"),
         port: 7777,
+        host_name: "test".into(),
     })
     .unwrap();
     kimo::api::router(

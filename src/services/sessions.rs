@@ -31,6 +31,8 @@ pub struct ManagerConfig {
     pub projects_dir: PathBuf,
     /// HTTP port kimo listens on (for pairing links and tailscale serve).
     pub port: u16,
+    /// This kimo's name for its peers (prefix of its agents' ids on other hosts).
+    pub host_name: String,
 }
 
 /// What the API shows for a session.
@@ -225,6 +227,10 @@ impl Manager {
 
     pub fn port(&self) -> u16 {
         self.cfg.port
+    }
+
+    pub fn host_name(&self) -> &str {
+        &self.cfg.host_name
     }
 
     /// `~` and `~/x` become paths in the user's home.

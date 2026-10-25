@@ -30,6 +30,11 @@ pub struct Config {
     #[arg(long, env = "KIMO_LOCAL_OWNER", default_value_t = true, action = clap::ArgAction::Set)]
     pub local_owner: bool,
 
+    /// This kimo's name for the other kimos it is paired with (prefix of its agents' ids there).
+    /// Default: the machine's hostname.
+    #[arg(long, env = "KIMO_NAME")]
+    pub name: Option<String>,
+
     /// Folder where new projects are created. Default: ~/dev
     #[arg(long, env = "KIMO_PROJECTS_DIR")]
     pub projects_dir: Option<PathBuf>,
@@ -106,9 +111,37 @@ pub enum Command {
     },
     /// Which kimo session am I?
     Whoami,
+    /// List the other kimos paired with this one.
+    Peers,
+    /// Pair with or forget another kimo (lab box, Raspberry Pi, Mac mini…).
+    Peer {
+        #[command(subcommand)]
+        action: PeerAction,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum PeerAction {
+    /// Pair with the kimo at URL using a pairing code shown there (`kimo pair` or Devices).
+    Add {
+        url: String,
+        code: String,
+        /// Where that kimo reaches this one (default: picked from this kimo's addresses).
+        #[arg(long)]
+        my_url: Option<String>,
+    },
+    /// Forget a paired kimo.
+    Remove { id: String },
 }
 
 impl Config {
+    pub fn host_name(&self) -> String {
+        self.name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(hostname)
+    }
+
     pub fn projects_dir(&self) -> PathBuf {
         self.projects_dir
             .clone()
@@ -123,5 +156,18 @@ impl Config {
 
     pub fn shell() -> String {
         std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+}
+
+/// The machine's hostname.
+pub fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: gethostname writes at most `buf.len()` bytes into the buffer.
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if ok && end > 0 {
+        String::from_utf8_lossy(&buf[..end]).into_owned()
+    } else {
+        "kimo".into()
     }
 }

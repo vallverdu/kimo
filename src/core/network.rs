@@ -135,6 +135,51 @@ pub fn tailscale_used_ports(serve_json: &str) -> Vec<u16> {
         .unwrap_or_default()
 }
 
+/// Of this kimo's addresses, the one a host at `remote_url` most likely reaches: the same
+/// network kind (Tailscale, ZeroTier) or the same /24 on a LAN.
+pub fn pick_address(candidates: &[(NetKind, String)], remote_url: &str) -> Option<String> {
+    let host = remote_url
+        .split("://")
+        .nth(1)
+        .unwrap_or(remote_url)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or("");
+    let ip: Option<Ipv4Addr> = host.parse().ok();
+    let kind = match ip {
+        _ if host.ends_with(".ts.net") => NetKind::Tailscale,
+        Some(ip) if ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]) => {
+            NetKind::Tailscale
+        }
+        Some(ip) if ip.is_loopback() => NetKind::Localhost,
+        _ => NetKind::Lan,
+    };
+    let same_subnet = |url: &str| {
+        let h = url
+            .split("://")
+            .nth(1)
+            .unwrap_or(url)
+            .split(':')
+            .next()
+            .unwrap_or("");
+        match (h.parse::<Ipv4Addr>(), ip) {
+            (Ok(a), Some(b)) => a.octets()[..3] == b.octets()[..3],
+            _ => false,
+        }
+    };
+    candidates
+        .iter()
+        .find(|(k, u)| *k == kind && (kind != NetKind::Lan || same_subnet(u)))
+        .or_else(|| {
+            candidates
+                .iter()
+                .find(|(k, u)| same_subnet(u) && *k != NetKind::Localhost)
+        })
+        .or_else(|| candidates.iter().find(|(k, _)| *k == kind))
+        .or_else(|| candidates.iter().find(|(k, _)| *k != NetKind::Localhost))
+        .map(|(_, u)| u.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +190,36 @@ mod tests {
         4: tailscale0    inet 100.92.183.13/32 scope global tailscale0\n\
         5: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n\
         6: ztabc    inet 10.147.17.4/24 scope global ztabc\n";
+
+    #[test]
+    fn picks_the_address_a_peer_reaches() {
+        let mine = vec![
+            (NetKind::Tailscale, "http://100.92.183.13:7777".to_string()),
+            (NetKind::Lan, "http://192.168.1.142:7777".to_string()),
+            (NetKind::ZeroTier, "http://10.147.17.4:7777".to_string()),
+            (NetKind::Localhost, "http://localhost:7777".to_string()),
+        ];
+        assert_eq!(
+            pick_address(&mine, "http://100.70.1.2:7777").unwrap(),
+            "http://100.92.183.13:7777"
+        );
+        assert_eq!(
+            pick_address(&mine, "https://lab.tail1234.ts.net").unwrap(),
+            "http://100.92.183.13:7777"
+        );
+        assert_eq!(
+            pick_address(&mine, "http://192.168.1.50:7777").unwrap(),
+            "http://192.168.1.142:7777"
+        );
+        assert_eq!(
+            pick_address(&mine, "http://10.147.17.9:7777").unwrap(),
+            "http://10.147.17.4:7777"
+        );
+        assert_eq!(
+            pick_address(&mine, "http://127.0.0.1:7796").unwrap(),
+            "http://localhost:7777"
+        );
+    }
 
     #[test]
     fn classifies_interfaces() {

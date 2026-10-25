@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod devices;
 pub mod network;
+pub mod peers;
 pub mod projects;
 pub mod sessions;
 pub mod skills;

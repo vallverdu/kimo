@@ -233,6 +233,21 @@ pub struct Settings {
     pub extra: Map<String, Value>,
 }
 
+/// Another kimo this one is paired with (both directions): its agents are reachable as `name/id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Peer {
+    /// Host prefix in agent ids (`gpu-lab/api-1a2b`).
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    /// Device key this kimo uses on the peer.
+    pub token: String,
+    /// How the peer knows this kimo (the prefix of our agents over there).
+    pub self_name: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// One start-to-stop of an agent session under one account (for usage per subscription).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Run {
@@ -268,6 +283,8 @@ pub struct State {
     /// Recent agent runs, newest last (capped).
     #[serde(default)]
     pub runs: Vec<Run>,
+    #[serde(default)]
+    pub peers: Vec<Peer>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

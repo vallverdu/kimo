@@ -126,11 +126,15 @@ impl Manager {
                 target.status
             );
         }
-        let sender = from.and_then(|f| self.resolve(f).ok());
+        // A local sender by id or name; a sender on another kimo comes as `host/id`.
+        let sender = from.map(|f| match self.resolve(f) {
+            Ok(s) => (s.spec.id, s.spec.name),
+            Err(_) => (f.to_string(), f.to_string()),
+        });
         let body = envelope(
             sender
                 .as_ref()
-                .map(|s| (s.spec.id.as_str(), s.spec.name.as_str())),
+                .map(|(id, name)| (id.as_str(), name.as_str())),
             text,
         );
         // Bracketed paste keeps multi-line messages together in TUIs and shells.

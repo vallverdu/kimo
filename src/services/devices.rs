@@ -69,6 +69,12 @@ impl Manager {
         Ok(device)
     }
 
+    /// A device key without a pairing code (for a peer kimo during mutual pairing).
+    pub fn create_device(&self, name: &str) -> Result<Device> {
+        let code = self.start_pairing().code;
+        self.pair(&code, name)
+    }
+
     pub fn devices(&self) -> Vec<DeviceInfo> {
         self.lock()
             .state

@@ -60,6 +60,15 @@ fn main() -> Result<()> {
             prompt,
         ),
         Command::Whoami => kimo::cli::whoami(&kimo::cli::client(cfg.port)),
+        Command::Peers => kimo::cli::peers(&kimo::cli::client(cfg.port)),
+        Command::Peer { action } => match action {
+            kimo::config::PeerAction::Add { url, code, my_url } => {
+                kimo::cli::peer_add(&kimo::cli::client(cfg.port), &url, &code, my_url)
+            }
+            kimo::config::PeerAction::Remove { id } => {
+                kimo::cli::peer_remove(&kimo::cli::client(cfg.port), &id)
+            }
+        },
     }
 }
 
@@ -90,6 +99,7 @@ async fn serve(cfg: Config) -> Result<()> {
         scrollback_bytes: cfg.scrollback_bytes,
         projects_dir: cfg.projects_dir(),
         port: cfg.port,
+        host_name: cfg.host_name(),
     })?;
     let sampler = manager.clone();
     tokio::spawn(async move {

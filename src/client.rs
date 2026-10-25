@@ -87,6 +87,25 @@ impl Client {
         Ok(value)
     }
 
+    /// A call that gives up after `secs` seconds (unreachable hosts).
+    pub fn call_timeout(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        secs: u64,
+    ) -> Result<Value> {
+        let quick = Self {
+            agent: ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .timeout_global(Some(Duration::from_secs(secs)))
+                .build()
+                .into(),
+            ..self.clone()
+        };
+        quick.call(method, path, body)
+    }
+
     pub fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
         let url = self.url(path);
         let auth = self.token.as_ref().map(|t| format!("Bearer {t}"));

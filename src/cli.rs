@@ -42,17 +42,17 @@ fn enc(id: &str) -> String {
     id.replace('/', "%2F").replace(' ', "%20")
 }
 
-/// List every agent (and shell) with its id, name, state and folder.
+/// List every agent (and shell) of this kimo and of paired kimos (`host/id`).
 pub fn agents(c: &Client, as_json: bool) -> Result<()> {
-    let list: Value = c.get("/sessions")?;
+    let list: Value = c.get("/sessions?all=1")?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&list)?);
         return Ok(());
     }
     let me = me();
     println!(
-        "{:<28} {:<22} {:<7} {:<12} {:<38} FOLDER",
-        "ID", "NAME", "KIND", "STATE", "RESUME ID"
+        "{:<34} {:<20} {:<12} {:<7} {:<12} {:<38} FOLDER",
+        "ID", "NAME", "HOST", "KIND", "STATE", "RESUME ID"
     );
     for a in list.as_array().into_iter().flatten() {
         let you = if me.as_deref() == Some(s(a, "id")) {
@@ -61,9 +61,10 @@ pub fn agents(c: &Client, as_json: bool) -> Result<()> {
             ""
         };
         println!(
-            "{:<28} {:<22} {:<7} {:<12} {:<38} {}",
+            "{:<34} {:<20} {:<12} {:<7} {:<12} {:<38} {}",
             format!("{}{you}", s(a, "id")),
             s(a, "name"),
+            s(a, "host"),
             s(a, "kind"),
             state(a),
             a["conversation"].as_str().unwrap_or("-"),
@@ -175,5 +176,50 @@ pub fn whoami(c: &Client) -> Result<()> {
         s(&v, "kind"),
         home(s(&v, "cwd"))
     );
+    Ok(())
+}
+
+/// Paired kimos and whether they answer.
+pub fn peers(c: &Client) -> Result<()> {
+    let list: Value = c.get("/peers")?;
+    if list.as_array().is_none_or(Vec::is_empty) {
+        println!("No paired kimos. Pair one with: kimo peer add <its address> <pairing code>");
+        return Ok(());
+    }
+    println!(
+        "{:<16} {:<20} {:<36} {:<8} SESSIONS",
+        "ID", "NAME", "ADDRESS", "ONLINE"
+    );
+    for p in list.as_array().into_iter().flatten() {
+        println!(
+            "{:<16} {:<20} {:<36} {:<8} {}",
+            s(p, "id"),
+            s(p, "name"),
+            s(p, "url"),
+            if p["online"] == true { "yes" } else { "no" },
+            p["sessions"].as_u64().map_or("-".into(), |n| n.to_string())
+        );
+    }
+    Ok(())
+}
+
+/// Pair with another kimo: its address and a pairing code shown there (`kimo pair` / Devices).
+pub fn peer_add(c: &Client, url: &str, code: &str, my_url: Option<String>) -> Result<()> {
+    let peer = c.post(
+        "/peers",
+        json!({ "url": url, "code": code, "my_url": my_url }),
+    )?;
+    println!(
+        "paired with {} ({}); its agents are {}/<id> in `kimo agents`",
+        s(&peer, "name"),
+        s(&peer, "url"),
+        s(&peer, "id")
+    );
+    Ok(())
+}
+
+pub fn peer_remove(c: &Client, id: &str) -> Result<()> {
+    c.delete(&format!("/peers/{}", enc(id)))?;
+    println!("removed {id}");
     Ok(())
 }
