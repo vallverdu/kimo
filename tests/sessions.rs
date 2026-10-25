@@ -36,9 +36,17 @@ async fn wait_for(m: &Manager, id: &str, needle: &str) -> String {
     }
 }
 
+/// Process state letter (`S` sleeping, `T` stopped): /proc on Linux, `ps` elsewhere.
 fn proc_state(pid: i32) -> Option<char> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat[stat.rfind(')')? + 2..].chars().next()
+    if cfg!(target_os = "linux") {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        return stat[stat.rfind(')')? + 2..].chars().next();
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().chars().next()
 }
 
 #[tokio::test]
@@ -137,6 +145,8 @@ async fn pause_switch_account_stop_and_continue() {
         &format!("accounts/{} ARGS=--session-id {conv}\r\n", a.id),
     )
     .await;
+    // Let the fake agent write its transcript (as a real one has long done before you switch).
+    tokio::time::sleep(Duration::from_millis(1300)).await;
 
     // Pause freezes the process tree; resume thaws it.
     let pid = m.session(&s.spec.id).unwrap().pid.unwrap();
@@ -171,8 +181,9 @@ async fn pause_switch_account_stop_and_continue() {
         .iter()
         .any(|acc| acc.account.id == b.id && acc.sessions == 1));
 
-    // Usage per subscription: the message before the move counts for A, the one after for B.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Usage per subscription: the message before the move counts for A, the one after for B
+    // (the fake agent writes it a second after starting).
+    tokio::time::sleep(Duration::from_millis(1400)).await;
     let usage = m.usage();
     let of = |id: &str| {
         usage
@@ -268,10 +279,12 @@ fn fake_agents() {
                 "#!/bin/sh\n",
                 "echo \"CFG=$CLAUDE_CONFIG_DIR ARGS=$*\"\n",
                 // Like Claude: a conversation started with --session-id gets a transcript.
-                "if [ \"$1\" = --session-id ] || [ \"$1\" = --resume ]; then mkdir -p \"$CLAUDE_CONFIG_DIR/projects/w\"; ",
+                // Whole-second timestamps (portable `date`), written a second after the start so
+                // they never fall before the run kimo recorded.
+                "if [ \"$1\" = --session-id ] || [ \"$1\" = --resume ]; then sleep 1; mkdir -p \"$CLAUDE_CONFIG_DIR/projects/w\"; ",
                 // One assistant message with usage per start, timestamped like Claude Code does.
                 "printf '{\"type\":\"assistant\",\"timestamp\":\"%s\",\"message\":{\"id\":\"m%s\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":100}}}\\n' ",
-                "\"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)\" \"$$\" >> \"$CLAUDE_CONFIG_DIR/projects/w/$2.jsonl\"; fi\n",
+                "\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\" \"$$\" >> \"$CLAUDE_CONFIG_DIR/projects/w/$2.jsonl\"; fi\n",
                 "exec sleep 60\n"
             ),
         );
@@ -281,7 +294,7 @@ fn fake_agents() {
                 "#!/bin/sh\n",
                 "echo \"CODEX ARGS=$*\"\n",
                 // Like Codex: a new session writes its log, whose first line names the session.
-                "if [ \"$1\" != resume ]; then d=\"$CODEX_HOME/sessions/2026/01/01\"; mkdir -p \"$d\"; t=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ); ",
+                "if [ \"$1\" != resume ]; then d=\"$CODEX_HOME/sessions/2026/01/01\"; mkdir -p \"$d\"; t=$(date -u +%Y-%m-%dT%H:%M:%S.000Z); ",
                 "printf '{\"timestamp\":\"%s\",\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-%s\",\"cwd\":\"%s\",\"timestamp\":\"%s\"}}\\n' ",
                 "\"$t\" \"$$\" \"$PWD\" \"$t\" > \"$d/rollout-$$.jsonl\"; fi\n",
                 "exec sleep 60\n"

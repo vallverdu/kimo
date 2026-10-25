@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}${{ matrix.server && ' (server)' || '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, server: false }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, server: true }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, server: false }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, server: true }
+          - { os: macos-14, target: aarch64-apple-darwin, server: false }
+          - { os: macos-13, target: x86_64-apple-darwin, server: false }
+    steps:
+      - uses: actions/checkout@v4
+      - name: GUI libraries (Linux)
+        if: runner.os == 'Linux' && !matrix.server
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-${{ matrix.server }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.server && '--no-default-features' || '' }}
+      - name: Package
+        shell: bash
+        run: |
+          name="kimo${{ matrix.server && '-server' || '' }}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/kimo" "dist/$name/"
+          cp README.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md "dist/$name/"
+          cp -r contrib "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

@@ -1,0 +1,54 @@
+#!/bin/sh
+# Install kimo from the latest GitHub release.
+#   curl -fsSL https://raw.githubusercontent.com/OWNER/kimo/main/install.sh | sh
+#   … | sh -s -- --server        # without the window (headless boxes, Raspberry Pi)
+# Environment: KIMO_REPO (owner/name), KIMO_VERSION (tag, default latest), KIMO_BIN_DIR.
+set -eu
+
+REPO="${KIMO_REPO:-vallverdu/kimo}"
+BIN_DIR="${KIMO_BIN_DIR:-$HOME/.local/bin}"
+VARIANT="kimo"
+for arg in "$@"; do
+  case "$arg" in
+    --server) VARIANT="kimo-server" ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+case "$(uname -s)" in
+  Linux) os="unknown-linux-gnu" ;;
+  Darwin) os="apple-darwin"; VARIANT="kimo" ;;
+  *) echo "kimo runs on Linux and macOS" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  x86_64 | amd64) arch="x86_64" ;;
+  arm64 | aarch64) arch="aarch64" ;;
+  *) echo "no kimo build for $(uname -m): build from source with cargo" >&2; exit 1 ;;
+esac
+
+name="$VARIANT-$arch-$os"
+if [ -n "${KIMO_VERSION:-}" ]; then
+  base="https://github.com/$REPO/releases/download/$KIMO_VERSION"
+else
+  base="https://github.com/$REPO/releases/latest/download"
+fi
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+echo "downloading $name"
+curl -fsSL "$base/$name.tar.gz" -o "$tmp/kimo.tar.gz"
+if curl -fsSL "$base/$name.tar.gz.sha256" -o "$tmp/kimo.sha256" 2>/dev/null; then
+  expected="$(cut -d' ' -f1 "$tmp/kimo.sha256")"
+  actual="$( (sha256sum "$tmp/kimo.tar.gz" 2>/dev/null || shasum -a 256 "$tmp/kimo.tar.gz") | cut -d' ' -f1)"
+  [ "$expected" = "$actual" ] || { echo "checksum mismatch" >&2; exit 1; }
+fi
+tar -xzf "$tmp/kimo.tar.gz" -C "$tmp"
+mkdir -p "$BIN_DIR"
+install -m 755 "$tmp/$name/kimo" "$BIN_DIR/kimo"
+echo "installed $BIN_DIR/kimo"
+case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "add $BIN_DIR to your PATH" ;; esac
+if [ "$VARIANT" = "kimo-server" ]; then
+  echo "next: kimo serve   (then pair your phone: kimo pair)"
+else
+  echo "next: kimo         (opens the window; kimo serve runs without it)"
+fi
