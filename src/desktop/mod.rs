@@ -40,12 +40,22 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
     let client = Client::local(port);
     if client.call("GET", "/status", None).is_err() {
         start_server(port, data_dir)?;
-        let deadline = Instant::now() + Duration::from_secs(8);
+        let deadline = Instant::now() + Duration::from_secs(20);
         while client.call("GET", "/status", None).is_err() {
             if Instant::now() > deadline {
+                // The end of the server's log says why.
+                let log = data_dir.join("kimo.log");
+                let text = std::fs::read_to_string(&log).unwrap_or_default();
+                let lines: Vec<&str> = text.lines().collect();
+                let tail = lines[lines.len().saturating_sub(8)..].join("\n");
                 return Err(anyhow!(
-                    "the kimo server did not start: see {}",
-                    data_dir.join("kimo.log").display()
+                    "the kimo server did not start (log: {}){}",
+                    log.display(),
+                    if tail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(":\n{tail}")
+                    }
                 ));
             }
             std::thread::sleep(Duration::from_millis(150));

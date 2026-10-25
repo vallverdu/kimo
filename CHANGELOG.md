@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1
+
+- macOS: `kimo serve` crashed at startup (stack overflow looking for the Tailscale CLI), so
+  the window reported "the kimo server did not start". Fixed, and covered by a test that
+  starts the real binary on Linux and macOS.
+- Helper commands (ip, ifconfig, tailscale) have a 3 s time limit; the server answers before
+  listing its addresses; when the server cannot start, the window shows the end of its log.
+
+## 0.1.0
 
 First public version.
 

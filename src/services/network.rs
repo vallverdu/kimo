@@ -6,28 +6,79 @@ use crate::core::network::{
 };
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+/// How long a helper command (ip, ifconfig, tailscale) may take before kimo gives up on it.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Run a command with a time limit (a stuck CLI, such as the Tailscale app's on macOS when its
+/// app is not running, must never block kimo). Returns its output.
+fn run(cmd: &mut Command) -> Result<std::process::Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // Read both pipes on threads so a chatty command cannot fill them and stall.
+    let mut out = child.stdout.take().expect("piped");
+    let mut err = child.stderr.take().expect("piped");
+    let out = std::thread::spawn(move || {
+        let mut b = vec![];
+        let _ = out.read_to_end(&mut b);
+        b
+    });
+    let err = std::thread::spawn(move || {
+        let mut b = vec![];
+        let _ = err.read_to_end(&mut b);
+        b
+    });
+    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("timed out after {} s", COMMAND_TIMEOUT.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
+}
 
 fn output(program: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| anyhow!("running {program}: {e}"))?;
+    let out =
+        run(Command::new(program).args(args)).map_err(|e| anyhow!("running {program}: {e}"))?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The Tailscale CLI (on macOS it lives inside the app bundle).
+/// The Tailscale CLI (on macOS it can live inside the app bundle), if it works. Looked up once.
+fn tailscale_cli() -> Option<&'static str> {
+    static CLI: OnceLock<Option<&'static str>> = OnceLock::new();
+    *CLI.get_or_init(|| {
+        const APP: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+        let works = |p: &str| run(Command::new(p).arg("version")).is_ok_and(|o| o.status.success());
+        if works("tailscale") {
+            Some("tailscale")
+        } else if cfg!(target_os = "macos") && std::path::Path::new(APP).exists() && works(APP) {
+            Some(APP)
+        } else {
+            None
+        }
+    })
+}
+
 fn tailscale() -> &'static str {
-    const APP: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
-    if cfg!(target_os = "macos")
-        && Command::new(tailscale()).arg("version").output().is_err()
-        && std::path::Path::new(APP).exists()
-    {
-        APP
-    } else {
-        "tailscale"
-    }
+    tailscale_cli().unwrap_or("tailscale")
 }
 
 /// This machine's IPv4 interfaces (`ip` on Linux, `ifconfig` elsewhere).
@@ -109,7 +160,7 @@ pub fn info(bound: IpAddr, port: u16) -> NetworkInfo {
             },
         })
         .collect();
-    let tailscale = which(tailscale()).then(|| {
+    let tailscale = tailscale_cli().is_some().then(|| {
         let dns_name = output(tailscale(), &["status", "--json"])
             .ok()
             .and_then(|s| parse_tailscale_dns(&s));
@@ -144,13 +195,6 @@ pub fn info(bound: IpAddr, port: u16) -> NetworkInfo {
     }
 }
 
-fn which(program: &str) -> bool {
-    Command::new(program)
-        .arg("version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 /// Serve kimo over HTTPS on the tailnet with `tailscale serve`, on a free HTTPS port
 /// (never one another service already uses). Returns the URL.
 pub fn enable_tailscale_https(port: u16) -> Result<String> {
@@ -163,15 +207,13 @@ pub fn enable_tailscale_https(port: u16) -> Result<String> {
         .into_iter()
         .find(|p| !used.contains(p) && *p != port)
         .ok_or_else(|| anyhow!("no free HTTPS port for tailscale serve"))?;
-    let out = Command::new(tailscale())
-        .args([
-            "serve",
-            "--bg",
-            &format!("--https={https_port}"),
-            &format!("http://127.0.0.1:{port}"),
-        ])
-        .output()
-        .map_err(|e| anyhow!("running tailscale: {e}"))?;
+    let out = run(Command::new(tailscale()).args([
+        "serve",
+        "--bg",
+        &format!("--https={https_port}"),
+        &format!("http://127.0.0.1:{port}"),
+    ]))
+    .map_err(|e| anyhow!("running tailscale: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("Access denied") || err.contains("permission") {
@@ -182,4 +224,17 @@ pub fn enable_tailscale_https(port: u16) -> Result<String> {
     let status = output(tailscale(), &["serve", "status", "--json"]).unwrap_or_default();
     tailscale_https_url(&status, port)
         .ok_or_else(|| anyhow!("tailscale serve did not report the new address"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stuck_commands_are_given_up() {
+        let started = Instant::now();
+        assert!(run(Command::new("sleep").arg("30")).is_err());
+        assert!(started.elapsed() < COMMAND_TIMEOUT + Duration::from_secs(2));
+        assert_eq!(output("echo", &["hi"]).unwrap(), "hi\n");
+    }
 }

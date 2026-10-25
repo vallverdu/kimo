@@ -820,3 +820,52 @@ async fn daily_usage_reads_the_agents_logs() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 }
+
+/// The real binary starts and answers (startup code the in-process router never runs, such as
+/// listing this machine's addresses: it once crashed on macOS only).
+#[test]
+fn kimo_serve_starts_and_answers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_kimo"))
+        .args(["serve", "--port", &port.to_string()])
+        .env("KIMO_DATA_DIR", tmp.path().join("kimo"))
+        .env("KIMO_BIND", "localhost")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let answered = loop {
+        if let Ok(Some(status)) = child.try_wait() {
+            let mut err = String::new();
+            std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
+            panic!("kimo serve exited ({status}): {err}");
+        }
+        if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            use std::io::{Read, Write};
+            s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let _ = write!(
+                s,
+                "GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+            );
+            let mut response = String::new();
+            let _ = s.read_to_string(&mut response);
+            if response.starts_with("HTTP/1.1 200") {
+                break true;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(answered, "kimo serve did not answer /api/status");
+}

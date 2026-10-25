@@ -118,12 +118,24 @@ async fn serve(cfg: Config) -> Result<()> {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, cfg.port)).await?;
-    println!("kimo is running");
-    for a in kimo::services::network::info(ip, cfg.port).addresses {
-        println!("  {:<36} {}", a.label, a.url);
-    }
-    println!("  pair a phone: Devices tab on this machine, or `kimo pair`");
+    let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, cfg.port))
+        .await
+        .with_context(|| {
+            format!(
+                "cannot listen on port {}: is another program using it? (--port to pick another)",
+                cfg.port
+            )
+        })?;
+    println!("kimo is running on port {}", cfg.port);
+    // The addresses come from helper commands (ip, ifconfig, tailscale): list them without
+    // holding up the server, which answers from now on.
+    let port = cfg.port;
+    tokio::task::spawn_blocking(move || {
+        for a in kimo::services::network::info(ip, port).addresses {
+            println!("  {:<36} {}", a.label, a.url);
+        }
+        println!("  pair a phone: Devices tab on this machine, or `kimo pair`");
+    });
     let app = kimo::api::router(
         manager.clone(),
         kimo::api::Options {
