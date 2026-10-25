@@ -57,7 +57,9 @@ pub fn apply(ctx: &egui::Context) {
     // Fallbacks for the symbols agents draw (● ✓ ✻ ❯ ⏵, box drawing) that Roboto Mono lacks.
     fonts.font_data.insert(
         "dejavu-mono".into(),
-        Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/DejaVuSansMono.ttf"))),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../../assets/fonts/DejaVuSansMono.ttf"
+        ))),
     );
     fonts.font_data.insert(
         "noto-symbols".into(),
@@ -67,7 +69,10 @@ pub fn apply(ctx: &egui::Context) {
     );
     for family in [FontFamily::Monospace, FontFamily::Proportional] {
         let list = fonts.families.entry(family).or_default();
-        for (i, name) in ["roboto-mono", "dejavu-mono", "noto-symbols"].into_iter().enumerate() {
+        for (i, name) in ["roboto-mono", "dejavu-mono", "noto-symbols"]
+            .into_iter()
+            .enumerate()
+        {
             list.insert(i, name.into());
         }
     }

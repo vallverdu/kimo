@@ -6,6 +6,8 @@ use super::theme;
 use crate::client::{Client, TermIn, TermOut, TerminalLink};
 use alacritty_terminal::event::{Event as TermEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::test::TermSize;
@@ -35,6 +37,33 @@ pub struct TerminalView {
     link: TerminalLink,
     size: (u16, u16),
     scroll_rest: f32,
+}
+
+/// Selection highlight (light teal, readable under any text colour).
+const SELECTION: Color32 = Color32::from_rgb(0xcf, 0xe8, 0xe9);
+
+/// Grid cell under a position, with the half of the cell it is in.
+pub fn cell_at(
+    pos: egui::Pos2,
+    origin: egui::Pos2,
+    cw: f32,
+    rh: f32,
+    cols: usize,
+    rows: usize,
+    offset: usize,
+) -> (Point, Side) {
+    let x = ((pos.x - origin.x) / cw).max(0.0);
+    let col = (x.floor() as usize).min(cols.saturating_sub(1));
+    let row = (((pos.y - origin.y) / rh).max(0.0).floor() as usize).min(rows.saturating_sub(1));
+    let side = if x.fract() < 0.5 {
+        Side::Left
+    } else {
+        Side::Right
+    };
+    (
+        Point::new(Line(row as i32 - offset as i32), Column(col)),
+        side,
+    )
 }
 
 fn rgb(c: Rgb) -> Color32 {
@@ -143,7 +172,7 @@ impl TerminalView {
         let (cw, rh) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
         let id = egui::Id::unique(("terminal", &self.session_id));
         let rect = ui.available_rect_before_wrap();
-        let response = ui.interact(rect, id, Sense::click());
+        let response = ui.interact(rect, id, Sense::click_and_drag());
         ui.advance_cursor_after_rect(rect);
         if response.clicked() || !ui.memory(|m| m.focused().is_some()) {
             response.request_focus();
@@ -157,6 +186,31 @@ impl TerminalView {
             self.term
                 .resize(TermSize::new(cols as usize, rows as usize));
             let _ = self.link.tx.send(TermOut::Resize { cols, rows });
+        }
+
+        // Selection: drag selects, double-click selects a word, right-click copies.
+        let origin = rect.min + Vec2::splat(4.0);
+        let (cols_n, rows_n, offset) = (
+            self.size.0 as usize,
+            self.size.1 as usize,
+            self.term.grid().display_offset(),
+        );
+        if let Some(pos) = response.interact_pointer_pos() {
+            let (point, side) = cell_at(pos, origin, cw, rh, cols_n, rows_n, offset);
+            if response.double_clicked() {
+                self.term.selection = Some(Selection::new(SelectionType::Semantic, point, side));
+            } else if response.drag_started() {
+                self.term.selection = Some(Selection::new(SelectionType::Simple, point, side));
+            } else if response.dragged() {
+                if let Some(sel) = self.term.selection.as_mut() {
+                    sel.update(point, side);
+                }
+            } else if response.clicked() {
+                self.term.selection = None;
+            }
+        }
+        if response.secondary_clicked() {
+            self.copy_selection(ui);
         }
 
         // Input.
@@ -181,12 +235,19 @@ impl TerminalView {
             let events = ui.input(|i| i.events.clone());
             let mut typed = false;
             for event in &events {
+                // Ctrl+C copies when something is selected (^C otherwise); Ctrl+Shift+C always copies.
+                let copy_key = matches!(event, egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } if modifiers.ctrl && modifiers.shift);
+                if copy_key || (matches!(event, egui::Event::Copy) && self.has_selection()) {
+                    self.copy_selection(ui);
+                    continue;
+                }
                 if let Some(bytes) = input::encode(event, modes) {
                     let _ = self.link.tx.send(TermOut::Bytes(bytes));
                     typed = true;
                 }
             }
             if typed {
+                self.term.selection = None;
                 self.term.scroll_display(Scroll::Bottom);
             }
         }
@@ -202,11 +263,23 @@ impl TerminalView {
         self.paint(ui, rect, &font, cw, rh, focused);
     }
 
+    fn has_selection(&self) -> bool {
+        self.term.selection.as_ref().is_some_and(|s| !s.is_empty())
+    }
+
+    fn copy_selection(&mut self, ui: &Ui) {
+        if let Some(text) = self.term.selection_to_string().filter(|t| !t.is_empty()) {
+            ui.ctx().copy_text(text);
+        }
+        self.term.selection = None;
+    }
+
     fn paint(&self, ui: &Ui, rect: Rect, font: &FontId, cw: f32, rh: f32, focused: bool) {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, theme::BACKGROUND);
         let origin = rect.min + Vec2::splat(4.0);
         let content = self.term.renderable_content();
+        let selection = content.selection;
         let offset = content.display_offset as i32;
         let colors = content.colors;
         let cell_rect = |col: usize, row: i32, width: usize| {
@@ -245,6 +318,9 @@ impl TerminalView {
             let (mut fg, mut bg) = (resolve(cell.fg, colors), resolve(cell.bg, colors));
             if cell.flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
+            }
+            if selection.is_some_and(|r| r.contains(indexed.point)) {
+                bg = SELECTION;
             }
             if cell.flags.intersects(Flags::DIM) {
                 fg = fg.gamma_multiply(0.65);
@@ -317,6 +393,37 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cells_under_the_pointer() {
+        let origin = egui::pos2(4.0, 4.0);
+        let (p, side) = cell_at(
+            egui::pos2(4.0 + 8.0 * 2.2, 4.0 + 16.0 * 3.5),
+            origin,
+            8.0,
+            16.0,
+            80,
+            24,
+            0,
+        );
+        assert_eq!((p.line.0, p.column.0, side), (3, 2, Side::Left));
+        let (p, side) = cell_at(
+            egui::pos2(4.0 + 8.0 * 2.7, 4.0),
+            origin,
+            8.0,
+            16.0,
+            80,
+            24,
+            5,
+        );
+        assert_eq!(
+            (p.line.0, p.column.0, side),
+            (-5, 2, Side::Right),
+            "scrolled back 5 lines"
+        );
+        let (p, _) = cell_at(egui::pos2(9999.0, 9999.0), origin, 8.0, 16.0, 80, 24, 0);
+        assert_eq!((p.line.0, p.column.0), (23, 79), "clamped to the grid");
+    }
 
     #[test]
     fn palette() {
