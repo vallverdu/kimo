@@ -78,6 +78,7 @@ struct Pairing {
 
 pub struct KimoApp {
     ctx: egui::Context,
+    logo: egui::TextureHandle,
     client: Client,
     live: Arc<Mutex<Live>>,
     tx: Sender<Msg>,
@@ -166,7 +167,13 @@ impl KimoApp {
                 ctx.request_repaint();
             });
         }
+        let logo = ctx.load_texture(
+            "kimo-logo",
+            egui::ColorImage::from_rgba_unmultiplied([64, 64], include_bytes!("../../assets/icons/logo-64.rgba")),
+            egui::TextureOptions::LINEAR,
+        );
         let app = Self {
+            logo,
             ctx,
             client,
             live,
@@ -378,6 +385,7 @@ impl KimoApp {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            ui.add(egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), [30.0, 30.0])));
             ui.label(RichText::new("kimo").size(20.0).color(theme::INK));
             ui.label(
                 RichText::new("AGENT ENVIRONMENT")

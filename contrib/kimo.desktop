@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=kimo
+GenericName=Agent development environment
+Comment=Projects, terminals and subscriptions for your coding agents
+Exec=kimo
+Icon=kimo
+Terminal=false
+Categories=Development;
+StartupWMClass=kimo

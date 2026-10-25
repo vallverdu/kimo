@@ -99,3 +99,5 @@
   .ui-button.ghost:hover { color: var(--color-ink); }
   .ui-button.k-danger:hover { color: var(--color-bad); }
 }
+
+.k-logo { width: 40px; height: auto; flex: none; }

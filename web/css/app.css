@@ -1,4 +1,4 @@
-/* App layer on top of the Timber/Sartre skin from jordivallverdu.com. Prefix: ui-. */
+/* App components (cards, sheets, tab bar, toasts…). Prefix: ui-. Built on base.css and tokens.css. */
 :root {
   /* Values come from tokens.css (foundation/design/tokens.json); the ui- names are kept for the components below. */
   --ui-ink: var(--color-ink);

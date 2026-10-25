@@ -56,7 +56,12 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
             .with_app_id("kimo")
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(std::sync::Arc::new(egui::IconData {
+                rgba: include_bytes!("../../assets/icons/window-128.rgba").to_vec(),
+                width: 128,
+                height: 128,
+            })),
         ..Default::default()
     };
     eframe::run_native(

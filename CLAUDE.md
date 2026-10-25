@@ -1,8 +1,9 @@
 # kimo: conventions for agents
 
-Shared architecture: `~/templates/foundation/ARCHITECTURE.md`. The web layer follows
-`~/templates/web-timber` (copied into `web/`; `css/tokens.css` is generated from the shared tokens:
-never hard-code colours or font sizes, use the `--color-*` variables).
+Shared architecture: `~/templates/foundation/ARCHITECTURE.md`. The web client has its
+own small CSS (`web/css/base.css`, `app.css`, `kimo.css`) on top of `css/tokens.css`: never
+hard-code colours or font sizes, use the `--color-*` variables. Icons are inline SVG line icons.
+Brand: `assets/brand/kimo.svg` (master) → `python3 scripts/make-icons.py` makes every icon.
 
 ## Layers (dependencies point down)
 

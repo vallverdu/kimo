@@ -1,0 +1,35 @@
+/* kimo base layer: typography, forms and layout primitives. Values come from tokens.css. */
+*, *::before, *::after { box-sizing: border-box; }
+html { font-size: 62.5%; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--color-background); color: var(--color-text);
+  font-family: var(--font-family); font-weight: var(--font-weight-light);
+  font-size: 1.4rem; line-height: 1.8;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+h1, h2, h3, h4 { color: var(--color-ink); font-weight: var(--font-weight-light); line-height: 1.3; margin: 0 0 2rem; }
+h1 { font-size: 4.4rem; }
+h2 { font-size: 3.3rem; }
+h3 { font-size: 2.4rem; }
+h4 { font-size: 1.9rem; }
+p { margin: 0 0 2rem; }
+a { color: var(--color-ink); text-decoration: none; }
+a:hover { color: var(--color-accent); }
+strong { font-weight: var(--font-weight-regular); }
+ul, ol { margin: 0 0 2rem; padding-left: 2rem; }
+code, pre { font-family: var(--font-family); }
+code { font-size: .92em; background: #f3f3f3; padding: .1rem .4rem; }
+button, input, select, textarea { font: inherit; color: inherit; }
+input, select, textarea { border-radius: var(--radius-none); }
+label { display: block; font-size: 1.2rem; color: var(--color-text); margin-bottom: .8rem; }
+img, svg { max-width: 100%; }
+dialog { color: var(--color-ink); }
+.row { width: 100%; max-width: var(--layout-max-width); margin: 0 auto; padding: 0 1.5rem; }
+.column.width-12 { width: 100%; }
+:focus-visible { outline: 2px solid var(--color-teal); outline-offset: 2px; }
+
+/* Line icons (24×24, 1.6 px strokes, like the rest of the design). */
+.k-ico { width: 1em; height: 1em; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; vertical-align: -.125em; flex: none; }
+.ui-tabbar .k-ico { width: 2.2rem; height: 2.2rem; }
+.ui-fab .k-ico { width: 2.4rem; height: 2.4rem; stroke-width: 2; }
+.k-icon .k-ico { width: 2rem; height: 2rem; }

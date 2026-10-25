@@ -272,4 +272,3 @@ tests/                 PTY integration tests with a fake `claude`; API access te
 - "The server is the owner" trusts every request from the machine itself (not through a
   proxy). On a machine shared with other Unix users, run with `KIMO_LOCAL_OWNER=false` and pair
   devices with `KIMO_TOKEN` instead.
-- The web layer uses the commercial Timber theme: keep the repository private.

@@ -12,16 +12,15 @@
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400&display=swap" rel="stylesheet">
-	<link rel="stylesheet" href="vendor/timber/css/core.min.css">
-	<link rel="stylesheet" href="vendor/timber/css/skin.css">
 	<link rel="stylesheet" href="vendor/xterm/xterm.css">
 	<link rel="stylesheet" href="css/tokens.css">
+	<link rel="stylesheet" href="css/base.css">
 	<link rel="stylesheet" href="css/app.css">
 	<link rel="stylesheet" href="css/kimo.css">
 </head>
 <body>
 	<header class="ui-header"><div class="row">
-		<a class="ui-brand" href="#agents"><img class="ui-avatar" src="icons/icon.svg" alt="" width="44" height="44">
+		<a class="ui-brand" href="#agents"><img class="k-logo" src="icons/icon.svg" alt="" width="40" height="39">
 			<span><strong>kimo</strong><small>agent environment</small></span></a>
 		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#projects" data-view="projects">Projects</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li><li><a href="#devices" data-view="devices">Devices</a></li><li><a href="#apps" data-view="apps">Apps</a></li></ul>
 	</div></header>
@@ -93,18 +92,18 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 	</div></div></main>
 
 	<nav class="ui-tabbar k-tabbar" aria-label="Sections">
-		<a href="#agents" data-view="agents"><span class="icon-code"></span>Agents</a>
-		<a href="#projects" data-view="projects"><span class="icon-folder"></span>Projects</a>
-		<a href="#accounts" data-view="accounts"><span class="icon-users"></span>Accounts</a>
-		<a href="#devices" data-view="devices"><span class="icon-mobile"></span>Devices</a>
-		<a href="#apps" data-view="apps"><span class="icon-flash"></span>Apps</a>
+		<a href="#agents" data-view="agents"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>Agents</a>
+		<a href="#projects" data-view="projects"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2.5h10v10H3z"/></svg>Projects</a>
+		<a href="#accounts" data-view="accounts"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.6 2.7-6 6-6s6 2.4 6 6M16 5.2a3 3 0 0 1 0 5.6M18 14.4c1.9.8 3 2.8 3 5.6"/></svg>Accounts</a>
+		<a href="#devices" data-view="devices"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="1.5"/><path d="M11 18.5h2"/></svg>Devices</a>
+		<a href="#apps" data-view="apps"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z"/></svg>Apps</a>
 	</nav>
-	<button class="ui-fab" id="add" aria-label="New"><span class="icon-plus"></span></button>
+	<button class="ui-fab" id="add" aria-label="New"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
 
 	<!-- Terminal (full screen) -->
 	<section class="k-term" id="term" hidden>
 		<header class="k-term-bar">
-			<button class="k-icon" id="term-back" aria-label="Back"><span class="icon-arrow-left"></span></button>
+			<button class="k-icon" id="term-back" aria-label="Back"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg></button>
 			<div class="k-term-title"><strong id="term-name"></strong><span class="ui-badge" id="term-status"></span></div>
 			<button class="ui-button ghost k-small" id="term-pause">pause</button>
 		</header>
