@@ -1,13 +1,15 @@
 //! HTTP + WebSocket API and the embedded PWA. The API is also the surface for custom tools.
 
+use crate::core::access::{self, Caller};
 use crate::core::lifecycle::Action;
-use crate::core::models::Provider;
+use crate::core::models::{Provider, Scope};
 use crate::services::sessions::{Manager, NewSession};
 use crate::services::stats;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -15,7 +17,9 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
 #[derive(rust_embed::Embed)]
@@ -26,6 +30,8 @@ struct Web;
 struct App {
     manager: Arc<Manager>,
     token: Option<Arc<str>>,
+    /// Origins where the admin token may be used from another page (config).
+    admin_origins: Arc<[String]>,
 }
 
 /// Errors become `{ "error": "..." }` with a plain message the UI can show.
@@ -50,10 +56,11 @@ fn not_found(what: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, format!("unknown {what}"))
 }
 
-pub fn router(manager: Arc<Manager>, token: Option<String>) -> Router {
+pub fn router(manager: Arc<Manager>, token: Option<String>, admin_origins: Vec<String>) -> Router {
     let app = App {
         manager,
         token: token.map(Into::into),
+        admin_origins: admin_origins.into(),
     };
     let api = Router::new()
         .route("/status", get(status))
@@ -67,6 +74,9 @@ pub fn router(manager: Arc<Manager>, token: Option<String>) -> Router {
         .route("/accounts/{id}", axum::routing::delete(delete_account))
         .route("/accounts/{id}/login", post(login_account))
         .route("/accounts/{id}/move", post(move_account))
+        .route("/events", get(events))
+        .route("/clients", get(list_clients).post(create_client))
+        .route("/clients/{id}", axum::routing::delete(delete_client))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     Router::new()
         .nest("/api", api)
@@ -74,24 +84,105 @@ pub fn router(manager: Arc<Manager>, token: Option<String>) -> Router {
         .with_state(app)
 }
 
-/// Token from `Authorization: Bearer`, or `?token=` (browsers cannot set websocket headers).
+fn denied(status: StatusCode, message: &str) -> Response {
+    ApiError(status, message.into()).into_response()
+}
+
+/// Access control for every `/api` call:
+/// - the token comes from `Authorization: Bearer` or `?token=` (websockets, EventSource);
+/// - it is kimo's own token (admin) or an app key (`/api/clients`);
+/// - a request from another page (`Origin` not kimo itself) needs a key listing that origin,
+///   so no website can reach kimo, even on localhost without a token;
+/// - app keys are limited by their scope.
 async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
-    let Some(expected) = &app.token else {
-        return next.run(req).await;
+    // Read what is needed up front: a borrow of the request must not live across an await.
+    let (origin, token) = {
+        let header =
+            |name: header::HeaderName| req.headers().get(name).and_then(|v| v.to_str().ok());
+        let host = header(header::HOST).unwrap_or_default().to_string();
+        let origin = header(header::ORIGIN)
+            .filter(|o| !access::is_same_origin(o, &host))
+            .map(str::to_string);
+        let token = header(header::AUTHORIZATION)
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .or_else(|| {
+                req.uri()
+                    .query()
+                    .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")))
+            })
+            .map(str::to_string);
+        (origin, token)
     };
-    let header_token = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let query_token = req
-        .uri()
-        .query()
-        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")));
-    if header_token.or(query_token) == Some(expected) {
-        next.run(req).await
-    } else {
-        ApiError(StatusCode::UNAUTHORIZED, "missing or wrong token".into()).into_response()
+
+    if req.method() == Method::OPTIONS {
+        // CORS preflight: no credentials yet; allow origins any key (or the config) lists.
+        let Some(origin) = origin else {
+            return StatusCode::NO_CONTENT.into_response();
+        };
+        let known = access::origin_listed(&origin, &app.admin_origins)
+            || app
+                .manager
+                .clients()
+                .iter()
+                .any(|c| access::origin_listed(&origin, &c.origins));
+        if !known {
+            return denied(StatusCode::FORBIDDEN, "origin not allowed");
+        }
+        let mut res = StatusCode::NO_CONTENT.into_response();
+        cors(&mut res, &origin);
+        let h = res.headers_mut();
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, POST, DELETE"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static("authorization, content-type"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
+        return res;
+    }
+
+    let caller = match (&token, &app.token) {
+        (Some(t), Some(admin)) if t.as_str() == &**admin => Some(Caller::Admin),
+        (Some(t), _) => app.manager.client_by_token(t).map(|c| Caller::Client {
+            scope: c.scope,
+            origins: c.origins,
+        }),
+        // Localhost without a token: only kimo's own page (or curl) is the owner.
+        (None, None) if origin.is_none() => Some(Caller::Admin),
+        (None, _) => None,
+    };
+    let Some(caller) = caller else {
+        return denied(StatusCode::UNAUTHORIZED, "missing or wrong token");
+    };
+    if let Some(origin) = &origin {
+        if !access::cross_origin_allowed(&caller, origin, &app.admin_origins) {
+            return denied(
+                StatusCode::FORBIDDEN,
+                "this key is not allowed from this origin",
+            );
+        }
+    }
+    if !access::permits(&caller, req.method().as_str(), req.uri().path()) {
+        return denied(StatusCode::FORBIDDEN, "this key cannot do that");
+    }
+    let mut res = next.run(req).await;
+    if let Some(origin) = &origin {
+        cors(&mut res, origin);
+    }
+    res
+}
+
+fn cors(res: &mut Response, origin: &str) {
+    if let Ok(v) = HeaderValue::from_str(origin) {
+        res.headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+        res.headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Origin"));
     }
 }
 
@@ -100,6 +191,7 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
     let (mem_total, mem_available) = stats::system_memory();
     Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "api": 1,
         "kimo_rss_bytes": stats::self_rss_bytes(),
         "mem_total_bytes": mem_total,
         "mem_available_bytes": mem_available,
@@ -255,6 +347,80 @@ async fn move_account(
     Ok(Json(json!({ "moved": moved })))
 }
 
+/// Server-sent events: an `update` event with `{sessions, accounts}` whenever they change
+/// (status, account, usage every ~2 s while agents run). The first event is the full state.
+async fn events(
+    State(app): State<App>,
+) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
+    let rx = app.manager.subscribe();
+    let stream = futures_util::stream::unfold(
+        (app.manager, rx, String::new(), true),
+        |(manager, mut rx, mut last, mut first)| async move {
+            loop {
+                if !first {
+                    rx.changed().await.ok()?;
+                    // Let a burst of changes settle into one event.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    rx.borrow_and_update();
+                }
+                first = false;
+                let body =
+                    json!({ "sessions": manager.sessions(), "accounts": manager.accounts() })
+                        .to_string();
+                if body != last {
+                    last = body.clone();
+                    let event = Event::default().event("update").data(body);
+                    return Some((Ok(event), (manager, rx, last, first)));
+                }
+            }
+        },
+    );
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
+}
+
+/// App keys without their secret (it is shown once, on creation).
+async fn list_clients(State(app): State<App>) -> Json<serde_json::Value> {
+    let list: Vec<_> = app
+        .manager
+        .clients()
+        .into_iter()
+        .map(|c| json!({ "id": c.id, "name": c.name, "origins": c.origins, "scope": c.scope, "token_hint": format!("{}…", &c.token[..9.min(c.token.len())]) }))
+        .collect();
+    Json(json!(list))
+}
+
+#[derive(Deserialize)]
+struct NewClient {
+    name: String,
+    #[serde(default)]
+    origins: Vec<String>,
+    #[serde(default = "control")]
+    scope: Scope,
+}
+
+fn control() -> Scope {
+    Scope::Control
+}
+
+async fn create_client(
+    State(app): State<App>,
+    Json(body): Json<NewClient>,
+) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(app.manager.add_client(
+        &body.name,
+        body.origins,
+        body.scope
+    )?)))
+}
+
+async fn delete_client(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    app.manager.delete_client(&id)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Terminal websocket: binary frames carry raw bytes both ways; text frames carry control
 /// messages such as `{"type":"resize","cols":80,"rows":24}`.
 async fn terminal(
@@ -338,14 +504,22 @@ async fn static_file(uri: Uri) -> Response {
             } else {
                 "public, max-age=3600"
             };
-            (
+            let mut res = (
                 [
                     (header::CONTENT_TYPE, mime.as_ref().to_string()),
                     (header::CACHE_CONTROL, cache.to_string()),
                 ],
                 file.data,
             )
-                .into_response()
+                .into_response();
+            // The SDK and the terminal library are public: any app may load them.
+            if path.starts_with("sdk/") || path.starts_with("vendor/xterm/") {
+                res.headers_mut().insert(
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    HeaderValue::from_static("*"),
+                );
+            }
+            res
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }

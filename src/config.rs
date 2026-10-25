@@ -21,6 +21,11 @@ pub struct Config {
     #[arg(long, env = "KIMO_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
 
+    /// Extra origins (comma separated) where the admin token may be used from another page.
+    /// Apps normally get their own key instead (Apps tab or POST /api/clients).
+    #[arg(long, env = "KIMO_ORIGINS", value_delimiter = ',')]
+    pub origins: Vec<String>,
+
     /// Data folder (state.json and account homes). Default: ~/.kimo
     #[arg(long, env = "KIMO_DATA_DIR")]
     pub data_dir: Option<PathBuf>,

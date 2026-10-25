@@ -34,6 +34,8 @@ impl Store {
         }
         let tmp = self.path.with_extension("json.tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(state)?)?;
+        // App keys live here: only the owner may read it.
+        fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
         fs::rename(&tmp, &self.path).with_context(|| format!("writing {}", self.path.display()))
     }
 }

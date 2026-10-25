@@ -78,6 +78,30 @@ pub struct SessionSpec {
     pub extra: Map<String, Value>,
 }
 
+/// What an app key may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    /// Watch sessions, accounts and events; no terminals, no changes.
+    Read,
+    /// Also drive sessions: create, start/pause/stop, switch accounts, type, open terminals.
+    Control,
+}
+
+/// Another PWA or tool allowed to use kimo, with its own revocable key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Client {
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    /// Browser origins the key may be used from, e.g. `https://pm.example.ts.net`.
+    #[serde(default)]
+    pub origins: Vec<String>,
+    pub scope: Scope,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// Everything kimo persists in `~/.kimo/state.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
@@ -85,6 +109,8 @@ pub struct State {
     pub accounts: Vec<Account>,
     #[serde(default)]
     pub sessions: Vec<SessionSpec>,
+    #[serde(default)]
+    pub clients: Vec<Client>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

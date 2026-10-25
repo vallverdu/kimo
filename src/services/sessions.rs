@@ -4,7 +4,9 @@
 
 use crate::core::launch::{self, Launch};
 use crate::core::lifecycle::{self, Action};
-use crate::core::models::{Account, Provider, SessionKind, SessionSpec, SessionStatus, State};
+use crate::core::models::{
+    Account, Client, Provider, Scope, SessionKind, SessionSpec, SessionStatus, State,
+};
 use crate::core::procfs::cpu_percent;
 use crate::core::scrollback::Scrollback;
 use crate::services::{accounts, stats, store::Store};
@@ -15,9 +17,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 
 pub struct ManagerConfig {
     pub data_dir: PathBuf,
@@ -35,6 +38,8 @@ pub struct SessionInfo {
     pub pid: Option<i32>,
     pub exit_code: Option<u32>,
     pub usage: Usage,
+    /// Unix time (ms) of the last terminal output: how long an agent has been quiet.
+    pub last_output_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -84,6 +89,7 @@ struct Live {
     usage: Usage,
     last_ticks: Option<(u64, Instant)>,
     size: PtySize,
+    last_output: Arc<AtomicU64>,
 }
 
 struct Inner {
@@ -96,6 +102,14 @@ pub struct Manager {
     store: Store,
     inner: Mutex<Inner>,
     exits: mpsc::UnboundedSender<(String, u64)>,
+    /// Bumped on every visible change; event streams wait on it.
+    changes: watch::Sender<u64>,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A client attached to a terminal: replayed scrollback plus live output.
@@ -121,6 +135,7 @@ fn new_live(cap: usize) -> Live {
         exit_code: None,
         usage: Usage::default(),
         last_ticks: None,
+        last_output: Arc::new(AtomicU64::new(0)),
         size: PtySize {
             rows: 40,
             cols: 120,
@@ -166,6 +181,7 @@ impl Manager {
             store,
             inner: Mutex::new(Inner { state, live }),
             exits,
+            changes: watch::channel(0).0,
         });
         let weak = Arc::downgrade(&manager);
         tokio::spawn(async move {
@@ -184,7 +200,17 @@ impl Manager {
     }
 
     fn save(&self, inner: &Inner) -> Result<()> {
+        self.changed();
         self.store.save(&inner.state)
+    }
+
+    fn changed(&self) {
+        self.changes.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
+    /// Notified on every visible change (status, usage, accounts, apps).
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
     }
 
     // ----- queries -----
@@ -217,6 +243,7 @@ impl Manager {
             pid: live.runtime.as_ref().map(|r| r.pid),
             exit_code: live.exit_code,
             usage: live.usage,
+            last_output_at: Some(live.last_output.load(Ordering::Relaxed)).filter(|&t| t > 0),
         })
     }
 
@@ -352,6 +379,7 @@ impl Manager {
         if status == SessionStatus::Paused {
             live.usage.cpu_percent = 0.0;
         }
+        self.changed();
         Ok(())
     }
 
@@ -468,6 +496,7 @@ impl Manager {
         let mut reader = pair.master.try_clone_reader()?;
         let mut writer = pair.master.take_writer()?;
 
+        let last_output = live.last_output.clone();
         let (scrollback, output, exits, generation, sid) = (
             live.scrollback.clone(),
             live.output.clone(),
@@ -485,6 +514,7 @@ impl Manager {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             scrollback.lock().unwrap().push(&buf[..n]);
+                            last_output.store(now_ms(), Ordering::Relaxed);
                             let _ = output.send(Bytes::copy_from_slice(&buf[..n]));
                         }
                     }
@@ -541,6 +571,7 @@ impl Manager {
         }
         live.status = SessionStatus::Exited;
         live.usage = Usage::default();
+        self.changed();
     }
 
     /// End the session's processes (SIGHUP/SIGTERM, then SIGKILL after 3 s) and wait for them.
@@ -582,6 +613,7 @@ impl Manager {
             live.scrollback.lock().unwrap().push(note);
             let _ = live.output.send(Bytes::from_static(note));
         }
+        self.changed();
         Ok(())
     }
 
@@ -783,6 +815,69 @@ impl Manager {
                 processes: tree.processes,
             };
         }
+        drop(inner);
+        self.changed();
+    }
+
+    // ----- apps (other PWAs and tools) -----
+
+    pub fn clients(&self) -> Vec<Client> {
+        self.lock().state.clients.clone()
+    }
+
+    pub fn client_by_token(&self, token: &str) -> Option<Client> {
+        self.lock()
+            .state
+            .clients
+            .iter()
+            .find(|c| c.token == token)
+            .cloned()
+    }
+
+    /// Register an app; its token is returned here and kept in state.json (mode 600).
+    pub fn add_client(&self, name: &str, origins: Vec<String>, scope: Scope) -> Result<Client> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("the app needs a name");
+        }
+        let origins: Vec<String> = origins
+            .iter()
+            .map(|o| o.trim().trim_end_matches('/').to_string())
+            .filter(|o| !o.is_empty())
+            .collect();
+        if let Some(bad) = origins
+            .iter()
+            .find(|o| *o != "*" && !(o.starts_with("http://") || o.starts_with("https://")))
+        {
+            bail!("origin must look like https://host[:port], got: {bad}");
+        }
+        let token = format!(
+            "kimo_{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let client = Client {
+            id: slug(name),
+            name: name.to_string(),
+            token,
+            origins,
+            scope,
+            extra: Default::default(),
+        };
+        let mut inner = self.lock();
+        inner.state.clients.push(client.clone());
+        self.save(&inner)?;
+        Ok(client)
+    }
+
+    pub fn delete_client(&self, id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let before = inner.state.clients.len();
+        inner.state.clients.retain(|c| c.id != id);
+        if inner.state.clients.len() == before {
+            bail!("unknown app: {id}");
+        }
+        self.save(&inner)
     }
 
     /// Stop every session (on shutdown) so no agent is left orphaned.

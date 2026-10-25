@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
         Some(t) => println!("kimo on http://{shown}:{}/#token={t}", cfg.port),
         None => println!("kimo on http://{shown}:{}/", cfg.port),
     }
-    let app = kimo::api::router(manager.clone(), token);
+    let app = kimo::api::router(manager.clone(), token, cfg.origins.clone());
     // Open terminal websockets never close by themselves, so stop on a signal instead of draining.
     tokio::select! {
         result = axum::serve(listener, app) => result?,
