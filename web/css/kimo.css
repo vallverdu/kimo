@@ -1,6 +1,6 @@
 /* kimo layer on top of app.css. Values come from tokens.css. Prefix: k-. */
 .k-tabbar { grid-template-columns: repeat(2, 1fr) !important; }
-.ui-sheet input:not([type=radio]) { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid #ccc; font-size: 1.6rem; background: var(--color-background); color: var(--color-ink); height: auto; font-family: inherit; }
+.ui-sheet input:not([type=radio]):not([type=checkbox]) { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid #ccc; font-size: 1.6rem; background: var(--color-background); color: var(--color-ink); height: auto; font-family: inherit; }
 .k-hint { font-size: 1.2rem; color: var(--color-muted); margin: 0; }
 .ui-stats { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 
@@ -52,3 +52,50 @@
 .k-connect code { background: none; font-size: inherit; }
 .ui-sheet textarea.k-code { font-size: 1.2rem; }
 .ui-sheet [data-copy] { align-self: flex-start; }
+.k-tabbar { grid-template-columns: repeat(5, 1fr) !important; }
+.k-warn { color: var(--color-bad); }
+.k-field { display: flex; gap: .8rem; align-items: stretch; margin-top: .6rem; }
+.k-field input { margin-top: 0 !important; flex: 1; min-width: 0; }
+.k-field .ui-button { flex: none; }
+.k-check { display: flex !important; gap: 1rem; align-items: center; color: var(--color-ink) !important; font-size: 1.4rem !important; }
+.k-check input { width: 2rem; height: 2rem; margin: 0; accent-color: var(--color-ink); }
+.k-chips { grid-column: 1 / -1; list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: .6rem; }
+.k-chips li { margin: 0; }
+.k-chips button { display: inline-flex; align-items: center; gap: .6rem; margin: 0; padding: .4rem 1rem; border: 1px solid var(--color-line); background: var(--color-background); color: var(--color-ink); font-family: inherit; font-size: 1.2rem; cursor: pointer; }
+.k-chips button:hover { border-color: var(--color-ink); }
+.k-chips .ui-badge::before { width: .7rem; height: .7rem; }
+.k-folder-head { display: flex; gap: 1rem; align-items: center; }
+.k-folder-head code { background: none; font-size: 1.3rem; overflow-wrap: anywhere; }
+.k-folders { list-style: none; margin: 0; padding: 0; max-height: 45vh; overflow-y: auto; border-top: 1px solid var(--color-line); }
+.k-folders li { margin: 0; border-bottom: 1px solid var(--color-line); }
+.k-folders button { width: 100%; text-align: left; margin: 0; padding: 1.1rem .4rem; border: 0; background: none; color: var(--color-ink); font-family: inherit; font-size: 1.4rem; cursor: pointer; }
+.k-folders button:hover { background: var(--color-surface); }
+.k-folders small { color: var(--color-teal); margin-left: .6rem; }
+.k-pair { display: flex; flex-wrap: wrap; gap: 1.6rem; align-items: end; margin-bottom: 3rem; }
+.k-pair > label { flex: 1 1 280px; font-size: 1.2rem; color: var(--color-muted); margin: 0; }
+.k-pair select { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid #ccc; font-size: 1.4rem; height: auto; background: var(--color-background); }
+.k-pair-box { flex: 1 1 100%; display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 2.4rem; align-items: center; padding: 2.4rem; background: var(--color-surface); }
+.k-qr { width: 240px; height: 240px; background: var(--color-background); }
+.k-qr svg { display: block; width: 100%; height: 100%; }
+.k-link { display: block; overflow-wrap: anywhere; font-size: 1.3rem; color: var(--color-teal); margin-bottom: 1rem; }
+.k-addresses { margin-top: 0; }
+.k-addresses li { flex-wrap: wrap; }
+.k-addresses a { color: var(--color-ink); overflow-wrap: anywhere; }
+#https-panel { margin-bottom: 3rem; }
+@media (max-width: 600px) {
+  .k-pair-box { grid-template-columns: minmax(0, 1fr); justify-items: center; text-align: center; }
+  .ui-tabbar a { font-size: .9rem; }
+}
+/* The theme greys focused buttons, which reads as disabled: keep their colours, show a focus ring. */
+.ui-button:focus { background: var(--color-ink); color: var(--color-background); }
+.ui-button.ghost:focus, .ui-button.k-danger:focus { background: var(--color-background); }
+.ui-button.ghost:focus { color: var(--color-ink); }
+.ui-button.k-danger:focus { color: var(--color-bad); }
+.ui-button:focus-visible { outline: 2px solid var(--color-teal); outline-offset: 2px; }
+/* Touch screens keep :hover on the last tapped spot; only devices that really hover get hover styles. */
+@media (hover: none) {
+  .ui-button:hover { background: var(--color-ink); color: var(--color-background); }
+  .ui-button.ghost:hover, .ui-button.k-danger:hover { background: var(--color-background); }
+  .ui-button.ghost:hover { color: var(--color-ink); }
+  .ui-button.k-danger:hover { color: var(--color-bad); }
+}

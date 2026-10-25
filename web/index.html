@@ -23,7 +23,7 @@
 	<header class="ui-header"><div class="row">
 		<a class="ui-brand" href="#agents"><img class="ui-avatar" src="icons/icon.svg" alt="" width="44" height="44">
 			<span><strong>kimo</strong><small>agent environment</small></span></a>
-		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li><li><a href="#apps" data-view="apps">Apps</a></li></ul>
+		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#projects" data-view="projects">Projects</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li><li><a href="#devices" data-view="devices">Devices</a></li><li><a href="#apps" data-view="apps">Apps</a></li></ul>
 	</div></header>
 
 	<main class="ui-main"><div class="row"><div class="column width-12">
@@ -34,6 +34,38 @@
 			<div id="alerts"></div>
 			<h3 class="ui-section-title">Sessions</h3>
 			<ul class="k-sessions" id="sessions"></ul>
+		</section>
+		<section id="view-projects" hidden>
+			<h1 class="ui-page-title">Projects</h1>
+			<p class="ui-lead">Folders your agents work in. Create one, add an existing folder or clone a repository, then start agents in it.</p>
+			<h3 class="ui-section-title">Projects</h3>
+			<ul class="k-sessions" id="project-list"></ul>
+		</section>
+		<section id="view-devices" hidden>
+			<h1 class="ui-page-title">Devices</h1>
+			<p class="ui-lead">Use kimo from any device on your network: scan the code with your phone to pair it.</p>
+			<h3 class="ui-section-title">Pair a device</h3>
+			<div class="k-pair">
+				<label>Address the device will use<select id="pair-address"></select></label>
+				<button class="ui-button" id="pair-show">show QR code</button>
+				<div class="k-pair-box" id="pair-box" hidden>
+					<div class="k-qr" id="pair-qr" aria-label="Pairing QR code"></div>
+					<div>
+						<p>Scan with the phone camera, or open:</p>
+						<a class="k-link" id="pair-link" target="_blank" rel="noopener"></a>
+						<p class="k-hint" id="pair-expires"></p>
+						<button class="ui-button ghost k-small" id="pair-cancel">hide</button>
+					</div>
+				</div>
+			</div>
+			<div class="ui-alert info" id="https-panel" hidden>
+				<span>Phones install kimo as an app only over HTTPS. Serve it on <strong id="https-host"></strong> with Tailscale (your other Tailscale services stay as they are).</span>
+				<button class="ui-button k-small" id="https-enable">enable HTTPS</button>
+			</div>
+			<h3 class="ui-section-title">Addresses</h3>
+			<ul class="ui-facts k-addresses" id="address-list"></ul>
+			<h3 class="ui-section-title">Paired devices</h3>
+			<ul class="k-sessions" id="device-list"></ul>
 		</section>
 		<section id="view-accounts" hidden>
 			<h1 class="ui-page-title">Accounts</h1>
@@ -62,7 +94,9 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 
 	<nav class="ui-tabbar k-tabbar" aria-label="Sections">
 		<a href="#agents" data-view="agents"><span class="icon-code"></span>Agents</a>
+		<a href="#projects" data-view="projects"><span class="icon-folder"></span>Projects</a>
 		<a href="#accounts" data-view="accounts"><span class="icon-users"></span>Accounts</a>
+		<a href="#devices" data-view="devices"><span class="icon-mobile"></span>Devices</a>
 		<a href="#apps" data-view="apps"><span class="icon-flash"></span>Apps</a>
 	</nav>
 	<button class="ui-fab" id="add" aria-label="New"><span class="icon-plus"></span></button>
@@ -94,7 +128,8 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 			<label><input type="radio" name="kind" value="shell">Shell</label>
 		</div>
 		<label>Name<input name="name" required placeholder="api refactor" autocomplete="off"></label>
-		<label>Folder<input name="cwd" placeholder="~/dev/project" autocomplete="off" list="recent-folders"></label>
+		<label>Project<select name="project"></select></label>
+		<label>Folder<span class="k-field"><input name="cwd" placeholder="~/dev/project" autocomplete="off" list="recent-folders"><button type="button" class="ui-button ghost k-small" data-browse="cwd">browse</button></span></label>
 		<datalist id="recent-folders"></datalist>
 		<label data-for="agent">Account<select name="account"></select></label>
 		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button class="ui-button">Start</button></div>
@@ -133,10 +168,38 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 		<div class="ui-sheet-actions"><button class="ui-button">Done</button></div>
 	</form></dialog>
 
+	<dialog class="ui-sheet" id="sheet-project"><form method="dialog">
+		<h3>New project</h3>
+		<div class="ui-kinds">
+			<label><input type="radio" name="mode" value="new" checked>New</label>
+			<label><input type="radio" name="mode" value="existing">Existing folder</label>
+			<label><input type="radio" name="mode" value="clone">Clone</label>
+		</div>
+		<label data-for="url" hidden>Git URL<input name="url" placeholder="git@github.com:you/app.git" autocomplete="off"></label>
+		<label data-for="name"><span>Name</span><input name="name" placeholder="Everpano invoices" autocomplete="off"></label>
+		<label data-for="path"><span>Create inside</span><span class="k-field"><input name="path" placeholder="projects folder (~/dev)" autocomplete="off"><button type="button" class="ui-button ghost k-small" data-browse="path">browse</button></span></label>
+		<label data-for="git" class="k-check"><input type="checkbox" name="git" checked> start a git repository</label>
+		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button class="ui-button">Create</button></div>
+	</form></dialog>
+
+	<dialog class="ui-sheet" id="sheet-folder"><form method="dialog">
+		<h3>Choose a folder</h3>
+		<div class="k-folder-head"><button type="button" class="ui-button ghost k-small" data-do="up">up</button><code id="folder-path"></code></div>
+		<ul class="k-folders" id="folder-list"></ul>
+		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button type="button" class="ui-button" data-do="use">Use this folder</button></div>
+	</form></dialog>
+
+	<dialog class="ui-sheet" id="sheet-pair"><form method="dialog">
+		<h3>Pair this device</h3>
+		<p class="k-hint">This device gets its own key to this kimo. You can unpair it anytime from Devices.</p>
+		<label>Device name<input name="name" required autocomplete="off"></label>
+		<div class="ui-sheet-actions"><button class="ui-button">Pair</button></div>
+	</form></dialog>
+
 	<dialog class="ui-sheet" id="sheet-token"><form method="dialog">
-		<h3>Access token</h3>
-		<p class="k-hint">kimo printed a link with the token when it started. Paste the token here.</p>
-		<label>Token<input name="token" required autocomplete="off"></label>
+		<h3>Pair this device</h3>
+		<p class="k-hint">This device is not paired with kimo yet. On the kimo machine open <strong>Devices</strong> → <strong>show QR code</strong> and scan it with this device, or run <code>kimo pair</code> there.</p>
+		<label>Or paste a key<input name="token" required autocomplete="off"></label>
 		<div class="ui-sheet-actions"><button class="ui-button">Connect</button></div>
 	</form></dialog>
 

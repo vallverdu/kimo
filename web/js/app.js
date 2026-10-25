@@ -1,24 +1,13 @@
-// kimo UI: agents, accounts and apps views, sheets, live updates. Talks to kimo only through the SDK.
-import { kimo as api, setToken } from './api.js';
+// kimo UI: agents, projects, accounts, devices and apps; sheets; live updates.
+// Talks to kimo only through the SDK.
+import { kimo as api, pairCode, setToken } from './api.js';
 import { terminal } from './terminal.js';
+import { $, esc, mb, shortPath, toast } from './ui.js';
+import { initProjects } from './projects.js';
+import { initDevices } from './devices.js';
 
-const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const $ = id => document.getElementById(id);
-
-function toast(message, isError = false) {
-  let el = document.querySelector('.ui-toast');
-  if (!el) { el = document.createElement('div'); el.className = 'ui-toast'; el.setAttribute('role', 'status'); document.body.append(el); }
-  el.textContent = message;
-  el.classList.toggle('error', isError);
-  el.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => { el.hidden = true; }, 2800);
-}
-
-const mb = bytes => bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GB` : `${Math.round(bytes / (1 << 20))} MB`;
-const home = path => path.replace(/^\/home\/[^/]+/, '~');
-const state = { sessions: [], accounts: [], apps: [], status: null, view: 'agents' };
-const VIEWS = ['agents', 'accounts', 'apps'];
+const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, view: 'agents' };
+const VIEWS = ['agents', 'projects', 'accounts', 'devices', 'apps'];
 
 // ----- rendering -----
 
@@ -64,7 +53,7 @@ function sessionRow(s) {
   return `<li data-id="${esc(s.id)}">
     <button class="k-name" data-do="open">${esc(s.name)}</button>
     <span class="ui-badge ${s.status}">${s.status}${s.status === 'exited' && s.exit_code != null ? ` ${s.exit_code}` : ''}</span>
-    <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account))}</span>` : ''}<code>${esc(home(s.cwd))}</code>
+    <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account))}</span>` : ''}<code title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</code>
       ${live ? `<span><span class="k-num">${mb(ram)}</span> ram</span><span><span class="k-num">${s.usage.cpu_percent}%</span> cpu</span><span><span class="k-num">${s.usage.processes}</span> procs</span>` : ''}</div>
     ${live ? `<div class="k-bar" title="share of machine memory"><span style="width:${Math.min(100, ram / total * 100).toFixed(1)}%"></span></div>` : ''}
     <div class="k-actions">${buttons.join('')}</div>
@@ -105,6 +94,7 @@ function renderApps() {
 }
 
 function render() {
+  projectsView.render();
   renderStats();
   renderSessions();
   renderAccounts();
@@ -117,8 +107,8 @@ function render() {
 
 async function refresh() {
   try {
-    [state.sessions, state.accounts, state.status, state.apps] = await Promise.all([
-      api.sessions(), api.accounts(), api.status(), api.clients().catch(() => []),
+    [state.sessions, state.accounts, state.status, state.apps, state.projects] = await Promise.all([
+      api.sessions(), api.accounts(), api.status(), api.clients().catch(() => []), api.projects().catch(() => []),
     ]);
     render();
     return true;
@@ -152,13 +142,18 @@ async function run(promise, done) {
   }
 }
 
+const projectsView = initProjects({ api, state, run, terminal });
+const devicesView = initDevices({ api, state, run });
+
 // ----- views -----
 
 function show(view) {
   state.view = VIEWS.includes(view) ? view : 'agents';
   for (const v of VIEWS) $(`view-${v}`).hidden = state.view !== v;
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === state.view));
-  $('add').setAttribute('aria-label', { agents: 'New session', accounts: 'New account', apps: 'New app' }[state.view]);
+  $('add').setAttribute('aria-label', { agents: 'New session', projects: 'New project', accounts: 'New account', devices: 'Pair a device', apps: 'New app' }[state.view]);
+  if (state.view === 'devices') devicesView.load();
+  else devicesView.hideQr();
 }
 addEventListener('hashchange', () => show(location.hash.slice(1)));
 
@@ -257,13 +252,20 @@ function syncKind() {
 $('add').addEventListener('click', () => {
   if (state.view === 'accounts') return accountSheet.showModal();
   if (state.view === 'apps') return appSheet.showModal();
+  if (state.view === 'projects') return projectsView.open();
+  if (state.view === 'devices') return devicesView.showQr();
   const form = sessionSheet.querySelector('form');
+  form.elements.project.innerHTML = '<option value="">any folder</option>' +
+    state.projects.map(p => `<option value="${esc(p.path)}">${esc(p.name)}</option>`).join('');
   form.elements.cwd.value = recent()[0] || '';
   $('recent-folders').innerHTML = recent().map(f => `<option value="${esc(f)}">`).join('');
   syncKind();
   sessionSheet.showModal();
 });
 sessionSheet.querySelectorAll('[name=kind]').forEach(r => r.addEventListener('change', syncKind));
+sessionSheet.querySelector('[name=project]').addEventListener('change', e => {
+  if (e.target.value) sessionSheet.querySelector('[name=cwd]').value = e.target.value;
+});
 document.querySelectorAll('.ui-sheet [value=cancel]').forEach(b => b.addEventListener('click', () => b.closest('dialog').close()));
 
 sessionSheet.querySelector('form').addEventListener('submit', async e => {
@@ -291,11 +293,40 @@ $('sheet-token').querySelector('form').addEventListener('submit', e => {
   connect();
 });
 
+// ----- pairing this device (opened from a QR code) -----
+
+function deviceName() {
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return 'iPhone';
+  if (/iPad/.test(ua)) return 'iPad';
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? 'Android phone' : 'Android tablet';
+  if (/Mac/.test(ua)) return 'Mac';
+  if (/Windows/.test(ua)) return 'Windows PC';
+  return 'Linux computer';
+}
+
+const pairSheet = $('sheet-pair');
+pairSheet.querySelector('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  try {
+    const device = await api.pair(pairCode, e.target.elements.name.value);
+    setToken(device.token);
+    pairSheet.close();
+    toast(`Paired as ${device.name}`);
+    connect();
+  } catch (err) { toast(err.message, true); }
+});
+
 // ----- start -----
 
 show(location.hash.slice(1));
 document.querySelectorAll('[data-origin]').forEach(e => { e.textContent = location.origin; });
-connect();
+if (pairCode) {
+  pairSheet.querySelector('[name=name]').value = deviceName();
+  pairSheet.showModal();
+} else {
+  connect();
+}
 setInterval(async () => {
   if (document.visibilityState !== 'visible' || !unsubscribe) return;
   try { state.status = await api.status(); renderStats(); } catch { /* the event stream reports problems */ }

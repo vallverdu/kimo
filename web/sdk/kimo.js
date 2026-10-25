@@ -45,6 +45,19 @@ export class Kimo {
   // Machine
   status() { return this.request('GET', '/status'); }
 
+  // Projects
+  projects() { return this.request('GET', '/projects'); }
+  /**
+   * @param {{mode: 'new'|'existing'|'clone', name?: string, path?: string, git?: boolean, url?: string}} project
+   * new: folder `name` inside `path` (default: the projects folder); existing: the folder at `path`;
+   * clone: `git clone url` into a new folder; returns {project, session} (the clone terminal).
+   */
+  createProject(project) { return this.request('POST', '/projects', project); }
+  /** Forget a project (its files stay). */
+  deleteProject(id) { return this.request('DELETE', `/projects/${enc(id)}`); }
+  /** Subfolders of `path` (default: the projects folder). */
+  browse(path) { return this.request('GET', `/fs${path ? `?path=${enc(path)}` : ''}`); }
+
   // Sessions
   sessions() { return this.request('GET', '/sessions'); }
   session(id) { return this.request('GET', `/sessions/${enc(id)}`); }
@@ -82,6 +95,23 @@ export class Kimo {
   /** @param {{name: string, origins: string[], scope?: 'read'|'control'}} app returns the app with its token (shown once). */
   createClient(app) { return this.request('POST', '/clients', app); }
   deleteClient(id) { return this.request('DELETE', `/clients/${enc(id)}`); }
+
+  // Owner only: devices and network
+  network() { return this.request('GET', '/network'); }
+  /** Serve kimo over HTTPS on the tailnet (tailscale serve); returns {url}. */
+  enableHttps() { return this.request('POST', '/network/https'); }
+  /** One-time code (10 minutes) for a pairing link `<address>/#pair=<code>`. */
+  startPairing() { return this.request('POST', '/pairing'); }
+  /** Trade a pairing code for this device's key (no key needed); returns the device with its token. */
+  pair(code, name) { return this.request('POST', '/pair', { code, name }); }
+  devices() { return this.request('GET', '/devices'); }
+  deleteDevice(id) { return this.request('DELETE', `/devices/${enc(id)}`); }
+  /** QR code of `text` as SVG markup. */
+  async qr(text) {
+    const res = await fetch(this.urlWithToken(`/api/qr`) + `${this.token ? '&' : '?'}text=${enc(text)}`);
+    if (!res.ok) throw new KimoError(`QR failed: HTTP ${res.status}`, res.status);
+    return res.text();
+  }
 
   // Live updates
   /**

@@ -10,6 +10,10 @@ if (fromLink) {
   history.replaceState(null, '', location.pathname);
 }
 
+/** Pairing code from a scanned QR (`#pair=…`), if this page was opened from one. */
+export const pairCode = location.hash.match(/pair=([\w-]+)/)?.[1] || null;
+if (pairCode) history.replaceState(null, '', location.pathname);
+
 export const kimo = new Kimo({ url: location.origin, token: fromLink || stored() });
 
 export function setToken(token) {
