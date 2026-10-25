@@ -116,6 +116,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
             "/skills",
             get(list_skills).post(install_skill).delete(remove_skill),
         )
+        .route("/skills/kimo", post(install_kimo_skill))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     // Pairing is the way in for a new device: it needs a one-time code, not a key.
     let public = Router::new().route("/pair", post(pair));
@@ -678,6 +679,27 @@ async fn install_skill(
         .await
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     Ok(Json(json!(installed)))
+}
+
+#[derive(Deserialize)]
+struct KimoSkillBody {
+    #[serde(default = "both_agents")]
+    agents: Vec<crate::services::skills::SkillAgent>,
+}
+
+fn both_agents() -> Vec<crate::services::skills::SkillAgent> {
+    vec![
+        crate::services::skills::SkillAgent::Claude,
+        crate::services::skills::SkillAgent::Codex,
+    ]
+}
+
+/// Teach agents to work together: install the bundled `kimo-agents` skill.
+async fn install_kimo_skill(
+    State(app): State<App>,
+    Json(body): Json<KimoSkillBody>,
+) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(app.manager.install_kimo_skill(&body.agents)?)))
 }
 
 async fn remove_skill(

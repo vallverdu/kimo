@@ -654,6 +654,24 @@ async fn settings_and_skills() {
         "only known skills can be removed"
     );
 
+    // kimo's own skill installs for both agents; a second install keeps a backup.
+    let (status, own) = call("POST", "/api/skills/kimo".into(), Some("{}".into())).await;
+    assert_eq!(
+        (status, own.as_array().unwrap().len()),
+        (StatusCode::OK, 2),
+        "{own}"
+    );
+    let skill = std::fs::read_to_string(home.join(".claude/skills/kimo-agents/SKILL.md")).unwrap();
+    assert!(skill.contains("kimo send <id|name>"));
+    assert!(home.join(".codex/skills/kimo-agents/SKILL.md").is_file());
+    let (status, _) = call(
+        "POST",
+        "/api/skills/kimo".into(),
+        Some(r#"{"agents":["claude"]}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
     // Installing from a git repository (file:// URL keeps the test offline).
     let repo = tmp.path().join("skills-repo");
     std::fs::create_dir_all(repo.join("skills/lint")).unwrap();

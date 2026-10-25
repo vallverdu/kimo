@@ -619,7 +619,15 @@ impl KimoApp {
                                 in_project.insert(s(x, "id").to_string());
                                 ui.horizontal(|ui| {
                                     dot(ui, theme::status_color(s(x, "status")));
-                                    if ui.selectable_label(false, s(x, "name")).clicked() {
+                                    if ui
+                                        .selectable_label(false, s(x, "name"))
+                                        .on_hover_text(format!(
+                                            "id {}\nresume {}",
+                                            s(x, "id"),
+                                            x["conversation"].as_str().unwrap_or("-")
+                                        ))
+                                        .clicked()
+                                    {
                                         open = Some(s(x, "id").to_string());
                                     }
                                     activity_tag(ui, x);
@@ -770,6 +778,16 @@ impl KimoApp {
             dot(ui, theme::status_color(&status));
             ui.label(RichText::new(&status).size(11.0).color(theme::status_color(&status)));
             activity_tag(ui, &info);
+            // Ids: kimo's id (for kimo send/read) and the agent's own resume id.
+            for (label, value) in [("id", s(&info, "id").to_string()), ("resume", info["conversation"].as_str().unwrap_or("").to_string())] {
+                if !value.is_empty() {
+                    let r = ui.add(egui::Button::new(RichText::new(format!("{label} {value}")).size(10.5).color(theme::MUTED)).frame(false));
+                    if r.on_hover_text("click to copy").clicked() {
+                        ui.ctx().copy_text(value.clone());
+                        self.toasts.push((format!("Copied {label}: {value}"), false, Instant::now()));
+                    }
+                }
+            }
             let usage = &info["usage"];
             if status == "running" || status == "paused" {
                 ui.label(RichText::new(format!("{} · {}% cpu", mb(usage["rss_bytes"].as_u64().unwrap_or(0)), usage["cpu_percent"])).size(11.0).color(theme::MUTED));
@@ -963,6 +981,29 @@ impl KimoApp {
             )
             .color(theme::MUTED),
         );
+        section(ui, "Agents working together");
+        let has_kimo_skill = self.skills.iter().any(|sk| s(sk, "name") == "kimo-agents");
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("The kimo-agents skill teaches Claude and Codex to list the other agents, message them, wait for them and read their answers (kimo agents · send · wait · read).").size(11.5));
+        });
+        ui.horizontal(|ui| {
+            let label = if has_kimo_skill {
+                "reinstall kimo-agents"
+            } else {
+                "install kimo-agents for Claude and Codex"
+            };
+            if primary(ui, label).clicked() {
+                self.job(|c| {
+                    c.post("/skills/kimo", json!({ "agents": ["claude", "codex"] }))?;
+                    Ok(Msg::Toast(
+                        "kimo-agents installed: new agent sessions can talk to each other".into(),
+                    ))
+                });
+            }
+            if has_kimo_skill {
+                ui.label(RichText::new("installed").size(11.0).color(theme::GOOD));
+            }
+        });
         section(ui, "Install");
         let f = &mut self.skill_form;
         ui.horizontal(|ui| {

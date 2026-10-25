@@ -317,6 +317,43 @@ impl Manager {
     }
 }
 
+/// kimo's own skill: how agents list, message, read and wait for each other.
+pub const KIMO_SKILL: &str = include_str!("../../skills/kimo-agents/SKILL.md");
+
+impl Manager {
+    /// Install the `kimo-agents` skill for the chosen agents (globally). An existing copy is
+    /// moved to the backups first.
+    pub fn install_kimo_skill(&self, agents: &[SkillAgent]) -> Result<Vec<Skill>> {
+        if agents.is_empty() {
+            bail!("choose at least one agent");
+        }
+        let mut installed = vec![];
+        for agent in agents {
+            let root = roots(&self.cfg.user_home)
+                .into_iter()
+                .find(|(a, _)| a == agent)
+                .map(|(_, r)| r)
+                .unwrap_or_default();
+            let dir = root.join("kimo-agents");
+            if fs::symlink_metadata(&dir).is_ok() {
+                self.backup(&dir)?;
+            }
+            fs::create_dir_all(&dir)?;
+            fs::write(dir.join("SKILL.md"), KIMO_SKILL)?;
+            let (_, description) = parse_front_matter(KIMO_SKILL);
+            installed.push(Skill {
+                name: "kimo-agents".into(),
+                description: description.unwrap_or_default(),
+                agent: *agent,
+                scope: "global".into(),
+                path: dir.display().to_string(),
+                managed: false,
+            });
+        }
+        Ok(installed)
+    }
+}
+
 /// An agent CLI on this machine.
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentCli {

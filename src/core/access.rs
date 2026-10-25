@@ -47,7 +47,7 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
         .iter()
         .any(|p| path.starts_with(p))
         // Installing or removing skills changes what every agent runs.
-        || (path == "/skills" && method != "GET")
+        || (path.starts_with("/skills") && method != "GET")
         || (path == "/accounts" && method != "GET")
         || (path.starts_with("/accounts/") && (method == "DELETE" || path.ends_with("/login")));
     if admin_only {
@@ -136,6 +136,7 @@ mod tests {
         }
         assert!(!permits(&control, "GET", "/settings"));
         assert!(!permits(&control, "POST", "/skills") && !permits(&control, "DELETE", "/skills"));
+        assert!(!permits(&control, "POST", "/skills/kimo"));
         assert!(permits(&read, "GET", "/skills") && permits(&read, "GET", "/agents"));
         assert!(permits(&read, "GET", "/projects"));
         assert!(!permits(&read, "GET", "/fs"));

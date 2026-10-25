@@ -70,7 +70,7 @@ function sessionRow(s) {
     <button class="k-name" data-do="open">${esc(s.name)}</button>
     <span class="ui-badge ${s.status}">${s.status}${s.status === 'exited' && s.exit_code != null ? ` ${s.exit_code}` : ''}</span>
     ${s.activity === 'waiting' ? '<span class="k-act waiting">needs you</span>' : s.activity === 'working' ? '<span class="k-act">working</span>' : ''}
-    <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account))}</span>` : ''}<code title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</code>
+    <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account))}</span>` : ''}<code title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</code><span title="kimo id: kimo send / read / wait">id <code>${esc(s.id)}</code></span>${s.conversation ? `<span title="the agent's own conversation id">resume <code>${esc(s.conversation.slice(0, 8))}…</code></span>` : ''}
       ${live ? `<span><span class="k-num">${mb(ram)}</span> ram</span><span><span class="k-num">${s.usage.cpu_percent}%</span> cpu</span><span><span class="k-num">${s.usage.processes}</span> procs</span>` : ''}</div>
     ${live ? `<div class="k-bar" title="share of machine memory"><span style="width:${Math.min(100, ram / total * 100).toFixed(1)}%"></span></div>` : ''}
     <div class="k-actions">${buttons.join('')}</div>
