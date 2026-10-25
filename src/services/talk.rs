@@ -117,7 +117,13 @@ impl Manager {
     }
 
     /// Type a message into an agent (as a paste, then Enter), signed with the sender when known.
-    pub async fn message(&self, to: &str, text: &str, from: Option<&str>) -> Result<String> {
+    pub async fn message(
+        &self,
+        to: &str,
+        text: &str,
+        from: Option<&str>,
+        from_name: Option<&str>,
+    ) -> Result<String> {
         let target = self.resolve(to)?;
         if target.status != SessionStatus::Running {
             bail!(
@@ -129,7 +135,7 @@ impl Manager {
         // A local sender by id or name; a sender on another kimo comes as `host/id`.
         let sender = from.map(|f| match self.resolve(f) {
             Ok(s) => (s.spec.id, s.spec.name),
-            Err(_) => (f.to_string(), f.to_string()),
+            Err(_) => (f.to_string(), from_name.unwrap_or(f).to_string()),
         });
         let body = envelope(
             sender

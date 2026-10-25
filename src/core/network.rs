@@ -292,8 +292,7 @@ bridge100: flags=8863<UP> mtu 1500\n\tinet 192.168.64.1 netmask 0xffffff00\n";
     #[test]
     fn reads_tailscale_status_and_serve() {
         assert_eq!(
-            parse_tailscale_dns(r#"{"Self":{"DNSName":"nuc.tail1234.ts.net."}}"#)
-                .as_deref(),
+            parse_tailscale_dns(r#"{"Self":{"DNSName":"nuc.tail1234.ts.net."}}"#).as_deref(),
             Some("nuc.tail1234.ts.net")
         );
         let serve = r#"{"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true}},"Web":{

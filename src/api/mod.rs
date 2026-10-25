@@ -423,6 +423,9 @@ struct MessageBody {
     /// The sending session (id or name), so the receiver knows who asks and can answer.
     #[serde(default)]
     from: Option<String>,
+    /// The sender's name when it runs on another kimo (set by the forwarding kimo).
+    #[serde(default)]
+    from_name: Option<String>,
 }
 
 /// Message another agent: typed into it (as a paste, then Enter), signed with the sender.
@@ -433,6 +436,14 @@ async fn session_message(
 ) -> ApiResult<serde_json::Value> {
     if let Some((peer, path)) = remote(&app, &id, "/message") {
         // Over there, a local sender is `<our name there>/<id>` so the answer finds its way back.
+        let sender = body
+            .from
+            .as_deref()
+            .and_then(|f| app.manager.resolve(f).ok());
+        let from_name = sender
+            .as_ref()
+            .map(|s| s.spec.name.clone())
+            .or(body.from_name.clone());
         let from = body.from.as_deref().map(|f| match app.manager.resolve(f) {
             Ok(s) => format!("{}/{}", peer.self_name, s.spec.id),
             Err(_) => f.to_string(),
@@ -442,7 +453,7 @@ async fn session_message(
             peer,
             "POST",
             path,
-            Some(json!({ "text": body.text, "from": from })),
+            Some(json!({ "text": body.text, "from": from, "from_name": from_name })),
         )
         .await?;
         answer.0["to"] = json!(to);
@@ -450,7 +461,12 @@ async fn session_message(
     }
     let to = app
         .manager
-        .message(&id, &body.text, body.from.as_deref())
+        .message(
+            &id,
+            &body.text,
+            body.from.as_deref(),
+            body.from_name.as_deref(),
+        )
         .await?;
     Ok(Json(json!({ "ok": true, "to": to })))
 }

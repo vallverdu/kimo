@@ -503,10 +503,7 @@ async fn projects_new_existing_clone_and_browse() {
     let (_, list) = call("GET", "/api/projects".into(), None).await;
     let list = list.as_array().unwrap();
     assert_eq!(list.len(), 3);
-    let invoices = list
-        .iter()
-        .find(|p| p["name"] == "Acme Invoices")
-        .unwrap();
+    let invoices = list.iter().find(|p| p["name"] == "Acme Invoices").unwrap();
     assert!(invoices["branch"].is_string());
     assert_eq!(
         list.iter().find(|p| p["name"] == "origin").unwrap()["sessions"],

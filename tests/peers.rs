@@ -152,7 +152,12 @@ async fn paired_kimos_share_agents_and_messages() {
     })
     .await;
     assert_eq!(sent["to"], remote_bob.as_str());
-    screen_contains(&b, &bob, &format!("[kimo message from agent mini/{alice} ")).await;
+    screen_contains(
+        &b,
+        &bob,
+        &format!("[kimo message from agent alice (id mini/{alice})"),
+    )
+    .await;
     // And read through mini.
     screen_contains(&a, &remote_bob, "review the parser").await;
 
@@ -166,6 +171,11 @@ async fn paired_kimos_share_agents_and_messages() {
         .unwrap()
     })
     .await;
-    screen_contains(&a, &alice, &format!("[kimo message from agent lab/{bob} ")).await;
+    screen_contains(
+        &a,
+        &alice,
+        &format!("[kimo message from agent bob (id lab/{bob})"),
+    )
+    .await;
     screen_contains(&a, &alice, "parser looks good").await;
 }

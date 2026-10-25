@@ -364,7 +364,12 @@ async fn agents_message_each_other_and_read_replies() {
     assert!(m.resolve("nobody").is_err());
     // A message is typed into bob, signed by alice with how to answer.
     let to = m
-        .message("bob", "please review the parser", Some(&alice.spec.id))
+        .message(
+            "bob",
+            "please review the parser",
+            Some(&alice.spec.id),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(to, bob.spec.id);
@@ -379,5 +384,5 @@ async fn agents_message_each_other_and_read_replies() {
     assert!(reply.text.contains("please review the parser"));
     // Stopped agents do not take messages.
     m.act(&bob.spec.id, Action::Stop).await.unwrap();
-    assert!(m.message("bob", "hi", None).await.is_err());
+    assert!(m.message("bob", "hi", None, None).await.is_err());
 }
