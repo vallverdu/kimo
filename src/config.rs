@@ -56,7 +56,9 @@ pub fn user_home() -> PathBuf {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
-    /// Run kimo (the default).
+    /// Open the kimo window (the default when a display is available).
+    App,
+    /// Run only the server, without a window (servers, systemd).
     Serve,
     /// Show a QR code in this terminal to pair a phone with the kimo running on this machine.
     Pair,

@@ -9,8 +9,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -18,10 +17,38 @@ async fn main() -> Result<()> {
         )
         .init();
     let cfg = Config::parse();
-    match cfg.command {
-        Some(Command::Pair) => pair(cfg.port).await,
-        Some(Command::Serve) | None => serve(cfg).await,
+    let has_display =
+        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let command = cfg
+        .command
+        .clone()
+        .unwrap_or(if cfg!(feature = "desktop") && has_display {
+            Command::App
+        } else {
+            Command::Serve
+        });
+    match command {
+        Command::App => app(&cfg),
+        Command::Serve => runtime()?.block_on(serve(cfg)),
+        Command::Pair => runtime()?.block_on(pair(cfg.port)),
     }
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()?)
+}
+
+#[cfg(feature = "desktop")]
+fn app(cfg: &Config) -> Result<()> {
+    kimo::desktop::run(cfg.port, &cfg.data_dir())
+}
+
+#[cfg(not(feature = "desktop"))]
+fn app(_: &Config) -> Result<()> {
+    anyhow::bail!("this kimo was built without the window: run `kimo serve`, or build with --features desktop")
 }
 
 async fn serve(cfg: Config) -> Result<()> {
