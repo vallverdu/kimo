@@ -124,6 +124,115 @@ pub struct Device {
     pub extra: Map<String, Value>,
 }
 
+/// How much an agent may do without asking.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Permissions {
+    /// The agent's own approval prompts.
+    #[default]
+    Manual,
+    /// Skip every prompt (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`).
+    Yolo,
+}
+
+/// Launch preferences for one agent CLI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentPrefs {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub permissions: Permissions,
+    /// Model passed on start (`--model` / `-m`); empty = the CLI's default.
+    #[serde(default)]
+    pub model: String,
+    /// Extra arguments for every session of this agent.
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for AgentPrefs {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            permissions: Permissions::Manual,
+            model: String::new(),
+            args: vec![],
+            extra: Map::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AgentsSettings {
+    #[serde(default)]
+    pub claude: AgentPrefs,
+    #[serde(default)]
+    pub codex: AgentPrefs,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl AgentsSettings {
+    pub fn get(&self, provider: Provider) -> &AgentPrefs {
+        match provider {
+            Provider::Claude => &self.claude,
+            Provider::Codex => &self.codex,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TerminalSettings {
+    #[serde(default = "default_font_size")]
+    pub font_size: f32,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+fn default_font_size() -> f32 {
+    13.0
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            font_size: default_font_size(),
+            extra: Map::new(),
+        }
+    }
+}
+
+/// A saved prompt or command, sent to a terminal with one tap.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuickCommand {
+    pub name: String,
+    pub text: String,
+    /// Project id; `None` = every project.
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// kimo's settings, edited from the app (and any owner client).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    #[serde(default)]
+    pub agents: AgentsSettings,
+    #[serde(default)]
+    pub terminal: TerminalSettings,
+    #[serde(default)]
+    pub quick_commands: Vec<QuickCommand>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// Everything kimo persists in `~/.kimo/state.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
@@ -137,6 +246,8 @@ pub struct State {
     pub projects: Vec<Project>,
     #[serde(default)]
     pub devices: Vec<Device>,
+    #[serde(default)]
+    pub settings: Settings,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

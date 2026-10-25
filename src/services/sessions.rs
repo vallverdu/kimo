@@ -424,12 +424,17 @@ impl Manager {
         if let Some(acc) = &account {
             accounts::ensure_home(&self.cfg.data_dir, &self.cfg.user_home, acc)?;
         }
+        let prefs = spec
+            .kind
+            .provider()
+            .map(|p| inner.state.settings.agents.get(p).clone());
         let launch = launch::build(
             &spec,
             account.as_ref(),
             &self.cfg.data_dir,
             self.can_resume(&spec),
             &self.cfg.shell,
+            prefs.as_ref(),
         )
         .map_err(|e| anyhow!(e))?;
         let live = inner
@@ -834,6 +839,32 @@ impl Manager {
         }
         drop(inner);
         self.changed();
+    }
+
+    // ----- settings -----
+
+    pub fn settings(&self) -> crate::core::models::Settings {
+        self.lock().state.settings.clone()
+    }
+
+    pub fn set_settings(
+        &self,
+        settings: crate::core::models::Settings,
+    ) -> Result<crate::core::models::Settings> {
+        if !(6.0..=40.0).contains(&settings.terminal.font_size) {
+            bail!("terminal font size must be between 6 and 40");
+        }
+        if let Some(q) = settings
+            .quick_commands
+            .iter()
+            .find(|q| q.name.trim().is_empty() || q.text.is_empty())
+        {
+            bail!("quick command needs a name and a text (got '{}')", q.name);
+        }
+        let mut inner = self.lock();
+        inner.state.settings = settings.clone();
+        self.save(&inner)?;
+        Ok(settings)
     }
 
     // ----- apps (other PWAs and tools) -----

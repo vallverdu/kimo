@@ -539,3 +539,170 @@ async fn projects_new_existing_clone_and_browse() {
     assert_eq!(status, StatusCode::OK);
     assert!(dev.join("everpano-invoices/.git").is_dir());
 }
+
+#[tokio::test]
+async fn settings_and_skills() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let call = |m: &'static str, uri: String, body: Option<String>| {
+        let app = app.clone();
+        async move {
+            let res = app
+                .oneshot(local(req(m, &uri, None, None, body.as_deref())))
+                .await
+                .unwrap();
+            (res.status(), json(res).await)
+        }
+    };
+
+    // Settings round-trip with defaults filled in; invalid values refused.
+    let (_, settings) = call("GET", "/api/settings".into(), None).await;
+    assert_eq!(settings["agents"]["claude"]["permissions"], "manual");
+    assert_eq!(settings["terminal"]["font_size"], 13.0);
+    let body = r#"{"agents":{"claude":{"permissions":"yolo","model":"opus"}},"quick_commands":[{"name":"tests","text":"run the tests"}]}"#;
+    let (status, saved) = call("PUT", "/api/settings".into(), Some(body.into())).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["agents"]["codex"]["enabled"], true);
+    let (status, _) = call(
+        "PUT",
+        "/api/settings".into(),
+        Some(r#"{"terminal":{"font_size":2}}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A skills source with two skills, one of them nested.
+    let src = tmp.path().join("src-skills");
+    for (dir, name) in [("pdf", "pdf"), ("group/review-pr", "review-pr")] {
+        std::fs::create_dir_all(src.join(dir)).unwrap();
+        std::fs::write(
+            src.join(dir).join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Does {name}\n---\nbody"),
+        )
+        .unwrap();
+    }
+    std::fs::write(src.join("pdf/helper.py"), "print(1)").unwrap();
+    let home = tmp.path().join("home");
+    // A synced (claude.ai) skill is listed but read-only.
+    std::fs::create_dir_all(home.join(".claude/skills/synced/abc/xlsx")).unwrap();
+    std::fs::write(
+        home.join(".claude/skills/synced/abc/xlsx/SKILL.md"),
+        "---\nname: xlsx\n---",
+    )
+    .unwrap();
+
+    let body = format!(
+        r#"{{"source":"{}","agents":["claude","codex"]}}"#,
+        src.display()
+    );
+    let (status, installed) = call("POST", "/api/skills".into(), Some(body.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{installed}");
+    assert_eq!(installed.as_array().unwrap().len(), 4);
+    assert!(home.join(".claude/skills/pdf/helper.py").is_file());
+    assert!(home.join(".codex/skills/review-pr/SKILL.md").is_file());
+    let (status, again) = call("POST", "/api/skills".into(), Some(body.clone())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(again["error"].as_str().unwrap().contains("already exists"));
+
+    let (_, list) = call("GET", "/api/skills".into(), None).await;
+    let list = list.as_array().unwrap();
+    let names: Vec<_> = list
+        .iter()
+        .map(|s| {
+            (
+                s["name"].as_str().unwrap(),
+                s["agent"].as_str().unwrap(),
+                s["managed"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert!(names.contains(&("xlsx", "claude", true)));
+    assert!(names.contains(&("review-pr", "codex", false)));
+    assert_eq!(
+        list.iter().find(|s| s["name"] == "pdf").unwrap()["description"],
+        "Does pdf"
+    );
+
+    // Replace keeps a backup; remove moves to the backups folder; synced skills are refused.
+    let replace = format!(
+        r#"{{"source":"{}","skill":"pdf","agents":["claude"],"replace":true}}"#,
+        src.display()
+    );
+    let (status, _) = call("POST", "/api/skills".into(), Some(replace)).await;
+    assert_eq!(status, StatusCode::OK);
+    let pdf = home.join(".claude/skills/pdf").display().to_string();
+    let (status, removed) = call("DELETE", format!("/api/skills?path={pdf}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert!(!home.join(".claude/skills/pdf").exists());
+    assert!(std::path::Path::new(removed["backup"].as_str().unwrap())
+        .join("helper.py")
+        .is_file());
+    let backups = std::fs::read_dir(tmp.path().join("kimo/skill-backups"))
+        .unwrap()
+        .count();
+    assert_eq!(backups, 2, "one from replace, one from remove");
+    let synced = home
+        .join(".claude/skills/synced/abc/xlsx")
+        .display()
+        .to_string();
+    let (status, _) = call("DELETE", format!("/api/skills?path={synced}"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call("DELETE", "/api/skills?path=/etc".into(), None).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "only known skills can be removed"
+    );
+
+    // Installing from a git repository (file:// URL keeps the test offline).
+    let repo = tmp.path().join("skills-repo");
+    std::fs::create_dir_all(repo.join("skills/lint")).unwrap();
+    std::fs::write(
+        repo.join("skills/lint/SKILL.md"),
+        "---\nname: lint\ndescription: Lint\n---",
+    )
+    .unwrap();
+    let git = |args: &[&str]| {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success())
+    };
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "skills",
+    ]);
+    let bare = tmp.path().join("skills.git");
+    assert!(std::process::Command::new("git")
+        .args(["clone", "-q", "--bare"])
+        .arg(&repo)
+        .arg(&bare)
+        .status()
+        .unwrap()
+        .success());
+    let body = format!(
+        r#"{{"source":"file://{}","agents":["claude"]}}"#,
+        bare.display()
+    );
+    let (status, cloned) = call("POST", "/api/skills".into(), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{cloned}");
+    assert!(home.join(".claude/skills/lint/SKILL.md").is_file());
+    assert!(
+        !tmp.path()
+            .join("kimo/tmp")
+            .read_dir()
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false),
+        "clone cleaned up"
+    );
+}

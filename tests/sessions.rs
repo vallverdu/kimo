@@ -196,3 +196,38 @@ async fn pause_switch_account_stop_and_continue() {
     assert!(m.session(&s.spec.id).is_none());
     m.delete_account(&a.id).unwrap();
 }
+
+#[tokio::test]
+async fn agent_settings_reach_the_command_line() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (bin, work) = (tmp.path().join("bin"), tmp.path().join("work"));
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    // A fake codex (the other test owns the fake claude on PATH).
+    let fake = bin.join("codex");
+    std::fs::write(&fake, "#!/bin/sh\necho \"CODEX ARGS=$*\"\nexec sleep 60\n").unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let m = manager(tmp.path());
+    let mut settings = m.settings();
+    settings.agents.codex.permissions = kimo::core::models::Permissions::Yolo;
+    settings.agents.codex.model = "gpt-6".into();
+    m.set_settings(settings).unwrap();
+    let s = m
+        .create(
+            NewSession {
+                name: "c".into(),
+                kind: SessionKind::Codex,
+                cwd: work.display().to_string(),
+                account: None,
+                args: vec![],
+                command: Some(vec![fake.display().to_string()]),
+            },
+            false,
+        )
+        .unwrap();
+    // Custom commands never get the agent preferences.
+    m.act(&s.spec.id, Action::Start).await.unwrap();
+    wait_for(&m, &s.spec.id, "CODEX ARGS=\r\n").await;
+    m.delete(&s.spec.id).await.unwrap();
+}

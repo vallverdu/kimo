@@ -1,6 +1,6 @@
 //! How to launch a session: program, arguments and environment, without touching the system.
 
-use super::models::{Account, Provider, SessionKind, SessionSpec};
+use super::models::{Account, AgentPrefs, Permissions, Provider, SessionKind, SessionSpec};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,12 +90,33 @@ pub fn account_home(data_dir: &Path, account_id: &str) -> PathBuf {
 /// `account` must be the spec's account (already resolved), `resume` continues the session's
 /// conversation (its own id for Claude, the folder's last one for Codex), `shell` is the
 /// user's login shell.
+/// Arguments the agent preferences add to every agent session (not to custom commands).
+pub fn pref_args(provider: Provider, prefs: &AgentPrefs) -> Vec<String> {
+    let mut args = vec![];
+    if prefs.permissions == Permissions::Yolo {
+        args.push(match provider {
+            Provider::Claude => "--dangerously-skip-permissions".into(),
+            Provider::Codex => "--dangerously-bypass-approvals-and-sandbox".into(),
+        });
+    }
+    if !prefs.model.trim().is_empty() {
+        args.push(match provider {
+            Provider::Claude => "--model".into(),
+            Provider::Codex => "-m".into(),
+        });
+        args.push(prefs.model.trim().to_string());
+    }
+    args.extend(prefs.args.iter().cloned());
+    args
+}
+
 pub fn build(
     spec: &SessionSpec,
     account: Option<&Account>,
     data_dir: &Path,
     resume: bool,
     shell: &str,
+    prefs: Option<&AgentPrefs>,
 ) -> Result<Launch, String> {
     let mut env = vec![
         ("TERM".to_string(), "xterm-256color".to_string()),
@@ -138,6 +159,9 @@ pub fn build(
             }
         },
     };
+    if let (None, Some(provider), Some(prefs)) = (&spec.command, spec.kind.provider(), prefs) {
+        args.extend(pref_args(provider, prefs));
+    }
     args.extend(spec.args.iter().cloned());
     Ok(Launch {
         program,
@@ -185,6 +209,7 @@ mod tests {
             Path::new("/k"),
             true,
             "sh",
+            None,
         )
         .unwrap();
         assert_eq!(l.program, "claude");
@@ -199,9 +224,9 @@ mod tests {
     fn claude_owns_its_conversation_id() {
         let mut s = spec(SessionKind::Claude, None);
         s.conversation = Some("c0ffee".into());
-        let fresh = build(&s, None, Path::new("/k"), false, "sh").unwrap();
+        let fresh = build(&s, None, Path::new("/k"), false, "sh", None).unwrap();
         assert_eq!(fresh.args, vec!["--session-id", "c0ffee"]);
-        let again = build(&s, None, Path::new("/k"), true, "sh").unwrap();
+        let again = build(&s, None, Path::new("/k"), true, "sh", None).unwrap();
         assert_eq!(again.args, vec!["--resume", "c0ffee"]);
     }
 
@@ -213,6 +238,7 @@ mod tests {
             Path::new("/k"),
             true,
             "sh",
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -226,7 +252,7 @@ mod tests {
     fn fresh_start_has_no_resume_and_keeps_extra_args() {
         let mut s = spec(SessionKind::Claude, None);
         s.args = vec!["--model".into(), "opus".into()];
-        let l = build(&s, None, Path::new("/k"), false, "sh").unwrap();
+        let l = build(&s, None, Path::new("/k"), false, "sh", None).unwrap();
         assert_eq!(l.args, vec!["--model", "opus"]);
     }
 
@@ -238,12 +264,13 @@ mod tests {
             Path::new("/k"),
             true,
             "/bin/zsh",
+            None,
         )
         .unwrap();
         assert_eq!((l.program.as_str(), l.args.len()), ("/bin/zsh", 0));
         let mut s = spec(SessionKind::Shell, None);
         s.command = Some(vec!["htop".into(), "-d".into(), "10".into()]);
-        let l = build(&s, None, Path::new("/k"), false, "sh").unwrap();
+        let l = build(&s, None, Path::new("/k"), false, "sh", None).unwrap();
         assert_eq!(
             (l.program.as_str(), l.args.clone()),
             ("htop", vec!["-d".into(), "10".into()])
@@ -273,6 +300,58 @@ mod tests {
     }
 
     #[test]
+    fn agent_preferences_add_permissions_model_and_args() {
+        let prefs = AgentPrefs {
+            permissions: Permissions::Yolo,
+            model: "opus".into(),
+            args: vec!["--verbose".into()],
+            ..AgentPrefs::default()
+        };
+        let mut s = spec(SessionKind::Claude, None);
+        s.args = vec!["--x".into()];
+        let l = build(&s, None, Path::new("/k"), false, "sh", Some(&prefs)).unwrap();
+        assert_eq!(
+            l.args,
+            vec![
+                "--dangerously-skip-permissions",
+                "--model",
+                "opus",
+                "--verbose",
+                "--x"
+            ]
+        );
+        let codex = build(
+            &spec(SessionKind::Codex, None),
+            None,
+            Path::new("/k"),
+            true,
+            "sh",
+            Some(&prefs),
+        )
+        .unwrap();
+        assert_eq!(
+            codex.args,
+            vec![
+                "resume",
+                "--last",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-m",
+                "opus",
+                "--verbose"
+            ]
+        );
+        // Custom commands (logins, clones) never get agent preferences.
+        let mut login = spec(SessionKind::Claude, None);
+        login.command = Some(vec!["claude".into(), "auth".into(), "login".into()]);
+        assert_eq!(
+            build(&login, None, Path::new("/k"), false, "sh", Some(&prefs))
+                .unwrap()
+                .args,
+            vec!["auth", "login"]
+        );
+    }
+
+    #[test]
     fn provider_mismatch_is_refused() {
         let acc = account("c", Provider::Codex);
         assert!(build(
@@ -280,7 +359,8 @@ mod tests {
             Some(&acc),
             Path::new("/k"),
             false,
-            "sh"
+            "sh",
+            None,
         )
         .is_err());
     }

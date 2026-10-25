@@ -8,3 +8,4 @@ pub mod models;
 pub mod network;
 pub mod procfs;
 pub mod scrollback;
+pub mod skills;

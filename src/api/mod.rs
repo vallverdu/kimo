@@ -106,6 +106,12 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/devices", get(list_devices))
         .route("/devices/{id}", axum::routing::delete(delete_device))
         .route("/qr", get(qr))
+        .route("/settings", get(get_settings).put(put_settings))
+        .route("/agents", get(agents))
+        .route(
+            "/skills",
+            get(list_skills).post(install_skill).delete(remove_skill),
+        )
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     // Pairing is the way in for a new device: it needs a one-time code, not a key.
     let public = Router::new().route("/pair", post(pair));
@@ -573,6 +579,53 @@ async fn qr(Query(q): Query<HashMap<String, String>>) -> Result<Response, ApiErr
         svg,
     )
         .into_response())
+}
+
+async fn get_settings(State(app): State<App>) -> Json<serde_json::Value> {
+    Json(json!(app.manager.settings()))
+}
+
+async fn put_settings(
+    State(app): State<App>,
+    Json(body): Json<crate::core::models::Settings>,
+) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(app.manager.set_settings(body)?)))
+}
+
+/// Agent CLIs installed on this machine, with versions.
+async fn agents() -> ApiResult<serde_json::Value> {
+    let list = tokio::task::spawn_blocking(crate::services::skills::detect_agents)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(list)))
+}
+
+async fn list_skills(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(app
+        .manager
+        .skills(q.get("project").map(String::as_str))?)))
+}
+
+async fn install_skill(
+    State(app): State<App>,
+    Json(body): Json<crate::services::skills::InstallSkill>,
+) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let installed = tokio::task::spawn_blocking(move || manager.install_skill(body))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!(installed)))
+}
+
+async fn remove_skill(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    let path = q.get("path").ok_or_else(|| not_found("path"))?;
+    Ok(Json(json!({ "backup": app.manager.remove_skill(path)? })))
 }
 
 /// Terminal websocket: binary frames carry raw bytes both ways; text frames carry control
