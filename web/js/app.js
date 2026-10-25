@@ -5,6 +5,7 @@ import { terminal } from './terminal.js';
 import { $, esc, mb, shortPath, toast } from './ui.js';
 import { initProjects } from './projects.js';
 import { initDevices } from './devices.js';
+import { initUsage } from './usage.js';
 
 const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, usage: [], view: 'agents' };
 
@@ -21,7 +22,7 @@ function usageText(u) {
   }
   return u.tokens_7d ? `${kTokens(u.tokens_5h)} tokens in 5 h · ${kTokens(u.tokens_7d)} in 7 days` : 'no usage through kimo in 7 days';
 }
-const VIEWS = ['agents', 'projects', 'accounts', 'devices', 'apps'];
+const VIEWS = ['agents', 'projects', 'usage', 'accounts', 'devices', 'apps'];
 
 // ----- rendering -----
 
@@ -166,6 +167,7 @@ async function run(promise, done) {
 
 const projectsView = initProjects({ api, state, run, terminal });
 const devicesView = initDevices({ api, state, run });
+const usageView = initUsage({ api, state, run });
 
 // ----- views -----
 
@@ -174,6 +176,8 @@ function show(view) {
   for (const v of VIEWS) $(`view-${v}`).hidden = state.view !== v;
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === state.view));
   $('add').setAttribute('aria-label', { agents: 'New session', projects: 'New project', accounts: 'New account', devices: 'Pair a device', apps: 'New app' }[state.view]);
+  $('add').hidden = state.view === 'usage';
+  if (state.view === 'usage') usageView.load();
   if (state.view === 'devices') devicesView.load();
   else devicesView.hideQr();
 }

@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
     Terminals,
+    Usage,
     Subscriptions,
     Skills,
     Settings,
@@ -34,6 +35,8 @@ enum Msg {
     Network(Value),
     Apps(Value),
     Usage(Value),
+    /// Daily usage report (`/usage/daily`).
+    Daily(Value),
     /// Paired kimos with keys (from this machine's kimo): hosts the window connects to.
     Hosts(Value),
     /// Paired kimos with online state (Devices view).
@@ -150,6 +153,9 @@ pub struct KimoApp {
     network: Value,
     apps: Vec<Value>,
     usage: Vec<Value>,
+    daily: Value,
+    /// Days the Usage view shows.
+    daily_days: u32,
     terminals: Vec<TerminalView>,
     active: usize,
     toasts: Vec<(String, bool, Instant)>,
@@ -302,6 +308,8 @@ impl KimoApp {
             network: Value::Null,
             apps: vec![],
             usage: vec![],
+            daily: Value::Null,
+            daily_days: 14,
             terminals: vec![],
             active: 0,
             toasts: vec![],
@@ -440,6 +448,7 @@ impl KimoApp {
                 }
                 Msg::Apps(v) => self.apps = v.as_array().cloned().unwrap_or_default(),
                 Msg::Usage(v) => self.usage = v.as_array().cloned().unwrap_or_default(),
+                Msg::Daily(v) => self.daily = v,
                 Msg::Peers(v) => self.peer_info = v.as_array().cloned().unwrap_or_default(),
                 Msg::Hosts(v) => {
                     let peers = v.as_array().cloned().unwrap_or_default();
@@ -521,6 +530,10 @@ impl KimoApp {
         self.last_projects = Instant::now() - Duration::from_secs(60);
         match self.view {
             View::Terminals => {}
+            View::Usage => {
+                let days = self.daily_days;
+                self.job(move |c| Ok(Msg::Daily(c.get(&format!("/usage/daily?days={days}"))?)));
+            }
             View::Subscriptions => self.job(|c| Ok(Msg::Usage(c.get("/usage")?))),
             View::Skills => self.job(|c| Ok(Msg::Skills(c.get("/skills")?))),
             View::Settings => {
@@ -642,6 +655,7 @@ impl KimoApp {
             ui.add_space(16.0);
             for (view, label) in [
                 (View::Terminals, "Terminals"),
+                (View::Usage, "Usage"),
                 (View::Subscriptions, "Subscriptions"),
                 (View::Skills, "Skills"),
                 (View::Settings, "Settings"),
@@ -1450,6 +1464,156 @@ impl KimoApp {
         }
     }
 
+    fn usage_view(&mut self, ui: &mut Ui) {
+        use super::chart::{self, Column, CLAUDE, CODEX};
+        let r = self.daily.clone();
+        let n = |v: &Value| v.as_u64().unwrap_or(0);
+        let both = |v: &Value| n(&v["claude"]) + n(&v["codex"]);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.heading(RichText::new("Usage").color(theme::INK));
+            ui.label(RichText::new("Every Claude Code and Codex conversation on this machine, inside kimo or not, from the agents' own logs.").color(theme::MUTED));
+            ui.add_space(10.0);
+            // The range: one row of choices above everything it filters.
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Last").size(12.0).color(theme::MUTED));
+                for days in [7u32, 14, 30, 90] {
+                    let selected = self.daily_days == days;
+                    let r = ui.add(egui::Button::new(RichText::new(format!("{days} days")).color(if selected { theme::INK } else { theme::MUTED })).frame(false));
+                    if selected {
+                        ui.painter().hline(r.rect.x_range(), r.rect.bottom() + 1.0, egui::Stroke::new(1.0, theme::INK));
+                    }
+                    if r.clicked() && !selected {
+                        self.daily_days = days;
+                        self.refresh_view();
+                    }
+                }
+                if ui.button("refresh").clicked() {
+                    self.refresh_view();
+                }
+            });
+            if r.is_null() {
+                ui.add_space(20.0);
+                ui.label(RichText::new("Reading the agents' logs…").color(theme::MUTED));
+                return;
+            }
+            ui.add_space(14.0);
+            // Headline figures.
+            ui.horizontal(|ui| {
+                let tile = |ui: &mut Ui, label: &str, value: String, note: String| {
+                    ui.vertical(|ui| {
+                        ui.set_min_width(150.0);
+                        ui.label(RichText::new(label).size(11.0).color(theme::MUTED));
+                        ui.label(RichText::new(value).size(26.0).color(theme::INK));
+                        ui.label(RichText::new(note).size(11.0).color(theme::TEXT));
+                    });
+                    ui.add_space(18.0);
+                };
+                let split = |v: &Value| format!("claude {} · codex {}", tokens(n(&v["claude"])), tokens(n(&v["codex"])));
+                tile(ui, "Today", tokens(both(&r["today"])), split(&r["today"]));
+                tile(ui, "Last 7 days", tokens(both(&r["last_7_days"])), split(&r["last_7_days"]));
+                tile(ui, &format!("Last {} days", self.daily_days), tokens(both(&r["total"])), split(&r["total"]));
+                tile(ui, "Prompts", n(&r["prompts"]).to_string(), format!("in {} conversations", n(&r["conversations"])));
+            });
+
+            section(ui, "Tokens per day");
+            ui.horizontal(|ui| {
+                chart::legend(ui, CLAUDE, "claude");
+                chart::legend(ui, CODEX, "codex");
+                ui.label(RichText::new("new input, output and cache writes; cache reads are not counted").size(11.0).color(theme::MUTED));
+            });
+            let cols: Vec<Column> = r["days"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|d| Column { date: s(d, "date").to_string(), claude: n(&d["tokens"]["claude"]), codex: n(&d["tokens"]["codex"]), prompts: n(&d["prompts"]) })
+                .collect();
+            chart::daily(ui, &cols, 220.0);
+            egui::CollapsingHeader::new(RichText::new("as a table").size(11.0).color(theme::MUTED)).id_salt("daily-table").show(ui, |ui| {
+                egui::Grid::new("daily-grid").num_columns(4).spacing([24.0, 4.0]).show(ui, |ui| {
+                    for h in ["day", "claude", "codex", "prompts"] {
+                        ui.label(RichText::new(h).size(11.0).color(theme::MUTED));
+                    }
+                    ui.end_row();
+                    for c in cols.iter().rev() {
+                        ui.label(RichText::new(&c.date).size(12.0).color(theme::TEXT));
+                        ui.label(RichText::new(tokens(c.claude)).size(12.0).color(theme::INK));
+                        ui.label(RichText::new(tokens(c.codex)).size(12.0).color(theme::INK));
+                        ui.label(RichText::new(c.prompts.to_string()).size(12.0).color(theme::INK));
+                        ui.end_row();
+                    }
+                });
+            });
+
+            section(ui, "Where");
+            let places = r["places"].as_array().cloned().unwrap_or_default();
+            if places.is_empty() {
+                ui.label(RichText::new("No agent work in these days.").color(theme::MUTED));
+            }
+            let top = places.first().map_or(1, |p| both(&p["tokens"]));
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+            egui::Grid::new("places").num_columns(7).spacing([16.0, 8.0]).show(ui, |ui| {
+                for h in ["", "", "tokens", "prompts", "conversations", "last used", ""] {
+                    ui.label(RichText::new(h).size(11.0).color(theme::MUTED));
+                }
+                ui.end_row();
+                for p in &places {
+                    let t = &p["tokens"];
+                    ui.vertical(|ui| {
+                        ui.set_width(210.0);
+                        ui.add(egui::Label::new(RichText::new(s(p, "name")).size(14.0).color(theme::INK)).truncate());
+                        ui.add(egui::Label::new(RichText::new(short_path(&home(s(p, "path")), 34)).size(10.5).color(theme::MUTED)).truncate());
+                    });
+                    chart::share(ui, n(&t["claude"]), n(&t["codex"]), top, 180.0);
+                    ui.label(RichText::new(tokens(both(t))).color(theme::INK))
+                        .on_hover_text(format!("claude {} · codex {}", tokens(n(&t["claude"])), tokens(n(&t["codex"]))));
+                    ui.label(RichText::new(n(&p["prompts"]).to_string()).color(theme::TEXT));
+                    ui.label(RichText::new(n(&p["conversations"]).to_string()).color(theme::TEXT));
+                    ui.label(RichText::new(ago(now, n(&p["last_active"]))).size(12.0).color(theme::TEXT));
+                    if p["project"].is_string() {
+                        ui.label(RichText::new("project").size(11.0).color(theme::MUTED));
+                    } else if !s(p, "path").is_empty() && ui.button("add as project").on_hover_text("make this folder a kimo project").clicked() {
+                        let path = s(p, "path").to_string();
+                        self.action("Project added", move |c| c.post("/projects", json!({ "mode": "existing", "path": path, "resume": false })));
+                    }
+                    ui.end_row();
+                }
+            });
+
+            section(ui, "Subscriptions");
+            let accounts = r["accounts"].as_array().cloned().unwrap_or_default();
+            let outside = both(&r["outside_kimo"]);
+            let top = accounts.iter().map(|a| n(&a["tokens"])).chain([outside]).max().unwrap_or(1);
+            egui::Grid::new("daily-accounts").num_columns(4).spacing([16.0, 8.0]).show(ui, |ui| {
+                for a in &accounts {
+                    let claude = s(a, "provider") == "claude";
+                    ui.vertical(|ui| {
+                        ui.set_width(210.0);
+                        ui.add(egui::Label::new(RichText::new(s(a, "name")).size(14.0).color(theme::INK)).truncate());
+                        ui.label(RichText::new(s(a, "provider")).size(10.5).color(theme::MUTED));
+                    });
+                    chart::share(ui, if claude { n(&a["tokens"]) } else { 0 }, if claude { 0 } else { n(&a["tokens"]) }, top, 180.0);
+                    ui.label(RichText::new(tokens(n(&a["tokens"]))).color(theme::INK));
+                    ui.label(RichText::new(format!("{} prompts", n(&a["prompts"]))).size(12.0).color(theme::TEXT));
+                    ui.end_row();
+                }
+                if outside > 0 {
+                    ui.vertical(|ui| {
+                        ui.set_width(210.0);
+                        ui.label(RichText::new("outside kimo").size(14.0).color(theme::TEXT));
+                        ui.label(RichText::new("account not known").size(10.5).color(theme::MUTED));
+                    })
+                    .response
+                    .on_hover_text("Conversations not run by kimo (or by sessions since deleted): which account they used is not known.");
+                    chart::share(ui, n(&r["outside_kimo"]["claude"]), n(&r["outside_kimo"]["codex"]), top, 180.0);
+                    ui.label(RichText::new(tokens(outside)).color(theme::INK));
+                    ui.label("");
+                    ui.end_row();
+                }
+            });
+            ui.add_space(20.0);
+        });
+    }
+
     fn devices_view(&mut self, ui: &mut Ui) {
         ui.heading(RichText::new("Devices").color(theme::INK));
         ui.label(RichText::new("Use kimo from your phone or any device on your network: show the QR code and scan it.").color(theme::MUTED));
@@ -1815,6 +1979,20 @@ fn short_title(title: &str) -> String {
     }
 }
 
+/// "5 min ago", "3 h ago", "2 d ago".
+fn ago(now_ms: u64, at_ms: u64) -> String {
+    if at_ms == 0 {
+        return String::new();
+    }
+    let min = now_ms.saturating_sub(at_ms) / 60_000;
+    match min {
+        0 => "just now".into(),
+        1..=59 => format!("{min} min ago"),
+        60..=2879 => format!("{} h ago", min / 60),
+        _ => format!("{} d ago", min / 1440),
+    }
+}
+
 /// "needs you" / "working" next to a session name.
 fn activity_tag(ui: &mut Ui, session: &Value) {
     match s(session, "activity") {
@@ -1891,6 +2069,7 @@ impl eframe::App for KimoApp {
             )
             .show(ui, |ui| match self.view {
                 View::Terminals => self.terminals_view(ui),
+                View::Usage => self.usage_view(ui),
                 View::Subscriptions => self.subscriptions_view(ui),
                 View::Skills => self.skills_view(ui),
                 View::Settings => self.settings_view(ui),

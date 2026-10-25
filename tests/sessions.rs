@@ -223,6 +223,25 @@ async fn pause_switch_account_stop_and_continue() {
     wait_for(&m, &s.spec.id, &format!("ARGS=--resume {conv}")).await;
     m.delete(&s.spec.id).await.unwrap();
     assert!(m.session(&s.spec.id).is_none());
+
+    // Daily usage keeps each message on the account it used, also once the session is gone.
+    let daily = m.daily_usage(2);
+    let tokens_of = |id: &str| {
+        daily
+            .accounts
+            .iter()
+            .find(|x| x.account.as_deref() == Some(id))
+            .map(|x| x.tokens)
+    };
+    assert_eq!(
+        (
+            tokens_of(&a.id),
+            tokens_of(&b.id),
+            daily.outside_kimo.total()
+        ),
+        (Some(15), Some(15), 0)
+    );
+    assert_eq!(daily.total.claude, 30);
     m.delete_account(&a.id).unwrap();
 }
 

@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod activity;
+pub mod daily;
 pub mod git;
 pub mod history;
 pub mod hostname;

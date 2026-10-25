@@ -22,7 +22,7 @@
 	<header class="ui-header"><div class="row">
 		<a class="ui-brand" href="#agents"><img class="k-logo" src="icons/icon.svg" alt="" width="40" height="39">
 			<span><strong>kimo</strong><small>agent environment</small></span></a>
-		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#projects" data-view="projects">Projects</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li><li><a href="#devices" data-view="devices">Devices</a></li><li><a href="#apps" data-view="apps">Apps</a></li></ul>
+		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#projects" data-view="projects">Projects</a></li><li><a href="#usage" data-view="usage">Usage</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li><li><a href="#devices" data-view="devices">Devices</a></li><li><a href="#apps" data-view="apps">Apps</a></li></ul>
 	</div></header>
 
 	<main class="ui-main"><div class="row"><div class="column width-12">
@@ -39,6 +39,22 @@
 			<p class="ui-lead">Folders your agents work in. Create one, add an existing folder or clone a repository, then start agents in it.</p>
 			<h3 class="ui-section-title">Projects</h3>
 			<ul class="k-sessions" id="project-list"></ul>
+		</section>
+		<section id="view-usage" hidden>
+			<h1 class="ui-page-title">Usage</h1>
+			<p class="ui-lead">Every Claude Code and Codex conversation on this machine, inside kimo or not, from the agents' own logs.</p>
+			<div class="k-range" id="usage-range" role="group" aria-label="Days shown">
+				<span>last</span><button data-days="7">7 days</button><button data-days="14">14 days</button><button data-days="30">30 days</button><button data-days="90">90 days</button>
+			</div>
+			<div class="ui-stats k-usage-stats" id="usage-stats"></div>
+			<h3 class="ui-section-title">Tokens per day</h3>
+			<div class="k-legend"><span><i style="background:var(--k-claude)"></i>claude</span><span><i style="background:var(--k-codex)"></i>codex</span><small>new input, output and cache writes; cache reads not counted</small></div>
+			<div class="k-chart" id="usage-chart"></div>
+			<details class="k-table"><summary>as a table</summary><table id="usage-table"></table></details>
+			<h3 class="ui-section-title">Where</h3>
+			<ul class="k-sessions k-usage" id="usage-places"></ul>
+			<h3 class="ui-section-title">Subscriptions</h3>
+			<ul class="k-sessions k-usage" id="usage-accounts"></ul>
 		</section>
 		<section id="view-devices" hidden>
 			<h1 class="ui-page-title">Devices</h1>
@@ -94,6 +110,7 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 	<nav class="ui-tabbar k-tabbar" aria-label="Sections">
 		<a href="#agents" data-view="agents"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>Agents</a>
 		<a href="#projects" data-view="projects"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5h6l2 2.5h10v10H3z"/></svg>Projects</a>
+		<a href="#usage" data-view="usage"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20.5h18M6 17V11M10.5 17V5M15 17v-8M19.5 17v-4"/></svg>Usage</a>
 		<a href="#accounts" data-view="accounts"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.6 2.7-6 6-6s6 2.4 6 6M16 5.2a3 3 0 0 1 0 5.6M18 14.4c1.9.8 3 2.8 3 5.6"/></svg>Accounts</a>
 		<a href="#devices" data-view="devices"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2.5" width="10" height="19" rx="1.5"/><path d="M11 18.5h2"/></svg>Devices</a>
 		<a href="#apps" data-view="apps"><svg class="k-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2.5L5 13.5h6l-1 8 8-11h-6z"/></svg>Apps</a>

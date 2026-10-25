@@ -27,6 +27,9 @@ and gives you, and the agents themselves, the controls for that.
   and sign in once. Switch an agent to another account at any time and it **continues the
   same conversation**; when one plan hits its limit, move all its agents with one click.
   kimo shows **usage per account** (Claude tokens, Codex plan limits and reset times).
+- **Usage per day and per project.** A Usage tab shows the tokens of every Claude Code and
+  Codex conversation on the machine, inside kimo or not, per day, per project (or repository)
+  and per subscription, from the agents' own logs. Also on the phone and as `kimo usage`.
 - **Pause, stop, continue.** Pause freezes an agent (no CPU); stop frees its memory; continue
   resumes its own conversation by id. Memory and CPU per agent, always visible.
 - **Agents that work together.** Every agent has a clear id and resume id. Agents run
@@ -124,7 +127,7 @@ HTTPS (`tailscale serve`, one click in Devices) it installs as an app.
 
 | | | | |
 |---|---|---|---|
-| ![Agents on a phone](docs/screenshots/phone-agents.png) | ![A terminal on a phone](docs/screenshots/phone-terminal.png) | ![Earlier conversations of a project on a phone](docs/screenshots/phone-history.png) | ![Accounts on a phone](docs/screenshots/phone-accounts.png) |
+| ![Agents on a phone](docs/screenshots/phone-agents.png) | ![A terminal on a phone](docs/screenshots/phone-terminal.png) | ![Usage on a phone](docs/screenshots/phone-usage.png) | ![Earlier conversations of a project on a phone](docs/screenshots/phone-history.png) |
 
 ## Build your own apps
 
@@ -186,15 +189,17 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## More screenshots
 
-| Drop a folder: its last conversations continue | Earlier conversations of a project |
+| Usage per day, project and subscription | Drop a folder: its last conversations continue |
 |---|---|
-| ![A project added from a folder, continuing its last conversation](docs/screenshots/app-continue.png) | ![The history of a project](docs/screenshots/app-history.png) |
-| **Claude Code in kimo** | **Someone needs you** |
-| ![Claude Code in the kimo window](docs/screenshots/app-claude.png) | ![A session waiting for an answer](docs/screenshots/app-needs-you.png) |
-| **Subscriptions** | **Skills** |
-| ![Subscriptions](docs/screenshots/app-subscriptions.png) | ![Skills](docs/screenshots/app-skills.png) |
-| **Settings** | **Devices and other machines** |
-| ![Settings](docs/screenshots/app-settings.png) | ![Devices](docs/screenshots/app-devices.png) |
+| ![Daily usage by project and subscription](docs/screenshots/app-usage.png) | ![A project added from a folder, continuing its last conversation](docs/screenshots/app-continue.png) |
+| **Earlier conversations of a project** | **Claude Code in kimo** |
+| ![The history of a project](docs/screenshots/app-history.png) | ![Claude Code in the kimo window](docs/screenshots/app-claude.png) |
+| **Someone needs you** | **Subscriptions** |
+| ![A session waiting for an answer](docs/screenshots/app-needs-you.png) | ![Subscriptions](docs/screenshots/app-subscriptions.png) |
+| **Skills** | **Settings** |
+| ![Skills](docs/screenshots/app-skills.png) | ![Settings](docs/screenshots/app-settings.png) |
+| **Devices and other machines** | |
+| ![Devices](docs/screenshots/app-devices.png) | |
 
 ## Platforms and limitations
 
@@ -204,8 +209,9 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
   conversation when started again).
 - Agent state (*working*, *needs you*) comes from output timing and the prompt shapes of
   Claude Code, Codex and common CLIs; unusual prompts may show as idle.
-- Claude usage is counted in tokens from the transcripts of agents run through kimo; plan
-  percentages are shown for Codex, which records them in its logs.
+- Usage is counted in tokens from the agents' logs; plan percentages are shown for Codex, which
+  records them. Which subscription a conversation used is known only for agents run by kimo;
+  days are the local days of the machine the agents run on.
 - `codex login` completes in a browser on the machine itself; sign Codex accounts in there once.
 
 ## Development

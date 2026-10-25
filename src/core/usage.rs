@@ -187,6 +187,7 @@ mod tests {
             cwd: "/w".into(),
             started_at: start,
             ended_at: end,
+            conversation: None,
             extra: Default::default(),
         }
     }

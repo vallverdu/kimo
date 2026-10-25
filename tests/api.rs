@@ -722,3 +722,101 @@ async fn settings_and_skills() {
         "clone cleaned up"
     );
 }
+
+#[tokio::test]
+async fn daily_usage_reads_the_agents_logs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    // A Claude conversation of today in a folder that is not a kimo project.
+    let folder = tmp.path().join("home/oss/lib");
+    std::fs::create_dir_all(folder.join(".git")).unwrap();
+    std::fs::create_dir_all(folder.join("src")).unwrap();
+    let logs = tmp.path().join("home/.claude/projects/-oss-lib");
+    std::fs::create_dir_all(&logs).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (days, rem) = (now / 86_400, now % 86_400);
+    let ts = {
+        // Civil date from days since 1970 (UTC).
+        let z = days as i64 + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z",
+            rem / 3600,
+            rem % 3600 / 60,
+            rem % 60
+        )
+    };
+    let cwd = folder.join("src").display().to_string();
+    std::fs::write(
+        logs.join("c1.jsonl"),
+        format!(
+            "{{\"type\":\"user\",\"timestamp\":\"{ts}\",\"cwd\":\"{cwd}\",\"uuid\":\"u1\",\"message\":{{\"content\":\"Fix the parser\"}}}}\n\
+             {{\"type\":\"assistant\",\"timestamp\":\"{ts}\",\"cwd\":\"{cwd}\",\"message\":{{\"id\":\"m1\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":90,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":500}}}}}}\n"
+        ),
+    )
+    .unwrap();
+
+    let res = app
+        .clone()
+        .oneshot(local(req(
+            "GET",
+            "/api/usage/daily?days=3",
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let r = json(res).await;
+    assert_eq!(r["days"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        (r["total"]["claude"].as_u64(), r["prompts"].as_u64()),
+        (Some(100), Some(1))
+    );
+    // Grouped at the repository root, not the subfolder it ran in; not run through kimo.
+    assert_eq!(r["places"][0]["name"], "lib");
+    assert!(r["places"][0]["project"].is_null());
+    assert_eq!(r["outside_kimo"]["claude"].as_u64(), Some(100));
+
+    // Apps with a read key may see usage too.
+    let key = json(
+        app.clone()
+            .oneshot(local(req(
+                "POST",
+                "/api/clients",
+                None,
+                None,
+                Some(&format!(
+                    r#"{{"name":"pm","origins":["{APP}"],"scope":"read"}}"#
+                )),
+            )))
+            .await
+            .unwrap(),
+    )
+    .await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = app
+        .oneshot(remote(req(
+            "GET",
+            "/api/usage/daily",
+            Some(APP),
+            Some(&key),
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}

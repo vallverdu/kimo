@@ -63,6 +63,7 @@ fn main() -> Result<()> {
         ),
         Command::Whoami => kimo::cli::whoami(&kimo::cli::client(cfg.port)),
         Command::Peers => kimo::cli::peers(&kimo::cli::client(cfg.port)),
+        Command::Usage { days, json } => kimo::cli::usage(&kimo::cli::client(cfg.port), days, json),
         Command::History { folder } => kimo::cli::history(&kimo::cli::client(cfg.port), folder),
         Command::Continue { id, folder } => {
             kimo::cli::continue_conversation(&kimo::cli::client(cfg.port), &id, folder)

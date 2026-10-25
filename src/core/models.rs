@@ -261,6 +261,9 @@ pub struct Run {
     pub started_at: u64,
     #[serde(default)]
     pub ended_at: Option<u64>,
+    /// The agent's conversation in this run (Codex: once its id is known).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

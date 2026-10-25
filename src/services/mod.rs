@@ -1,6 +1,7 @@
 //! I/O: files, processes, terminals, network.
 
 pub mod accounts;
+pub mod daily;
 pub mod devices;
 pub mod history;
 pub mod network;

@@ -71,6 +71,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | DELETE | `/accounts/{id}` | refused while sessions use it |
 | POST | `/accounts/{id}/login` | start a sign-in terminal for it |
 | POST | `/accounts/{id}/move` | `{to: id \| null}`: move every session of an account (`default` = default login) |
+| GET | `/usage/daily?days=30` | every Claude and Codex conversation on the machine (in kimo or not), from the agents' logs, in local days: `days[] {date, tokens {claude, codex}, prompts, cache_read}`, `places[] {name, path, project, tokens, prompts, conversations, last_active}` (folders grouped by kimo project, else by git repository), `accounts[] {account, name, provider, tokens, prompts}`, `outside_kimo`, `today`, `last_7_days`, `total`, `prompts`, `conversations`. Tokens = new input + output + cache writes |
 | GET | `/usage` | per account: `tokens_5h`, `tokens_7d`, `detail_7d`, `messages_7d`, `last_activity`, `limits` (Codex: `used_percent`, `window_minutes`, `resets_at`) |
 
 ## Skills, settings, agents
@@ -127,7 +128,7 @@ kimo.waitFor(id, ['idle', 'waiting'], { timeout });   // resolves with the sessi
 kimo.subscribe(({ sessions, accounts }) => …);        // live updates; returns stop()
 kimo.projects(); kimo.createProject(p); kimo.deleteProject(id); kimo.browse(path);
 kimo.conversations(path); kimo.continueConversation({ agent, cwd, id });
-kimo.accounts(); kimo.usage(); kimo.moveSessions(from, to);
+kimo.accounts(); kimo.usage(); kimo.dailyUsage(days); kimo.moveSessions(from, to);
 quietFor(session);                  // seconds since its last output
 ```
 
@@ -146,6 +147,7 @@ kimo read <id> [--screen] [--lines N]
 kimo wait <id> [--timeout S]
 kimo new <claude|codex|shell> [--name N] [--cwd DIR] [--account A] [--prompt TEXT]
 kimo whoami
+kimo usage [--days 14] [--json]       tokens per day, project and subscription
 kimo history [folder]                 earlier Claude and Codex conversations here
 kimo continue <conversation> [--folder DIR]
 kimo peers

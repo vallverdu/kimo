@@ -10,6 +10,8 @@ First public version.
 - Claude Code, Codex and shell sessions; pause, stop and continue by conversation id.
 - Adding a folder continues the Claude and Codex conversations that already happened there;
   every project has a history of earlier conversations (`kimo history`, `kimo continue`).
+- Usage tab (window and phone), `kimo usage` and `GET /api/usage/daily`: tokens per day, per
+  project and per subscription for every Claude and Codex conversation on the machine.
 - Several Claude and Codex accounts; switch an agent's subscription and continue the same
   conversation; move every agent of an account at once; usage per account.
 - Agent state (working, needs you, idle) and a "needs you" list.

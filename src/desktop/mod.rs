@@ -2,6 +2,7 @@
 //! background when needed), so closing the window never stops your agents.
 
 mod app;
+mod chart;
 mod input;
 mod terminal;
 mod theme;

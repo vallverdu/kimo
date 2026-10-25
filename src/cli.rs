@@ -292,3 +292,110 @@ pub fn continue_conversation(c: &Client, id: &str, folder: Option<String>) -> Re
     println!("continuing {} as {}", s(conv, "title"), s(&session, "id"));
     Ok(())
 }
+
+/// 1234 → 1.2K, 3400000 → 3.4M.
+fn compact(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{:.1}K", n as f64 / 1e3),
+        1_000_000..=999_999_999 => format!("{:.1}M", n as f64 / 1e6),
+        _ => format!("{:.1}B", n as f64 / 1e9),
+    }
+}
+
+/// Daily usage on this machine: per day, per project and per account.
+pub fn usage(c: &Client, days: u32, as_json: bool) -> Result<()> {
+    let r: Value = c.get(&format!("/usage/daily?days={days}"))?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+        return Ok(());
+    }
+    let n = |v: &Value| v.as_u64().unwrap_or(0);
+    let split = |v: &Value| {
+        format!(
+            "{} tokens (claude {} · codex {})",
+            compact(n(&v["claude"]) + n(&v["codex"])),
+            compact(n(&v["claude"])),
+            compact(n(&v["codex"]))
+        )
+    };
+    println!(
+        "Last {days} days: {}, {} prompts, {} conversations",
+        split(&r["total"]),
+        n(&r["prompts"]),
+        n(&r["conversations"])
+    );
+    println!(
+        "Today {} · last 7 days {}",
+        compact(n(&r["today"]["claude"]) + n(&r["today"]["codex"])),
+        compact(n(&r["last_7_days"]["claude"]) + n(&r["last_7_days"]["codex"]))
+    );
+    println!("Tokens are new input, output and cache writes (cache reads not counted).\n");
+
+    let list = |k: &str| r[k].as_array().cloned().unwrap_or_default();
+    let max = list("days")
+        .iter()
+        .map(|d| n(&d["tokens"]["claude"]) + n(&d["tokens"]["codex"]))
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    println!(
+        "{:<11} {:>7} {:>7} {:>7}",
+        "DAY", "CLAUDE", "CODEX", "PROMPTS"
+    );
+    for d in list("days") {
+        let total = n(&d["tokens"]["claude"]) + n(&d["tokens"]["codex"]);
+        let bar = "█".repeat(((total * 30).div_ceil(max)) as usize);
+        println!(
+            "{:<11} {:>7} {:>7} {:>7}  {bar}",
+            s(&d, "date"),
+            compact(n(&d["tokens"]["claude"])),
+            compact(n(&d["tokens"]["codex"])),
+            n(&d["prompts"])
+        );
+    }
+    let places = list("places");
+    if !places.is_empty() {
+        println!(
+            "\n{:<24} {:>7} {:>7} {:>7} {:>7} {:>5}  FOLDER",
+            "PROJECT", "TOKENS", "CLAUDE", "CODEX", "PROMPTS", "CONVS"
+        );
+        for p in &places {
+            let name = if p["project"].is_string() {
+                s(p, "name").to_string()
+            } else {
+                format!("{} *", s(p, "name"))
+            };
+            println!(
+                "{:<24} {:>7} {:>7} {:>7} {:>7} {:>5}  {}",
+                name.chars().take(24).collect::<String>(),
+                compact(n(&p["tokens"]["claude"]) + n(&p["tokens"]["codex"])),
+                compact(n(&p["tokens"]["claude"])),
+                compact(n(&p["tokens"]["codex"])),
+                n(&p["prompts"]),
+                n(&p["conversations"]),
+                home(s(p, "path"))
+            );
+        }
+        println!("* not a kimo project");
+    }
+    let accounts = list("accounts");
+    if !accounts.is_empty() || n(&r["outside_kimo"]["claude"]) + n(&r["outside_kimo"]["codex"]) > 0
+    {
+        println!("\n{:<28} {:>7} {:>7}", "ACCOUNT", "TOKENS", "PROMPTS");
+        for a in &accounts {
+            println!(
+                "{:<28} {:>7} {:>7}",
+                s(a, "name"),
+                compact(n(&a["tokens"])),
+                n(&a["prompts"])
+            );
+        }
+        println!(
+            "{:<28} {:>7}",
+            "run outside kimo",
+            compact(n(&r["outside_kimo"]["claude"]) + n(&r["outside_kimo"]["codex"]))
+        );
+    }
+    Ok(())
+}

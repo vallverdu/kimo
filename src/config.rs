@@ -120,6 +120,15 @@ pub enum Command {
         #[arg(long)]
         folder: Option<String>,
     },
+    /// Daily usage of Claude and Codex on this machine, by project and account.
+    Usage {
+        /// How many days, today included.
+        #[arg(long, default_value_t = 14)]
+        days: u32,
+        /// The whole report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List the other kimos paired with this one.
     Peers,
     /// Pair with or forget another kimo (lab box, Raspberry Pi, Mac mini…).

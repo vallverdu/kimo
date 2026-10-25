@@ -114,6 +114,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/agents", get(agents))
         .route("/usage", get(usage))
+        .route("/usage/daily", get(daily_usage))
         .route(
             "/skills",
             get(list_skills).post(install_skill).delete(remove_skill),
@@ -793,6 +794,20 @@ async fn usage(State(app): State<App>) -> ApiResult<serde_json::Value> {
         .await
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!(list)))
+}
+
+/// Daily usage of every Claude and Codex conversation on this machine (`?days=`, default 30),
+/// by day, project and account.
+async fn daily_usage(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    let days = q.get("days").and_then(|d| d.parse().ok()).unwrap_or(30);
+    let manager = app.manager.clone();
+    let report = tokio::task::spawn_blocking(move || manager.daily_usage(days))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(report)))
 }
 
 /// Agent CLIs installed on this machine, with versions.

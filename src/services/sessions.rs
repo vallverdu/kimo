@@ -530,6 +530,7 @@ impl Manager {
                 cwd: spec.cwd.clone(),
                 started_at: now,
                 ended_at: None,
+                conversation: spec.conversation.clone(),
                 extra: Default::default(),
             });
             let excess = inner.state.runs.len().saturating_sub(MAX_RUNS);
@@ -967,6 +968,15 @@ impl Manager {
         }
         let mut inner = self.lock();
         for (session, id) in assigned {
+            if let Some(run) = inner
+                .state
+                .runs
+                .iter_mut()
+                .rev()
+                .find(|r| r.session == session)
+            {
+                run.conversation = Some(id.clone());
+            }
             if let Some(s) = inner.state.sessions.iter_mut().find(|s| s.id == session) {
                 s.conversation = Some(id);
             }

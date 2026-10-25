@@ -52,7 +52,7 @@
 .k-connect code { background: none; font-size: inherit; }
 .ui-sheet textarea.k-code { font-size: 1.2rem; }
 .ui-sheet [data-copy] { align-self: flex-start; }
-.k-tabbar { grid-template-columns: repeat(5, 1fr) !important; }
+.k-tabbar { grid-template-columns: repeat(6, 1fr) !important; }
 .k-warn { color: var(--color-bad); }
 .k-field { display: flex; gap: .8rem; align-items: stretch; margin-top: .6rem; }
 .k-field input { margin-top: 0 !important; flex: 1; min-width: 0; }
@@ -109,3 +109,44 @@
 .k-history strong { display: block; font-weight: var(--font-weight-regular); color: var(--color-ink); font-size: 1.4rem; line-height: 1.4; }
 .k-history small { color: var(--color-muted); font-size: 1.1rem; }
 .k-history .ui-button { flex: none; }
+
+/* Usage: series colours validated as a pair (colour-blind safe on white) */
+:root { --k-claude: #eb6834; --k-codex: #009aa8; }
+.k-range { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.6rem; margin: 0 0 2.4rem; font-size: 1.3rem; color: var(--color-muted); }
+.k-range button { background: none; border: 0; border-bottom: 1px solid transparent; padding: .4rem 0; margin: 0; font: inherit; color: var(--color-muted); cursor: pointer; height: auto; line-height: 1.4; letter-spacing: 0; text-transform: none; }
+.k-range button.active { color: var(--color-ink); border-bottom-color: var(--color-ink); }
+.k-usage-stats .ui-stat small { display: block; font-size: 1.1rem; color: var(--color-text); margin-top: .2rem; }
+.k-legend { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1.6rem; font-size: 1.2rem; color: var(--color-text); margin-bottom: 1rem; }
+.k-legend i { display: inline-block; width: 1rem; height: 1rem; border-radius: 2px; margin-right: .6rem; vertical-align: -1px; }
+.k-legend small { color: var(--color-muted); font-size: 1.1rem; }
+.k-chart { position: relative; width: 100%; margin-bottom: .6rem; }
+.k-chart svg { display: block; max-width: 100%; overflow: visible; }
+.k-chart .k-grid { stroke: var(--color-line); stroke-width: 1; }
+.k-chart .k-base { stroke: #b8b8b8; stroke-width: 1; }
+.k-chart .k-axis { fill: var(--color-muted); font-size: 10px; font-family: var(--font-family); }
+.k-chart .k-peak { fill: var(--color-ink); font-size: 10px; font-family: var(--font-family); }
+.k-chart .k-hit { fill: transparent; }
+.k-chart .k-col { outline: none; cursor: default; }
+.k-chart .k-col.on .k-hit, .k-chart .k-col:focus-visible .k-hit { fill: var(--color-surface); }
+.k-tip { position: absolute; top: 0; z-index: 2; pointer-events: none; background: var(--color-background); border: 1px solid var(--color-line); box-shadow: 0 2px 8px rgba(0, 0, 0, .08); padding: .8rem 1rem; font-size: 1.2rem; color: var(--color-muted); white-space: nowrap; }
+.k-tip strong { color: var(--color-ink); font-weight: 500; }
+.k-tip i { display: inline-block; width: 1.2rem; height: 2px; margin-right: .6rem; vertical-align: middle; }
+.k-tip-date { color: var(--color-muted); }
+.k-table { margin: 0 0 3rem; font-size: 1.2rem; color: var(--color-muted); }
+.k-table summary { cursor: pointer; }
+.k-table table { width: 100%; margin-top: 1rem; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.k-table th, .k-table td { text-align: right; padding: .3rem .8rem; border-bottom: 1px solid var(--color-line); color: var(--color-ink); font-weight: 400; }
+.k-table th { color: var(--color-muted); }
+.k-table th:first-child, .k-table td:first-child { text-align: left; }
+.k-usage > li { grid-template-columns: minmax(0, 1fr) auto; }
+.k-usage .k-num { font-size: 1.5rem; color: var(--color-ink); font-variant-numeric: tabular-nums; }
+.k-share { grid-column: 1 / -1; display: flex; gap: 2px; height: 8px; }
+.k-share i { display: block; height: 100%; min-width: 1px; }
+.k-share i:last-child { border-radius: 0 3px 3px 0; }
+.k-usage .k-meta .ui-button { margin: 0; }
+.k-empty { color: var(--color-muted); display: block !important; }
+.k-chart .k-col path, .k-chart .k-col text { pointer-events: none; }
+.k-usage-stats { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 760px) { .k-usage-stats { grid-template-columns: repeat(4, 1fr); } }
+.k-usage-stats .ui-stat { padding: 1.4rem 1.6rem; }
+.k-usage-stats .ui-stat small { line-height: 1.5; }
