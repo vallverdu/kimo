@@ -2,8 +2,11 @@
 name = "kimo"
 version = "0.1.0"
 edition = "2021"
-description = "Mobile-first agent development environment: terminals, accounts and resources for Claude Code and Codex agents"
-license = "UNLICENSED"
+description = "Agent development environment in Rust: a native app and a server for your Claude Code and Codex agents, with an API for your own apps"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["agents", "terminal", "claude", "codex", "pwa"]
+categories = ["command-line-utilities", "development-tools"]
 publish = false
 
 [dependencies]
