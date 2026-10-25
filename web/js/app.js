@@ -1,4 +1,7 @@
-// kimo UI: agents and accounts views, sheets, polling. Talks to the server only through `api`.
+// kimo UI: agents, accounts and apps views, sheets, live updates. Talks to kimo only through the SDK.
+import { kimo as api, setToken } from './api.js';
+import { terminal } from './terminal.js';
+
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const $ = id => document.getElementById(id);
 
@@ -14,7 +17,8 @@ function toast(message, isError = false) {
 
 const mb = bytes => bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GB` : `${Math.round(bytes / (1 << 20))} MB`;
 const home = path => path.replace(/^\/home\/[^/]+/, '~');
-const state = { sessions: [], accounts: [], status: null, view: 'agents' };
+const state = { sessions: [], accounts: [], apps: [], status: null, view: 'agents' };
+const VIEWS = ['agents', 'accounts', 'apps'];
 
 // ----- rendering -----
 
@@ -88,13 +92,23 @@ function renderAccounts() {
         ${a.id !== 'default' && !a.sessions ? `<button class="ui-button k-small k-danger" data-do="delete-account">delete</button>` : ''}
       </div></li>`;
   });
-  $('accounts').innerHTML = rows.join('');
+  $('account-list').innerHTML = rows.join('');
+}
+
+function renderApps() {
+  $('app-list').innerHTML = state.apps.length
+    ? state.apps.map(a => `<li data-app="${esc(a.id)}">
+      <span class="k-name" style="cursor:default">${esc(a.name)}</span><span class="ui-badge ${a.scope === 'control' ? 'running' : 'stopped'}">${esc(a.scope)}</span>
+      <div class="k-meta">${a.origins.length ? a.origins.map(o => `<code>${esc(o)}</code>`).join('') : '<span>no browser origin (scripts and servers only)</span>'}<span>key ${esc(a.token_hint)}</span></div>
+      <div class="k-actions"><button class="ui-button k-small k-danger" data-do="revoke">revoke</button></div></li>`).join('')
+    : '<li class="ui-empty">No apps yet. Tap + to give a PWA its own key.</li>';
 }
 
 function render() {
   renderStats();
   renderSessions();
   renderAccounts();
+  renderApps();
   const current = terminal.current && state.sessions.find(s => s.id === terminal.current.id);
   if (current) terminal.update(current);
 }
@@ -103,12 +117,28 @@ function render() {
 
 async function refresh() {
   try {
-    [state.sessions, state.accounts, state.status] = await Promise.all([api.sessions(), api.accounts(), api.status()]);
+    [state.sessions, state.accounts, state.status, state.apps] = await Promise.all([
+      api.sessions(), api.accounts(), api.status(), api.clients().catch(() => []),
+    ]);
     render();
+    return true;
   } catch (e) {
-    if (e instanceof api.AuthError) { if (!$('sheet-token').open) $('sheet-token').showModal(); }
-    else toast(`Cannot reach kimo: ${e.message}`, true);
+    if (e.status === 401) { if (!$('sheet-token').open) $('sheet-token').showModal(); }
+    else toast(e.message, true);
+    return false;
   }
+}
+
+// Live updates from /api/events; machine memory every few seconds.
+let unsubscribe = null;
+async function connect() {
+  unsubscribe?.();
+  if (!(await refresh())) return;
+  unsubscribe = api.subscribe(({ sessions, accounts }) => {
+    state.sessions = sessions;
+    state.accounts = accounts;
+    render();
+  });
 }
 
 async function run(promise, done) {
@@ -125,11 +155,10 @@ async function run(promise, done) {
 // ----- views -----
 
 function show(view) {
-  state.view = view === 'accounts' ? 'accounts' : 'agents';
-  $('view-agents').hidden = state.view !== 'agents';
-  $('view-accounts').hidden = state.view !== 'accounts';
+  state.view = VIEWS.includes(view) ? view : 'agents';
+  for (const v of VIEWS) $(`view-${v}`).hidden = state.view !== v;
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === state.view));
-  $('add').setAttribute('aria-label', state.view === 'agents' ? 'New session' : 'New account');
+  $('add').setAttribute('aria-label', { agents: 'New session', accounts: 'New account', apps: 'New app' }[state.view]);
 }
 addEventListener('hashchange', () => show(location.hash.slice(1)));
 
@@ -162,7 +191,7 @@ terminal.onClose = refresh;
 
 // ----- account actions -----
 
-$('accounts').addEventListener('click', async e => {
+$('account-list').addEventListener('click', async e => {
   const btn = e.target.closest('button[data-do]');
   const li = e.target.closest('li[data-account]');
   if (!btn || !li) return;
@@ -177,6 +206,39 @@ $('accounts').addEventListener('click', async e => {
   } else if (btn.dataset.do === 'delete-account') {
     if (confirm('Delete this account and its stored credentials?')) run(api.deleteAccount(id), 'Account deleted');
   }
+});
+
+// ----- apps -----
+
+const appSheet = $('sheet-app'), keySheet = $('sheet-key');
+
+$('app-list').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-do=revoke]');
+  const id = e.target.closest('li[data-app]')?.dataset.app;
+  if (btn && id && confirm('Revoke this key? The app stops working until it gets a new one.')) run(api.deleteClient(id), 'Key revoked');
+});
+
+appSheet.querySelector('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = e.target.elements;
+  const origins = f.origins.value.split(/[\s,]+/).filter(Boolean);
+  const app = await run(api.createClient({ name: f.name.value, origins, scope: f.scope.value }));
+  if (!app) return;
+  appSheet.close();
+  e.target.reset();
+  const snippet = `import { Kimo } from '${location.origin}/sdk/kimo.js';\n` +
+    `const kimo = new Kimo({ url: '${location.origin}', token: '${app.token}' });\n` +
+    `kimo.subscribe(({ sessions }) => console.log(sessions));`;
+  $('key-token').value = app.token;
+  $('key-snippet').value = snippet;
+  keySheet.showModal();
+});
+
+keySheet.addEventListener('click', async e => {
+  const target = e.target.closest('[data-copy]');
+  if (!target) return;
+  try { await navigator.clipboard.writeText($(target.dataset.copy).value); toast('Copied'); }
+  catch { $(target.dataset.copy).select(); toast('Select and copy it by hand', true); }
 });
 
 // ----- sheets -----
@@ -194,6 +256,7 @@ function syncKind() {
 
 $('add').addEventListener('click', () => {
   if (state.view === 'accounts') return accountSheet.showModal();
+  if (state.view === 'apps') return appSheet.showModal();
   const form = sessionSheet.querySelector('form');
   form.elements.cwd.value = recent()[0] || '';
   $('recent-folders').innerHTML = recent().map(f => `<option value="${esc(f)}">`).join('');
@@ -218,20 +281,23 @@ sessionSheet.querySelector('form').addEventListener('submit', async e => {
 accountSheet.querySelector('form').addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target.elements;
-  const acc = await run(api.createAccount({ name: f.name.value, provider: f.provider.value }), 'Account added: sign in next');
+  const acc = await run(api.createAccount(f.name.value, f.provider.value), 'Account added: sign in next');
   if (acc) { accountSheet.close(); e.target.reset(); }
 });
 
 $('sheet-token').querySelector('form').addEventListener('submit', e => {
-  api.setToken(e.target.elements.token.value.trim());
+  setToken(e.target.elements.token.value.trim());
   $('sheet-token').close();
-  refresh();
+  connect();
 });
 
 // ----- start -----
 
 show(location.hash.slice(1));
-refresh();
-setInterval(() => { if (document.visibilityState === 'visible') refresh(); }, 2000);
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
+document.querySelectorAll('[data-origin]').forEach(e => { e.textContent = location.origin; });
+connect();
+setInterval(async () => {
+  if (document.visibilityState !== 'visible' || !unsubscribe) return;
+  try { state.status = await api.status(); renderStats(); } catch { /* the event stream reports problems */ }
+}, 5000);
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});

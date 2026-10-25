@@ -23,7 +23,7 @@
 	<header class="ui-header"><div class="row">
 		<a class="ui-brand" href="#agents"><img class="ui-avatar" src="icons/icon.svg" alt="" width="44" height="44">
 			<span><strong>kimo</strong><small>agent environment</small></span></a>
-		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li></ul>
+		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li><li><a href="#apps" data-view="apps">Apps</a></li></ul>
 	</div></header>
 
 	<main class="ui-main"><div class="row"><div class="column width-12">
@@ -39,13 +39,31 @@
 			<h1 class="ui-page-title">Accounts</h1>
 			<p class="ui-lead">Subscriptions you can switch agents between without logging out. Conversations are shared.</p>
 			<h3 class="ui-section-title">Logins</h3>
-			<ul class="k-sessions" id="accounts"></ul>
+			<ul class="k-sessions" id="account-list"></ul>
+		</section>
+		<section id="view-apps" hidden>
+			<h1 class="ui-page-title">Apps</h1>
+			<p class="ui-lead">Other PWAs and tools that use kimo. Each gets its own key, limited to its origin and scope.</p>
+			<h3 class="ui-section-title">Keys</h3>
+			<ul class="k-sessions" id="app-list"></ul>
+			<h3 class="ui-section-title">Connect a PWA</h3>
+			<div class="ui-panel k-connect">
+				<p>Load the SDK from kimo and use the key of the app:</p>
+				<pre><code>import { Kimo } from '<span data-origin></span>/sdk/kimo.js';
+import '<span data-origin></span>/sdk/kimo-terminal.js';
+
+const kimo = new Kimo({ url: '<span data-origin></span>', token: 'kimo_…' });
+kimo.subscribe(({ sessions }) =&gt; render(sessions));
+await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
+				<p>Embed a terminal: <code>&lt;kimo-terminal session="…"&gt;</code> with <code>.kimo = kimo</code>. Full API in the README.</p>
+			</div>
 		</section>
 	</div></div></main>
 
 	<nav class="ui-tabbar k-tabbar" aria-label="Sections">
 		<a href="#agents" data-view="agents"><span class="icon-code"></span>Agents</a>
 		<a href="#accounts" data-view="accounts"><span class="icon-users"></span>Accounts</a>
+		<a href="#apps" data-view="apps"><span class="icon-flash"></span>Apps</a>
 	</nav>
 	<button class="ui-fab" id="add" aria-label="New"><span class="icon-plus"></span></button>
 
@@ -93,6 +111,28 @@
 		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button class="ui-button">Add</button></div>
 	</form></dialog>
 
+	<dialog class="ui-sheet" id="sheet-app"><form method="dialog">
+		<h3>New app</h3>
+		<label>Name<input name="name" required placeholder="Project manager" autocomplete="off"></label>
+		<label>Origins (one per line)<textarea name="origins" rows="2" placeholder="https://pm.your-tailnet.ts.net"></textarea></label>
+		<div class="ui-kinds">
+			<label><input type="radio" name="scope" value="control" checked>Control</label>
+			<label><input type="radio" name="scope" value="read">Read only</label>
+		</div>
+		<p class="k-hint">Control may start, pause, stop, switch accounts and open terminals. Read only watches. Logins and keys stay with you.</p>
+		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button class="ui-button">Create key</button></div>
+	</form></dialog>
+
+	<dialog class="ui-sheet" id="sheet-key"><form method="dialog">
+		<h3>App key</h3>
+		<p class="k-hint">Shown once. Paste it into the app; revoke it from Apps anytime.</p>
+		<label>Key<input id="key-token" readonly></label>
+		<button type="button" class="ui-button ghost k-small" data-copy="key-token">copy key</button>
+		<label>Snippet<textarea id="key-snippet" rows="4" readonly class="k-code"></textarea></label>
+		<button type="button" class="ui-button ghost k-small" data-copy="key-snippet">copy snippet</button>
+		<div class="ui-sheet-actions"><button class="ui-button">Done</button></div>
+	</form></dialog>
+
 	<dialog class="ui-sheet" id="sheet-token"><form method="dialog">
 		<h3>Access token</h3>
 		<p class="k-hint">kimo printed a link with the token when it started. Paste the token here.</p>
@@ -102,8 +142,6 @@
 
 	<script src="vendor/xterm/xterm.js"></script>
 	<script src="vendor/xterm/addon-fit.js"></script>
-	<script src="js/api.js"></script>
-	<script src="js/terminal.js"></script>
-	<script src="js/app.js"></script>
+	<script type="module" src="js/app.js"></script>
 </body>
 </html>

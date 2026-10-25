@@ -1,45 +1,18 @@
-// The only module that talks to the kimo server. Token from #token=… is kept in localStorage.
-const api = (() => {
-  const KEY = 'kimo-token';
-  const read = () => { try { return localStorage.getItem(KEY) || ''; } catch { return ''; } };
-  const m = location.hash.match(/token=([\w-]+)/);
-  if (m) {
-    try { localStorage.setItem(KEY, m[1]); } catch { /* private mode: token lives for this page only */ }
-    history.replaceState(null, '', location.pathname);
-  }
-  let token = m ? m[1] : read();
+// kimo's own page uses the same SDK as any other app. The owner token comes from the link
+// kimo prints (#token=…) and is kept in localStorage.
+import { Kimo } from '../sdk/kimo.js';
 
-  class AuthError extends Error {}
+const KEY = 'kimo-token';
+const stored = () => { try { return localStorage.getItem(KEY) || ''; } catch { return ''; } };
+const fromLink = location.hash.match(/token=([\w-]+)/)?.[1];
+if (fromLink) {
+  try { localStorage.setItem(KEY, fromLink); } catch { /* private mode: token lives for this page only */ }
+  history.replaceState(null, '', location.pathname);
+}
 
-  async function call(method, path, body) {
-    const res = await fetch(`/api${path}`, {
-      method,
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    if (res.status === 401) throw new AuthError('Token needed');
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    return data;
-  }
+export const kimo = new Kimo({ url: location.origin, token: fromLink || stored() });
 
-  return {
-    AuthError,
-    setToken(t) { token = t; try { localStorage.setItem(KEY, t); } catch { /* ignore */ } },
-    status: () => call('GET', '/status'),
-    sessions: () => call('GET', '/sessions'),
-    createSession: body => call('POST', '/sessions', body),
-    deleteSession: id => call('DELETE', `/sessions/${id}`),
-    act: (id, action) => call('POST', `/sessions/${id}/action`, { action }),
-    setAccount: (id, account) => call('POST', `/sessions/${id}/account`, { account }),
-    accounts: () => call('GET', '/accounts'),
-    createAccount: body => call('POST', '/accounts', body),
-    deleteAccount: id => call('DELETE', `/accounts/${id}`),
-    login: id => call('POST', `/accounts/${id}/login`),
-    moveSessions: (from, to) => call('POST', `/accounts/${from}/move`, { to }),
-    termUrl(id) {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      return `${proto}://${location.host}/api/sessions/${id}/term${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-    },
-  };
-})();
+export function setToken(token) {
+  kimo.token = token;
+  try { localStorage.setItem(KEY, token); } catch { /* ignore */ }
+}
