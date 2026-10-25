@@ -180,7 +180,6 @@ body { background: #fff; }
 }
 .ui-header .row { width: 100%; max-width: 1240px; padding-left: 1.5rem; padding-right: 1.5rem; }
 .markdown-body blockquote p { font-size: inherit; line-height: inherit; }
-.ui-header .row::before, .ui-header .row::after { display: none; } /* Timber clearfix pseudo-elements would become flex items */
 
 /* Cover + upload */
 .ui-cover { margin: 0; }
