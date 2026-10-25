@@ -1,6 +1,7 @@
 //! Pure logic and data: no I/O, no async, easy to test.
 
 pub mod access;
+pub mod activity;
 pub mod git;
 pub mod launch;
 pub mod lifecycle;

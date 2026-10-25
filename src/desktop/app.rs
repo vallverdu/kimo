@@ -485,6 +485,28 @@ impl KimoApp {
                     self.refresh_view();
                 }
             }
+            let waiting: Vec<Value> = self
+                .sessions()
+                .into_iter()
+                .filter(|x| s(x, "activity") == "waiting")
+                .collect();
+            if !waiting.is_empty() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let text = format!(
+                        "● {} need{} you",
+                        waiting.len(),
+                        if waiting.len() == 1 { "s" } else { "" }
+                    );
+                    let button = egui::Button::new(RichText::new(text).color(theme::BACKGROUND))
+                        .fill(theme::ACCENT)
+                        .stroke(egui::Stroke::new(1.0, theme::ACCENT));
+                    let names: Vec<&str> = waiting.iter().map(|x| s(x, "name")).collect();
+                    if ui.add(button).on_hover_text(names.join("\n")).clicked() {
+                        let id = s(&waiting[0], "id").to_string();
+                        self.open_session(&id);
+                    }
+                });
+            }
         });
     }
 
@@ -600,6 +622,7 @@ impl KimoApp {
                                     if ui.selectable_label(false, s(x, "name")).clicked() {
                                         open = Some(s(x, "id").to_string());
                                     }
+                                    activity_tag(ui, x);
                                 });
                             }
                             ui.horizontal(|ui| {
@@ -627,6 +650,7 @@ impl KimoApp {
                             if ui.selectable_label(false, s(x, "name")).clicked() {
                                 open = Some(s(x, "id").to_string());
                             }
+                            activity_tag(ui, x);
                         });
                     }
                 }
@@ -745,6 +769,7 @@ impl KimoApp {
         ui.horizontal(|ui| {
             dot(ui, theme::status_color(&status));
             ui.label(RichText::new(&status).size(11.0).color(theme::status_color(&status)));
+            activity_tag(ui, &info);
             let usage = &info["usage"];
             if status == "running" || status == "paused" {
                 ui.label(RichText::new(format!("{} · {}% cpu", mb(usage["rss_bytes"].as_u64().unwrap_or(0)), usage["cpu_percent"])).size(11.0).color(theme::MUTED));
@@ -1384,6 +1409,19 @@ impl KimoApp {
                 }
             });
         ctx.request_repaint_after(Duration::from_millis(500));
+    }
+}
+
+/// "needs you" / "working" next to a session name.
+fn activity_tag(ui: &mut Ui, session: &Value) {
+    match s(session, "activity") {
+        "waiting" => {
+            ui.label(RichText::new("needs you").size(10.5).color(theme::ACCENT));
+        }
+        "working" => {
+            ui.label(RichText::new("working").size(10.5).color(theme::TEAL));
+        }
+        _ => {}
     }
 }
 

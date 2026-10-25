@@ -44,6 +44,8 @@ pub struct SessionInfo {
     pub usage: Usage,
     /// Unix time (ms) of the last terminal output: how long an agent has been quiet.
     pub last_output_at: Option<u64>,
+    /// For running sessions: working, waiting (needs you) or idle.
+    pub activity: Option<crate::core::activity::Activity>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -280,6 +282,11 @@ impl Manager {
             exit_code: live.exit_code,
             usage: live.usage,
             last_output_at: Some(live.last_output.load(Ordering::Relaxed)).filter(|&t| t > 0),
+            activity: (live.status == SessionStatus::Running).then(|| {
+                let quiet = now_ms().saturating_sub(live.last_output.load(Ordering::Relaxed));
+                let recent = live.scrollback.lock().unwrap().tail(3000);
+                crate::core::activity::classify(quiet, &recent)
+            }),
         })
     }
 

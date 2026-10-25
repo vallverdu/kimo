@@ -47,9 +47,11 @@ function renderStats() {
   ];
   $('stats').innerHTML = tiles.map(([v, l]) => `<div class="ui-stat"><strong>${esc(v)}</strong><span>${esc(l)}</span></div>`).join('');
   const low = s && s.mem_total_bytes && s.mem_available_bytes / s.mem_total_bytes < 0.15;
-  $('alerts').innerHTML = low
-    ? `<div class="ui-alert"><span>Memory is low (${mb(s.mem_available_bytes)} free). Stop idle agents: they continue where they left off.</span></div>`
-    : '';
+  const waiting = list.filter(x => x.activity === 'waiting');
+  $('alerts').innerHTML = [
+    waiting.length ? `<div class="ui-alert"><span>${waiting.length} agent${waiting.length === 1 ? ' needs' : 's need'} you: ${waiting.map(x => esc(x.name)).join(', ')}</span><button class="ui-button k-small" data-open-waiting="${esc(waiting[0].id)}">open</button></div>` : '',
+    low ? `<div class="ui-alert"><span>Memory is low (${mb(s.mem_available_bytes)} free). Stop idle agents: they continue where they left off.</span></div>` : '',
+  ].join('');
 }
 
 function sessionRow(s) {
@@ -67,6 +69,7 @@ function sessionRow(s) {
   return `<li data-id="${esc(s.id)}">
     <button class="k-name" data-do="open">${esc(s.name)}</button>
     <span class="ui-badge ${s.status}">${s.status}${s.status === 'exited' && s.exit_code != null ? ` ${s.exit_code}` : ''}</span>
+    ${s.activity === 'waiting' ? '<span class="k-act waiting">needs you</span>' : s.activity === 'working' ? '<span class="k-act">working</span>' : ''}
     <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account))}</span>` : ''}<code title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</code>
       ${live ? `<span><span class="k-num">${mb(ram)}</span> ram</span><span><span class="k-num">${s.usage.cpu_percent}%</span> cpu</span><span><span class="k-num">${s.usage.processes}</span> procs</span>` : ''}</div>
     ${live ? `<div class="k-bar" title="share of machine memory"><span style="width:${Math.min(100, ram / total * 100).toFixed(1)}%"></span></div>` : ''}
@@ -75,8 +78,11 @@ function sessionRow(s) {
 }
 
 function renderSessions() {
-  $('sessions').innerHTML = state.sessions.length
-    ? state.sessions.map(sessionRow).join('')
+  // What needs attention first: waiting, working, other running, paused, then the rest.
+  const rank = s => s.activity === 'waiting' ? 0 : s.activity === 'working' ? 1 : s.status === 'running' ? 2 : s.status === 'paused' ? 3 : 4;
+  const sorted = [...state.sessions].sort((a, b) => rank(a) - rank(b));
+  $('sessions').innerHTML = sorted.length
+    ? sorted.map(sessionRow).join('')
     : '<li class="ui-empty">No sessions yet. Tap + to start an agent.</li>';
 }
 
@@ -174,6 +180,12 @@ function show(view) {
 addEventListener('hashchange', () => show(location.hash.slice(1)));
 
 // ----- session actions -----
+
+$('alerts').addEventListener('click', e => {
+  const id = e.target.closest('[data-open-waiting]')?.dataset.openWaiting;
+  const s = id && state.sessions.find(x => x.id === id);
+  if (s) terminal.open(s);
+});
 
 $('sessions').addEventListener('click', e => {
   const btn = e.target.closest('button[data-do]');

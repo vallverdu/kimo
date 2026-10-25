@@ -127,6 +127,27 @@ export class Kimo {
     return () => source.close();
   }
 
+  /**
+   * Resolve with the session once its activity is one of `activities` (default: not working any
+   * more), e.g. `await kimo.waitFor(id)` after `kimo.send(id, 'run the tests')`.
+   */
+  waitFor(id, activities = ['idle', 'waiting'], { timeout = 0 } = {}) {
+    return new Promise((resolve, reject) => {
+      let timer = null;
+      let stop = () => {};
+      const settle = (fn, value) => { clearTimeout(timer); stop(); fn(value); };
+      // Ignore the first second: an agent that was just prompted may not have started yet.
+      const after = Date.now() + 1000;
+      stop = this.subscribe(({ sessions }) => {
+        const s = sessions.find(x => x.id === id);
+        if (!s) return settle(reject, new KimoError(`session ${id} is gone`, 404));
+        if (s.status !== 'running') return settle(resolve, s);
+        if (Date.now() >= after && activities.includes(s.activity)) settle(resolve, s);
+      });
+      if (timeout) timer = setTimeout(() => settle(reject, new KimoError('timed out waiting for the agent', 408)), timeout);
+    });
+  }
+
   /** WebSocket URL of a session's terminal (binary frames both ways; text `{"type":"resize",cols,rows}`). */
   terminalUrl(id) {
     return this.urlWithToken(`/api/sessions/${enc(id)}/term`).replace(/^http/, 'ws');

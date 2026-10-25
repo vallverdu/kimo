@@ -27,6 +27,15 @@ impl Scrollback {
         self.buf.extend(data);
     }
 
+    /// The last `n` bytes.
+    pub fn tail(&self, n: usize) -> Vec<u8> {
+        self.buf
+            .iter()
+            .skip(self.buf.len().saturating_sub(n))
+            .copied()
+            .collect()
+    }
+
     pub fn snapshot(&self) -> Vec<u8> {
         self.buf.iter().copied().collect()
     }
@@ -53,5 +62,7 @@ mod tests {
         s.push(b"0123456789");
         assert_eq!(s.snapshot(), b"56789");
         assert_eq!(s.len(), 5);
+        assert_eq!(s.tail(2), b"89");
+        assert_eq!(s.tail(99), b"56789");
     }
 }

@@ -61,6 +61,27 @@ async fn shell_session_echoes_input() {
     assert_eq!(s.status, SessionStatus::Running);
     m.write(&s.spec.id, b"echo hi-$((1+2))\n".to_vec());
     wait_for(&m, &s.spec.id, "hi-3").await;
+    use kimo::core::activity::Activity;
+    assert_eq!(
+        m.session(&s.spec.id).unwrap().activity,
+        Some(Activity::Working),
+        "fresh output"
+    );
+    m.write(
+        &s.spec.id,
+        b"printf 'Overwrite? (y/n) '; read answer\n".to_vec(),
+    );
+    wait_for(&m, &s.spec.id, "Overwrite?").await;
+    tokio::time::sleep(Duration::from_millis(
+        kimo::core::activity::WORKING_MS + 300,
+    ))
+    .await;
+    assert_eq!(
+        m.session(&s.spec.id).unwrap().activity,
+        Some(Activity::Waiting),
+        "asks a question"
+    );
+    m.write(&s.spec.id, b"y\n".to_vec());
     m.write(&s.spec.id, b"exit 7\n".to_vec());
     wait_for(&m, &s.spec.id, "exited (7)").await;
     assert_eq!(m.session(&s.spec.id).unwrap().status, SessionStatus::Exited);

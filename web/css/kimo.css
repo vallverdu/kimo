@@ -102,3 +102,5 @@
 
 .k-logo { width: 40px; height: auto; flex: none; }
 .k-usage { color: var(--color-teal); }
+.k-act { grid-column: 1 / -1; justify-self: start; font-size: 1.1rem; letter-spacing: .1rem; text-transform: uppercase; color: var(--color-teal); }
+.k-act.waiting { color: var(--color-accent); }
