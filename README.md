@@ -1,3 +1,89 @@
-# I m working a lot on orca…
+# kimo
 
-I m working a lot on orca lately the agent orchestrator, and while it s almost perfect I have some ideas to make my own version of the concept. So I think of coding like this, before we used vscode to write code, then we used the extensions in vscode, then we used the terminal but can not control it from outside the device. Now with orca I can manage multiple terminals and also have control over the mobile, but its not a mobile first, so what I m doing now based on the fact that my attention is the bottle neck, so I can not use the terminal any more to follow the production of my agents, so what I m doing is creating my own tools, mostly I make pwa hosted on my devices inside a tailscale net. So the idea would be to make a simple yet powerful ADE (agent development environment) made using rust, the idea is to manage terminals, be able to define multiple accounts from both claude and codex, be able to switch any time from sunscription, and also to start and pause or resume any of the terminals. I had a big issue when my subscription reached its limit, then with orca I needed to change subscription, and for each agent logout and login again, that was very unconvinient from the mobile. Today I was having 26 open terminal agents and it was consuming 30gb of ram so the computer got saturated. For all thise reasons I want to create my own version focusing on being able to use it in order to built custom tools over that to kake the usage of agents mobile first and to be able to handle those uncomfortable sutuations and more. It should be able to manage external connections with tailscale or zerotier or any other provider. Rust is a must so its much better optimized, it should use very few resources
+A small, mobile-first **agent development environment** written in Rust. One 3.5 MB binary runs
+your Claude Code and Codex agents (and plain shells) in terminals on your machine and serves a
+PWA to drive them from your phone over Tailscale, ZeroTier or your LAN.
+
+It exists because attention is the bottleneck: you should be able to follow, pause, move and
+continue dozens of agents from a phone, without logging out and in when a subscription runs
+out, and without 26 idle agents eating 30 GB of RAM.
+
+## What it does
+
+- **Terminals**: create Claude, Codex or shell sessions in any folder; open them full screen
+  with a phone key bar (esc, tab, ^C, arrows) and a compose box for typing messages.
+- **Pause / stop / continue**: *pause* freezes the whole process tree (SIGSTOP: no CPU, memory
+  kept); *stop* ends it to free the memory; *continue* restarts the agent with `claude --continue`
+  / `codex resume --last`, so the conversation comes back.
+- **Accounts without logout**: each account gets its own config home
+  (`~/.kimo/accounts/<id>`, via `CLAUDE_CONFIG_DIR` / `CODEX_HOME`); sign in once per account.
+  Every account home links the default home's conversations and settings (`projects/`,
+  `settings.json`, `skills/`… for Claude; `sessions/`, `config.toml`… for Codex), so moving a
+  session to another account restarts it under the new subscription *and continues the same
+  conversation*. Hit a limit? Accounts → **move sessions** moves all of them at once.
+- **Resources**: memory, CPU and process count per session (whole process tree, from `/proc`),
+  machine free memory and kimo's own footprint (~5 MB RSS); a warning when memory runs low.
+- **Remote access**: `--bind tailscale | zerotier | lan | <ip>`; a token is required whenever
+  kimo is not on localhost.
+- **API for your own tools**: everything the PWA does is a small JSON API (below).
+
+## Run
+
+Needs Linux and Rust (`curl https://sh.rustup.rs -sSf | sh`).
+
+```bash
+cargo run --release                         # http://127.0.0.1:7777, no token on localhost
+cargo run --release -- --bind tailscale     # prints http://100.x.y.z:7777/#token=…
+cargo test                                  # unit + PTY integration tests
+```
+
+Open the printed link on your phone once; the PWA stores the token. Settings can come from flags
+or the environment (`.env.example`): `KIMO_BIND`, `KIMO_PORT`, `KIMO_TOKEN`, `KIMO_DATA_DIR`,
+`KIMO_SCROLLBACK`.
+
+**Install as an app (HTTPS):** browsers only install PWAs on HTTPS. With Tailscale, keep kimo
+on localhost and let Tailscale terminate TLS: `tailscale serve --bg 7777`, then open
+`https://<machine>.<tailnet>.ts.net` and "Add to home screen". Tailnet ACLs are then your auth;
+set `KIMO_TOKEN` too if other people share the tailnet.
+
+**Add an account:** Accounts → + → name and provider → **sign in** (opens a terminal running
+`claude auth login` / `codex login` with that account's config home). Then pick the account
+when creating a session, or switch it from the session row.
+
+## API
+
+All under `/api`, JSON, `Authorization: Bearer <token>` (or `?token=`) when a token is set.
+
+| Method | Path | |
+|---|---|---|
+| GET | `/status` | memory, kimo RSS, counts |
+| GET, POST | `/sessions` | list; create `{name, kind: claude\|codex\|shell, cwd, account?, args?, command?, start?}` |
+| GET, DELETE | `/sessions/{id}` | one session; delete (stops it first) |
+| POST | `/sessions/{id}/action` | `{action: start\|pause\|resume\|stop\|restart}` |
+| POST | `/sessions/{id}/account` | `{account: id\|null}`: switch subscription, continues the conversation |
+| POST | `/sessions/{id}/input` | `{text}`: type into the terminal |
+| GET (ws) | `/sessions/{id}/term` | terminal: binary frames both ways, text `{"type":"resize","cols","rows"}` |
+| GET, POST | `/accounts` | list (with `signed_in`); create `{name, provider}` |
+| DELETE | `/accounts/{id}` | delete (refused while sessions use it) |
+| POST | `/accounts/{id}/login` | start a sign-in terminal |
+| POST | `/accounts/{id}/move` | `{to: id\|null}`: move all its sessions (`default` = default login) |
+
+## Layout
+
+```
+src/main.rs            entry: flags/env → manager → HTTP server
+src/api/               axum routes, websocket terminal, token auth, embedded PWA
+src/services/          sessions (PTYs, lifecycle, switching), accounts (homes), store, stats, network
+src/core/              pure logic: models, lifecycle, launch commands, /proc parsing, scrollback, bind parsing
+web/                   the PWA (web-timber style, xterm.js vendored), embedded in the binary on release
+tests/                 PTY integration tests with a fake `claude`
+```
+
+## Limitations
+
+- Linux only for now (`/proc`, process groups).
+- Sessions live inside the kimo process: stopping kimo stops the agents (they continue with
+  *continue* afterwards). A detachable session holder is on the TODO list.
+- `codex login` signs in through a browser callback on the machine itself; from a phone, sign
+  Codex accounts in once at the computer or with `codex login --with-api-key`.
+- The web layer uses the commercial Timber theme: keep the repository private.
