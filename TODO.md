@@ -21,8 +21,10 @@
 - [x] Enable definition and management of multiple Claude and Codex accounts. (one config home per account, signed-in status)
 - [x] Implement a mechanism for seamless switching between subscriptions. (per-session account select, restarts and continues)
 - [x] Allow users to easily change subscriptions without agent logout. (Accounts → move sessions, shared conversations via links)
-- [ ] Handle subscription limits and automatic updates: detect "limit reached" in the output and offer/perform the move automatically.
-- [ ] Show usage/limit windows per account (parse `/usage` / `codex` status) and reset times.
+- [ ] Usage per subscription: record which account each session ran under (and when), then
+      - Codex: read `rate_limits` from its session logs (used %, window, reset time are there);
+      - Claude: sum tokens per account from the transcripts (`usage` per message); plan % only if Anthropic exposes it.
+- [ ] Handle subscription limits: detect "limit reached" (output / Codex `rate_limit_reached_type`) and offer or perform the move to another account automatically.
 - [ ] Phone-friendly Codex sign-in (device code flow or token import).
 
 ## Resource Monitoring & Optimization
@@ -65,3 +67,11 @@
 - [ ] `kimo install` command (writes the unit, enables lingering) instead of manual steps.
 - [ ] Show the pairing QR on the server's terminal at first start when no device is paired.
 - [ ] mDNS (`kimo.local`) so LAN devices find kimo without an IP.
+
+## Ideas from herdr (herdrdev/herdr)
+
+- [ ] Agent state per session: `working`, `blocked` (needs an answer/approval), `done`, `idle`. Prefer the agents' own hooks (Claude Code hooks, Codex `notify`) reporting to kimo over reading the screen; expose it in events and the SDK (`kimo.wait(id, 'idle')`).
+- [ ] "Needs you" list and notifications driven by that state (the most useful thing for a phone).
+- [ ] One-call orchestration for apps: create project + start agent + first prompt; `prompt --wait`.
+- [ ] Plugins: a folder with a `kimo-plugin.toml` manifest; event hooks (session.blocked, session.done, project.created…), actions, and an optional web UI that kimo serves under `/plugins/<id>/` with its own app key, so a plugin can be a full PWA hosted by kimo. Install from GitHub, review before enabling.
+- [ ] More agents: OpenCode, Cursor, Copilot, Gemini… (launch + resume command per agent).
