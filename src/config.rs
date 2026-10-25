@@ -1,6 +1,6 @@
 //! Settings: defaults in code, overridable by flags or environment variables (see .env.example).
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Parser)]
@@ -10,16 +10,29 @@ use std::path::PathBuf;
     about = "Mobile-first agent development environment"
 )]
 pub struct Config {
-    /// Where to listen: localhost, lan, tailscale, zerotier or an IP address.
-    #[arg(long, env = "KIMO_BIND", default_value = "localhost")]
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    /// Where to listen: all (every network), localhost, tailscale, zerotier or an IP address.
+    /// Only this machine gets in without pairing; other devices pair with a QR code.
+    #[arg(long, env = "KIMO_BIND", default_value = "all")]
     pub bind: String,
 
     #[arg(long, env = "KIMO_PORT", default_value_t = 7777)]
     pub port: u16,
 
-    /// Access token. Required when not on localhost; generated and printed when missing.
+    /// Optional owner token for scripts. Devices normally pair with a QR code instead.
     #[arg(long, env = "KIMO_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+
+    /// Treat requests from this machine itself as the owner (no pairing needed on the server).
+    /// Turn off on machines shared with other users.
+    #[arg(long, env = "KIMO_LOCAL_OWNER", default_value_t = true, action = clap::ArgAction::Set)]
+    pub local_owner: bool,
+
+    /// Folder where new projects are created. Default: ~/dev
+    #[arg(long, env = "KIMO_PROJECTS_DIR")]
+    pub projects_dir: Option<PathBuf>,
 
     /// Extra origins (comma separated) where the admin token may be used from another page.
     /// Apps normally get their own key instead (Apps tab or POST /api/clients).
@@ -41,7 +54,21 @@ pub fn user_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    /// Run kimo (the default).
+    Serve,
+    /// Show a QR code in this terminal to pair a phone with the kimo running on this machine.
+    Pair,
+}
+
 impl Config {
+    pub fn projects_dir(&self) -> PathBuf {
+        self.projects_dir
+            .clone()
+            .unwrap_or_else(|| user_home().join("dev"))
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         self.data_dir
             .clone()

@@ -43,7 +43,9 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
     };
     let path = path.trim_end_matches('/');
     // Managing logins and app keys stays with the owner.
-    let admin_only = path.starts_with("/clients")
+    let admin_only = ["/clients", "/network", "/pairing", "/devices", "/qr"]
+        .iter()
+        .any(|p| path.starts_with(p))
         || (path == "/accounts" && method != "GET")
         || (path.starts_with("/accounts/") && (method == "DELETE" || path.ends_with("/login")));
     if admin_only {
@@ -51,7 +53,7 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
     }
     match scope {
         Scope::Control => true,
-        Scope::Read => method == "GET" && !path.ends_with("/term"),
+        Scope::Read => method == "GET" && !path.ends_with("/term") && !path.starts_with("/fs"),
     }
 }
 
@@ -122,6 +124,17 @@ mod tests {
         ] {
             assert!(!permits(&control, m, p), "{m} {p}");
         }
+        for (m, p) in [
+            ("GET", "/network"),
+            ("POST", "/pairing"),
+            ("GET", "/devices"),
+            ("GET", "/qr"),
+        ] {
+            assert!(!permits(&control, m, p), "{m} {p}");
+        }
+        assert!(permits(&read, "GET", "/projects"));
+        assert!(!permits(&read, "GET", "/fs"));
+        assert!(permits(&control, "POST", "/projects"));
         assert!(permits(&Caller::Admin, "POST", "/clients"));
     }
 }

@@ -1,9 +1,11 @@
 //! Access control as other PWAs see it: CORS, app keys bound to origins, scopes, events.
 
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{header, Request, StatusCode};
 use futures_util::StreamExt;
 use kimo::services::sessions::{Manager, ManagerConfig};
+use std::net::SocketAddr;
 use tower::ServiceExt;
 
 const APP: &str = "https://pm.tail.ts.net";
@@ -16,9 +18,33 @@ fn router(tmp: &std::path::Path, admin_token: Option<&str>) -> axum::Router {
         user_home: tmp.join("home"),
         shell: "/bin/sh".into(),
         scrollback_bytes: 1024,
+        projects_dir: tmp.join("home/dev"),
+        port: 7777,
     })
     .unwrap();
-    kimo::api::router(manager, admin_token.map(String::from), vec![])
+    kimo::api::router(
+        manager,
+        kimo::api::Options {
+            token: admin_token.map(String::from),
+            admin_origins: vec![],
+            local_owner: true,
+            bound: "0.0.0.0".parse().unwrap(),
+        },
+    )
+}
+
+/// The same request as if it came from the machine itself.
+fn local(mut r: Request<Body>) -> Request<Body> {
+    r.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))));
+    r
+}
+
+/// The same request as if it came from another device on the network.
+fn remote(mut r: Request<Body>) -> Request<Body> {
+    r.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([203, 0, 113, 9], 50000))));
+    r
 }
 
 fn req(
@@ -60,25 +86,31 @@ async fn other_sites_cannot_use_localhost_without_a_key() {
     let app = router(tmp.path(), None);
     let own = app
         .clone()
-        .oneshot(req("GET", "/api/sessions", None, None, None))
+        .oneshot(local(req("GET", "/api/sessions", None, None, None)))
         .await
         .unwrap();
     assert_eq!(own.status(), StatusCode::OK);
     let same = app
         .clone()
-        .oneshot(req(
+        .oneshot(local(req(
             "GET",
             "/api/sessions",
             Some("http://kimo.local:7777"),
             None,
             None,
-        ))
+        )))
         .await
         .unwrap();
     assert_eq!(same.status(), StatusCode::OK);
     let evil = app
         .clone()
-        .oneshot(req("GET", "/api/sessions/x/term", Some(EVIL), None, None))
+        .oneshot(local(req(
+            "GET",
+            "/api/sessions/x/term",
+            Some(EVIL),
+            None,
+            None,
+        )))
         .await
         .unwrap();
     assert_eq!(evil.status(), StatusCode::UNAUTHORIZED);
@@ -238,7 +270,7 @@ async fn events_stream_starts_with_the_full_state() {
     let tmp = tempfile::tempdir().unwrap();
     let app = router(tmp.path(), None);
     let res = app
-        .oneshot(req("GET", "/api/events", None, None, None))
+        .oneshot(local(req("GET", "/api/events", None, None, None)))
         .await
         .unwrap();
     assert_eq!(res.headers()[header::CONTENT_TYPE], "text/event-stream");
@@ -264,4 +296,246 @@ async fn sdk_is_loadable_from_any_origin() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+}
+
+#[tokio::test]
+async fn the_server_itself_is_the_owner_but_not_through_a_proxy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let own = app
+        .clone()
+        .oneshot(local(req("GET", "/api/devices", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(own.status(), StatusCode::OK);
+    let other = app
+        .clone()
+        .oneshot(remote(req("GET", "/api/devices", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(other.status(), StatusCode::UNAUTHORIZED);
+    // tailscale serve connects from localhost but says who the user is: not the owner.
+    let mut proxied = local(req("GET", "/api/devices", None, None, None));
+    proxied
+        .headers_mut()
+        .insert("x-forwarded-for", "100.101.1.2".parse().unwrap());
+    assert_eq!(
+        app.oneshot(proxied).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn pairing_codes_work_once_and_devices_can_be_revoked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    // Only the owner shows a pairing QR.
+    let denied = app
+        .clone()
+        .oneshot(remote(req("POST", "/api/pairing", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let pairing = json(
+        app.clone()
+            .oneshot(local(req("POST", "/api/pairing", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let code = pairing["code"].as_str().unwrap();
+    assert_eq!(pairing["expires_in"], 600);
+    let qr = app
+        .clone()
+        .oneshot(local(req(
+            "GET",
+            &format!("/api/qr?text=http://x/%23pair={code}"),
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(qr.headers()[header::CONTENT_TYPE], "image/svg+xml");
+
+    // The phone trades the code for its key.
+    let body = format!(r#"{{"code":"{code}","name":"Jordi's phone"}}"#);
+    let device = json(
+        app.clone()
+            .oneshot(remote(req("POST", "/api/pair", None, None, Some(&body))))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let key = device["token"].as_str().unwrap().to_string();
+    let again = app
+        .clone()
+        .oneshot(remote(req("POST", "/api/pair", None, None, Some(&body))))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::FORBIDDEN, "codes work once");
+    let wrong = app
+        .clone()
+        .oneshot(remote(req(
+            "POST",
+            "/api/pair",
+            None,
+            None,
+            Some(r#"{"code":"nope"}"#),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::FORBIDDEN);
+
+    // A paired device is the owner: accounts, keys, devices.
+    let accounts = app
+        .clone()
+        .oneshot(remote(req(
+            "POST",
+            "/api/accounts",
+            None,
+            Some(&key),
+            Some(r#"{"name":"Work","provider":"claude"}"#),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(accounts.status(), StatusCode::OK);
+    let devices = json(
+        app.clone()
+            .oneshot(remote(req("GET", "/api/devices", None, Some(&key), None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(devices[0]["name"], "Jordi's phone");
+    assert!(devices[0].get("token").is_none());
+
+    let id = devices[0]["id"].as_str().unwrap();
+    let del = app
+        .clone()
+        .oneshot(local(req(
+            "DELETE",
+            &format!("/api/devices/{id}"),
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(del.status(), StatusCode::OK);
+    let gone = app
+        .oneshot(remote(req("GET", "/api/sessions", None, Some(&key), None)))
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn projects_new_existing_clone_and_browse() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let call = |m: &'static str, uri: String, body: Option<String>| {
+        let app = app.clone();
+        async move {
+            let res = app
+                .oneshot(local(req(m, &uri, None, None, body.as_deref())))
+                .await
+                .unwrap();
+            (res.status(), json(res).await)
+        }
+    };
+    let dev = tmp.path().join("home/dev");
+
+    // New folder with git in the projects folder.
+    let (status, made) = call(
+        "POST",
+        "/api/projects".into(),
+        Some(r#"{"name":"Everpano Invoices","mode":"new","git":true}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    assert_eq!(
+        made["project"]["path"],
+        dev.join("everpano-invoices").display().to_string()
+    );
+    assert!(dev.join("everpano-invoices/.git").is_dir());
+    let (_, again) = call(
+        "POST",
+        "/api/projects".into(),
+        Some(r#"{"name":"everpano invoices","mode":"new"}"#.into()),
+    )
+    .await;
+    assert!(again["error"].as_str().unwrap().contains("already"));
+
+    // An existing folder keeps its name.
+    std::fs::create_dir_all(dev.join("old-site/src")).unwrap();
+    let body = format!(
+        r#"{{"mode":"existing","path":"{}"}}"#,
+        dev.join("old-site").display()
+    );
+    let (status, existing) = call("POST", "/api/projects".into(), Some(body)).await;
+    assert_eq!(
+        (status, existing["project"]["name"].as_str()),
+        (StatusCode::OK, Some("old-site"))
+    );
+
+    // Clone runs in a terminal session in the new folder.
+    let origin = tmp.path().join("origin.git");
+    assert!(std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&origin)
+        .status()
+        .unwrap()
+        .success());
+    let body = format!(r#"{{"mode":"clone","url":"{}"}}"#, origin.display());
+    let (status, cloned) = call("POST", "/api/projects".into(), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{cloned}");
+    assert_eq!(cloned["project"]["name"], "origin");
+    assert_eq!(cloned["session"]["command"][1], "clone");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !dev.join("origin/.git").is_dir() {
+        assert!(std::time::Instant::now() < deadline, "clone did not finish");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    // List with branch and session counts; browse shows folders with git marks.
+    let (_, list) = call("GET", "/api/projects".into(), None).await;
+    let list = list.as_array().unwrap();
+    assert_eq!(list.len(), 3);
+    let invoices = list
+        .iter()
+        .find(|p| p["name"] == "Everpano Invoices")
+        .unwrap();
+    assert!(invoices["branch"].is_string());
+    assert_eq!(
+        list.iter().find(|p| p["name"] == "origin").unwrap()["sessions"],
+        1
+    );
+    let (_, listing) = call("GET", "/api/fs".into(), None).await;
+    assert_eq!(listing["path"], dev.display().to_string());
+    let names: Vec<_> = listing["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["name"].as_str().unwrap().to_string(),
+                d["git"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            ("everpano-invoices".into(), true),
+            ("old-site".into(), false),
+            ("origin".into(), true)
+        ]
+    );
+
+    // Forgetting a project never deletes its files.
+    let id = invoices["id"].as_str().unwrap();
+    let (status, _) = call("DELETE", format!("/api/projects/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(dev.join("everpano-invoices/.git").is_dir());
 }

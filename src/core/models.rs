@@ -102,6 +102,28 @@ pub struct Client {
     pub extra: Map<String, Value>,
 }
 
+/// A folder agents work in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A phone, tablet or computer paired with kimo (owner access, revocable).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    /// Unix time (ms) of pairing.
+    pub paired_at: u64,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// Everything kimo persists in `~/.kimo/state.json`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct State {
@@ -111,6 +133,10 @@ pub struct State {
     pub sessions: Vec<SessionSpec>,
     #[serde(default)]
     pub clients: Vec<Client>,
+    #[serde(default)]
+    pub projects: Vec<Project>,
+    #[serde(default)]
+    pub devices: Vec<Device>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

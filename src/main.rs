@@ -1,12 +1,13 @@
-//! Entry point: config → manager → HTTP server. Nothing else.
+//! Entry point: config → manager → HTTP server (or `kimo pair`). Nothing else.
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
-use kimo::config::{user_home, Config};
-use kimo::core::network::{parse_bind, BindTarget};
+use kimo::config::{user_home, Command, Config};
+use kimo::core::network::parse_bind;
 use kimo::services::sessions::{Manager, ManagerConfig};
 use std::net::SocketAddr;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
@@ -17,19 +18,22 @@ async fn main() -> Result<()> {
         )
         .init();
     let cfg = Config::parse();
+    match cfg.command {
+        Some(Command::Pair) => pair(cfg.port).await,
+        Some(Command::Serve) | None => serve(cfg).await,
+    }
+}
+
+async fn serve(cfg: Config) -> Result<()> {
     let target = parse_bind(&cfg.bind).map_err(anyhow::Error::msg)?;
     let ip = kimo::services::network::resolve(&target)?;
-    let token = match (&cfg.token, target) {
-        (Some(t), _) if !t.is_empty() => Some(t.clone()),
-        (_, BindTarget::Localhost) => None,
-        _ => Some(uuid::Uuid::new_v4().simple().to_string()),
-    };
-
     let manager = Manager::new(ManagerConfig {
         data_dir: cfg.data_dir(),
         user_home: user_home(),
         shell: Config::shell(),
         scrollback_bytes: cfg.scrollback_bytes,
+        projects_dir: cfg.projects_dir(),
+        port: cfg.port,
     })?;
     let sampler = manager.clone();
     tokio::spawn(async move {
@@ -41,24 +45,77 @@ async fn main() -> Result<()> {
         }
     });
 
-    let addr = SocketAddr::new(ip, cfg.port);
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let shown = if ip.is_unspecified() {
-        "<this-machine>".to_string()
-    } else {
-        ip.to_string()
-    };
-    match &token {
-        Some(t) => println!("kimo on http://{shown}:{}/#token={t}", cfg.port),
-        None => println!("kimo on http://{shown}:{}/", cfg.port),
+    let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, cfg.port)).await?;
+    println!("kimo is running");
+    for a in kimo::services::network::info(ip, cfg.port).addresses {
+        println!("  {:<36} {}", a.label, a.url);
     }
-    let app = kimo::api::router(manager.clone(), token, cfg.origins.clone());
+    println!("  pair a phone: Devices tab on this machine, or `kimo pair`");
+    let app = kimo::api::router(
+        manager.clone(),
+        kimo::api::Options {
+            token: cfg.token.clone().filter(|t| !t.is_empty()),
+            admin_origins: cfg.origins.clone(),
+            local_owner: cfg.local_owner,
+            bound: ip,
+        },
+    );
     // Open terminal websockets never close by themselves, so stop on a signal instead of draining.
     tokio::select! {
-        result = axum::serve(listener, app) => result?,
+        result = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()) => result?,
         _ = shutdown_signal() => tracing::info!("stopping sessions"),
     }
     manager.shutdown().await;
+    Ok(())
+}
+
+/// Minimal HTTP call to the kimo on this machine (it treats local requests as the owner).
+async fn local_call(port: u16, method: &str, path: &str) -> Result<serde_json::Value> {
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .with_context(|| format!("kimo is not running on port {port}"))?;
+    let request = format!("{method} {path} HTTP/1.1\r\nHost: localhost:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await?;
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await?;
+    let text = String::from_utf8_lossy(&response);
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| anyhow!("bad answer from kimo"))?;
+    let value: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    if !head.starts_with("HTTP/1.1 200") {
+        return Err(anyhow!(
+            "kimo said: {}",
+            value["error"]
+                .as_str()
+                .unwrap_or(head.lines().next().unwrap_or(""))
+        ));
+    }
+    Ok(value)
+}
+
+async fn pair(port: u16) -> Result<()> {
+    let network = local_call(port, "GET", "/api/network").await?;
+    let pairing = local_call(port, "POST", "/api/pairing").await?;
+    let base = network["addresses"]
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["kind"] != "localhost"))
+        .and_then(|a| a["url"].as_str())
+        .ok_or_else(|| {
+            anyhow!("kimo is only reachable from this machine: start it with --bind all")
+        })?;
+    let url = format!(
+        "{base}/#pair={}",
+        pairing["code"].as_str().unwrap_or_default()
+    );
+    let qr = qrcode::QrCode::new(url.as_bytes())?;
+    let art = qr
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .dark_color(qrcode::render::unicode::Dense1x2::Light)
+        .light_color(qrcode::render::unicode::Dense1x2::Dark)
+        .quiet_zone(true)
+        .build();
+    println!("{art}\nScan with the phone camera, or open:\n  {url}\nThe code works once, for 10 minutes.");
     Ok(())
 }
 

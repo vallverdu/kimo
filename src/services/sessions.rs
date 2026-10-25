@@ -27,6 +27,10 @@ pub struct ManagerConfig {
     pub user_home: PathBuf,
     pub shell: String,
     pub scrollback_bytes: usize,
+    /// Where new projects are created by default (e.g. ~/dev).
+    pub projects_dir: PathBuf,
+    /// HTTP port kimo listens on (for pairing links and tailscale serve).
+    pub port: u16,
 }
 
 /// What the API shows for a session.
@@ -92,18 +96,20 @@ struct Live {
     last_output: Arc<AtomicU64>,
 }
 
-struct Inner {
-    state: State,
+pub(crate) struct Inner {
+    pub(crate) state: State,
     live: HashMap<String, Live>,
 }
 
 pub struct Manager {
-    cfg: ManagerConfig,
+    pub(crate) cfg: ManagerConfig,
     store: Store,
     inner: Mutex<Inner>,
     exits: mpsc::UnboundedSender<(String, u64)>,
     /// Bumped on every visible change; event streams wait on it.
     changes: watch::Sender<u64>,
+    /// One-time pairing codes and when they expire (memory only).
+    pub(crate) pairing: Mutex<HashMap<String, Instant>>,
 }
 
 fn now_ms() -> u64 {
@@ -145,7 +151,7 @@ fn new_live(cap: usize) -> Live {
     }
 }
 
-fn slug(name: &str) -> String {
+pub(crate) fn slug(name: &str) -> String {
     let s: String = name
         .to_lowercase()
         .chars()
@@ -182,6 +188,7 @@ impl Manager {
             inner: Mutex::new(Inner { state, live }),
             exits,
             changes: watch::channel(0).0,
+            pairing: Mutex::new(HashMap::new()),
         });
         let weak = Arc::downgrade(&manager);
         tokio::spawn(async move {
@@ -195,11 +202,25 @@ impl Manager {
         Ok(manager)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn save(&self, inner: &Inner) -> Result<()> {
+    pub fn port(&self) -> u16 {
+        self.cfg.port
+    }
+
+    /// `~` and `~/x` become paths in the user's home.
+    pub(crate) fn expand_home(&self, path: &str) -> String {
+        match path.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => {
+                format!("{}{rest}", self.cfg.user_home.display())
+            }
+            _ => path.to_string(),
+        }
+    }
+
+    pub(crate) fn save(&self, inner: &Inner) -> Result<()> {
         self.changed();
         self.store.save(&inner.state)
     }
@@ -276,11 +297,7 @@ impl Manager {
         let cwd = if new.cwd.trim().is_empty() {
             self.cfg.user_home.display().to_string()
         } else {
-            new.cwd.trim().to_string()
-        };
-        let cwd = match cwd.strip_prefix("~") {
-            Some(rest) => format!("{}{rest}", self.cfg.user_home.display()),
-            None => cwd,
+            self.expand_home(new.cwd.trim())
         };
         if !std::path::Path::new(&cwd).is_dir() {
             bail!("folder not found: {cwd}");

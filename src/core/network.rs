@@ -34,25 +34,162 @@ pub fn parse_tailscale_ip(output: &str) -> Option<IpAddr> {
 
 /// IPv4 of the first ZeroTier interface (`zt*`) in `ip -4 -o addr show` output.
 pub fn parse_zerotier_ip(output: &str) -> Option<IpAddr> {
-    output.lines().find_map(|line| {
-        let mut parts = line.split_whitespace();
-        let _index = parts.next()?;
-        let iface = parts.next()?;
-        if !iface.starts_with("zt") || parts.next()? != "inet" {
+    parse_interfaces(output)
+        .into_iter()
+        .find(|i| i.kind == NetKind::ZeroTier)
+        .map(|i| IpAddr::V4(i.ip))
+}
+
+/// Which network an address belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NetKind {
+    Localhost,
+    Lan,
+    Tailscale,
+    ZeroTier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interface {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub kind: NetKind,
+}
+
+/// Usable IPv4 interfaces from `ip -4 -o addr show`; containers, bridges and link-local skipped.
+pub fn parse_interfaces(output: &str) -> Vec<Interface> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let _index = parts.next()?;
+            let name = parts.next()?.trim_end_matches(':');
+            if parts.next()? != "inet" {
+                return None;
+            }
+            let ip: Ipv4Addr = parts.next()?.split('/').next()?.parse().ok()?;
+            let virtual_iface = ["docker", "br-", "veth", "virbr", "cni", "flannel", "lxc"]
+                .iter()
+                .any(|p| name.starts_with(p));
+            if virtual_iface || ip.is_link_local() {
+                return None;
+            }
+            let in_cgnat = ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]);
+            let kind = if ip.is_loopback() {
+                NetKind::Localhost
+            } else if name.starts_with("tailscale") || in_cgnat {
+                NetKind::Tailscale
+            } else if name.starts_with("zt") {
+                NetKind::ZeroTier
+            } else {
+                NetKind::Lan
+            };
+            Some(Interface {
+                name: name.to_string(),
+                ip,
+                kind,
+            })
+        })
+        .collect()
+}
+
+/// This machine's MagicDNS name from `tailscale status --json` (without the trailing dot).
+pub fn parse_tailscale_dns(status_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(status_json).ok()?;
+    let name = v["Self"]["DNSName"].as_str()?.trim_end_matches('.');
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// HTTPS URL under which `tailscale serve` already proxies to kimo's `port`, if any
+/// (from `tailscale serve status --json`).
+pub fn tailscale_https_url(serve_json: &str, port: u16) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(serve_json).ok()?;
+    let target = format!(":{port}");
+    v["Web"].as_object()?.iter().find_map(|(host_port, web)| {
+        let proxies_kimo = web["Handlers"].as_object()?.values().any(|h| {
+            h["Proxy"].as_str().is_some_and(|p| {
+                p.trim_end_matches('/').ends_with(&target)
+                    && (p.contains("127.0.0.1") || p.contains("localhost"))
+            })
+        });
+        if !proxies_kimo {
             return None;
         }
-        let cidr = parts.next()?;
-        cidr.split('/')
-            .next()?
-            .parse::<Ipv4Addr>()
-            .ok()
-            .map(IpAddr::V4)
+        Some(match host_port.strip_suffix(":443") {
+            Some(host) => format!("https://{host}"),
+            None => format!("https://{host_port}"),
+        })
     })
+}
+
+/// HTTPS ports `tailscale serve` already uses, so kimo never takes one over.
+pub fn tailscale_used_ports(serve_json: &str) -> Vec<u16> {
+    serde_json::from_str::<serde_json::Value>(serve_json)
+        .ok()
+        .and_then(|v| {
+            v["TCP"]
+                .as_object()
+                .map(|tcp| tcp.keys().filter_map(|k| k.parse().ok()).collect())
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const IP_ADDR: &str = "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n\
+        2: enp89s0    inet 169.254.97.139/16 brd 169.254.255.255 scope link enp89s0\n\
+        3: wlp0s20f3    inet 192.168.1.142/24 brd 192.168.1.255 scope global dynamic wlp0s20f3\n\
+        4: tailscale0    inet 100.92.183.13/32 scope global tailscale0\n\
+        5: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n\
+        6: ztabc    inet 10.147.17.4/24 scope global ztabc\n";
+
+    #[test]
+    fn classifies_interfaces() {
+        let found: Vec<_> = parse_interfaces(IP_ADDR)
+            .into_iter()
+            .map(|i| (i.name, i.ip.to_string(), i.kind))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("lo".into(), "127.0.0.1".into(), NetKind::Localhost),
+                ("wlp0s20f3".into(), "192.168.1.142".into(), NetKind::Lan),
+                (
+                    "tailscale0".into(),
+                    "100.92.183.13".into(),
+                    NetKind::Tailscale
+                ),
+                ("ztabc".into(), "10.147.17.4".into(), NetKind::ZeroTier),
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_tailscale_status_and_serve() {
+        assert_eq!(
+            parse_tailscale_dns(r#"{"Self":{"DNSName":"worker-nuc.tail8c8040.ts.net."}}"#)
+                .as_deref(),
+            Some("worker-nuc.tail8c8040.ts.net")
+        );
+        let serve = r#"{"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true}},"Web":{
+            "nuc.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8800"}}},
+            "nuc.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7777"}}}}}"#;
+        assert_eq!(
+            tailscale_https_url(serve, 7777).as_deref(),
+            Some("https://nuc.ts.net:8443")
+        );
+        assert_eq!(
+            tailscale_https_url(serve, 8800).as_deref(),
+            Some("https://nuc.ts.net")
+        );
+        assert_eq!(tailscale_https_url(serve, 9999), None);
+        let mut ports = tailscale_used_ports(serve);
+        ports.sort();
+        assert_eq!(ports, vec![443, 8443]);
+    }
 
     #[test]
     fn parses_targets() {

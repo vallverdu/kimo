@@ -6,7 +6,7 @@ use crate::core::models::{Provider, Scope};
 use crate::services::sessions::{Manager, NewSession};
 use crate::services::stats;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -18,6 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
@@ -32,6 +33,22 @@ struct App {
     token: Option<Arc<str>>,
     /// Origins where the admin token may be used from another page (config).
     admin_origins: Arc<[String]>,
+    local_owner: bool,
+    /// Addresses of this machine: requests from them are the owner (when `local_owner`).
+    local_ips: Arc<[IpAddr]>,
+    bound: IpAddr,
+}
+
+/// How the API is exposed.
+pub struct Options {
+    /// Optional owner token for scripts.
+    pub token: Option<String>,
+    /// Origins where the owner token may be used from another page.
+    pub admin_origins: Vec<String>,
+    /// Requests from this machine itself are the owner.
+    pub local_owner: bool,
+    /// Address kimo listens on (for the network page).
+    pub bound: IpAddr,
 }
 
 /// Errors become `{ "error": "..." }` with a plain message the UI can show.
@@ -56,11 +73,14 @@ fn not_found(what: &str) -> ApiError {
     ApiError(StatusCode::NOT_FOUND, format!("unknown {what}"))
 }
 
-pub fn router(manager: Arc<Manager>, token: Option<String>, admin_origins: Vec<String>) -> Router {
+pub fn router(manager: Arc<Manager>, options: Options) -> Router {
     let app = App {
         manager,
-        token: token.map(Into::into),
-        admin_origins: admin_origins.into(),
+        token: options.token.map(Into::into),
+        admin_origins: options.admin_origins.into(),
+        local_owner: options.local_owner,
+        local_ips: crate::services::network::local_ips().into(),
+        bound: options.bound,
     };
     let api = Router::new()
         .route("/status", get(status))
@@ -77,9 +97,20 @@ pub fn router(manager: Arc<Manager>, token: Option<String>, admin_origins: Vec<S
         .route("/events", get(events))
         .route("/clients", get(list_clients).post(create_client))
         .route("/clients/{id}", axum::routing::delete(delete_client))
+        .route("/projects", get(list_projects).post(create_project))
+        .route("/projects/{id}", axum::routing::delete(delete_project))
+        .route("/fs", get(browse))
+        .route("/network", get(network))
+        .route("/network/https", post(enable_https))
+        .route("/pairing", post(start_pairing))
+        .route("/devices", get(list_devices))
+        .route("/devices/{id}", axum::routing::delete(delete_device))
+        .route("/qr", get(qr))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
+    // Pairing is the way in for a new device: it needs a one-time code, not a key.
+    let public = Router::new().route("/pair", post(pair));
     Router::new()
-        .nest("/api", api)
+        .nest("/api", api.merge(public))
         .fallback(static_file)
         .with_state(app)
 }
@@ -96,7 +127,7 @@ fn denied(status: StatusCode, message: &str) -> Response {
 /// - app keys are limited by their scope.
 async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
     // Read what is needed up front: a borrow of the request must not live across an await.
-    let (origin, token) = {
+    let (origin, token, local) = {
         let header =
             |name: header::HeaderName| req.headers().get(name).and_then(|v| v.to_str().ok());
         let host = header(header::HOST).unwrap_or_default().to_string();
@@ -111,7 +142,23 @@ async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
                     .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")))
             })
             .map(str::to_string);
-        (origin, token)
+        // The machine itself, not through a proxy (tailscale serve also connects from localhost).
+        let forwarded = [
+            "x-forwarded-for",
+            "forwarded",
+            "x-real-ip",
+            "tailscale-user-login",
+        ]
+        .iter()
+        .any(|h| req.headers().contains_key(*h));
+        let peer = req
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0.ip());
+        let local = app.local_owner
+            && !forwarded
+            && peer.is_some_and(|ip| ip.is_loopback() || app.local_ips.contains(&ip));
+        (origin, token, local)
     };
 
     if req.method() == Method::OPTIONS {
@@ -147,13 +194,14 @@ async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
     }
 
     let caller = match (&token, &app.token) {
+        // kimo's own page (or curl) on the server itself is the owner.
+        _ if local && origin.is_none() => Some(Caller::Admin),
         (Some(t), Some(admin)) if t.as_str() == &**admin => Some(Caller::Admin),
+        (Some(t), _) if app.manager.device_by_token(t).is_some() => Some(Caller::Admin),
         (Some(t), _) => app.manager.client_by_token(t).map(|c| Caller::Client {
             scope: c.scope,
             origins: c.origins,
         }),
-        // Localhost without a token: only kimo's own page (or curl) is the owner.
-        (None, None) if origin.is_none() => Some(Caller::Admin),
         (None, _) => None,
     };
     let Some(caller) = caller else {
@@ -419,6 +467,112 @@ async fn delete_client(
 ) -> ApiResult<serde_json::Value> {
     app.manager.delete_client(&id)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+async fn list_projects(State(app): State<App>) -> Json<serde_json::Value> {
+    Json(json!(app.manager.projects()))
+}
+
+async fn create_project(
+    State(app): State<App>,
+    Json(body): Json<crate::services::projects::NewProject>,
+) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    // git init / folder creation touch the disk: keep them off the async workers.
+    let created = tokio::task::spawn_blocking(move || manager.create_project(body))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!(created)))
+}
+
+async fn delete_project(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    app.manager.delete_project(&id)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn browse(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(app
+        .manager
+        .browse(q.get("path").map(String::as_str))?)))
+}
+
+async fn network(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let (bound, port) = (app.bound, app.manager.port());
+    let info = tokio::task::spawn_blocking(move || crate::services::network::info(bound, port))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(info)))
+}
+
+async fn enable_https(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let port = app.manager.port();
+    let url =
+        tokio::task::spawn_blocking(move || crate::services::network::enable_tailscale_https(port))
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!({ "url": url })))
+}
+
+async fn start_pairing(State(app): State<App>) -> Json<serde_json::Value> {
+    Json(json!(app.manager.start_pairing()))
+}
+
+#[derive(Deserialize)]
+struct PairBody {
+    code: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// A new device trades its one-time code for its own key.
+async fn pair(State(app): State<App>, Json(body): Json<PairBody>) -> ApiResult<serde_json::Value> {
+    let device = app
+        .manager
+        .pair(&body.code, &body.name)
+        .map_err(|e| ApiError(StatusCode::FORBIDDEN, e.to_string()))?;
+    Ok(Json(json!(device)))
+}
+
+async fn list_devices(State(app): State<App>) -> Json<serde_json::Value> {
+    Json(json!(app.manager.devices()))
+}
+
+async fn delete_device(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    app.manager.delete_device(&id)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// QR code (SVG) for a pairing link or any address.
+async fn qr(Query(q): Query<HashMap<String, String>>) -> Result<Response, ApiError> {
+    let text = q
+        .get("text")
+        .filter(|t| !t.is_empty() && t.len() < 1024)
+        .ok_or_else(|| not_found("text"))?;
+    let code = qrcode::QrCode::new(text.as_bytes())
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let svg = code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(240, 240)
+        .dark_color(qrcode::render::svg::Color("#232323"))
+        .light_color(qrcode::render::svg::Color("#ffffff"))
+        .build();
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        svg,
+    )
+        .into_response())
 }
 
 /// Terminal websocket: binary frames carry raw bytes both ways; text frames carry control

@@ -13,6 +13,8 @@ fn manager(root: &Path) -> Arc<Manager> {
         user_home: root.join("home"),
         shell: "/bin/sh".into(),
         scrollback_bytes: 64 * 1024,
+        projects_dir: root.join("home/dev"),
+        port: 7777,
     })
     .unwrap()
 }
