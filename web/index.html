@@ -188,6 +188,12 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button type="button" class="ui-button" data-do="use">Use this folder</button></div>
 	</form></dialog>
 
+	<dialog class="ui-sheet" id="sheet-history"><form method="dialog">
+		<h3 id="history-title">Earlier conversations</h3>
+		<ul class="k-history" id="history-list"></ul>
+		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Close</button></div>
+	</form></dialog>
+
 	<dialog class="ui-sheet" id="sheet-pair"><form method="dialog">
 		<h3>Pair this device</h3>
 		<p class="k-hint">This device gets its own key to this kimo. You can unpair it anytime from Devices.</p>

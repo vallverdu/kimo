@@ -390,3 +390,99 @@ async fn agents_message_each_other_and_read_replies() {
     m.act(&bob.spec.id, Action::Stop).await.unwrap();
     assert!(m.message("bob", "hi", None, None).await.is_err());
 }
+
+#[tokio::test]
+async fn adding_a_folder_continues_its_earlier_conversations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let folder = tmp.path().join("app");
+    std::fs::create_dir_all(&folder).unwrap();
+    fake_agents();
+    let path = std::fs::canonicalize(&folder)
+        .unwrap()
+        .display()
+        .to_string();
+    // A Codex conversation, then a newer Claude one, made in that folder before kimo knew it.
+    let codex_dir = home.join(".codex/sessions/2026/01/01");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("rollout-old.jsonl"),
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"codex-earlier","cwd":path,"timestamp":"2026-01-01T00:00:00.000Z"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Build the game"}]}}})
+        ),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    let claude_dir = home
+        .join(".claude/projects")
+        .join(kimo::core::history::claude_dir_name(&path));
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("claude-earlier.jsonl"),
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"user","cwd":path,"sessionId":"claude-earlier","message":{"content":"Fix the parser"}}),
+            serde_json::json!({"type":"ai-title","aiTitle":"Parser fixes"})
+        ),
+    )
+    .unwrap();
+    // A conversation of another folder that happens to share Claude's directory name is ignored.
+    std::fs::write(
+        claude_dir.join("elsewhere.jsonl"),
+        serde_json::json!({"type":"user","cwd":"/somewhere/else","message":{"content":"x"}})
+            .to_string(),
+    )
+    .unwrap();
+
+    let m = manager(tmp.path());
+    let found = m.conversations(&path);
+    let ids: Vec<(&str, &str)> = found
+        .iter()
+        .map(|c| (c.id.as_str(), c.title.as_str()))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            ("claude-earlier", "Parser fixes"),
+            ("codex-earlier", "Build the game")
+        ]
+    );
+
+    // Adding the folder as a project continues both; the newest (Claude) starts right away.
+    let made = m
+        .create_project(kimo::services::projects::NewProject {
+            name: String::new(),
+            mode: kimo::services::projects::ProjectMode::Existing,
+            path: Some(path.clone()),
+            git: false,
+            url: None,
+            resume: true,
+        })
+        .unwrap();
+    assert_eq!(made.continued.len(), 2);
+    let (claude, codex) = (&made.continued[0], &made.continued[1]);
+    assert_eq!(
+        (claude.spec.kind, claude.spec.conversation.as_deref()),
+        (SessionKind::Claude, Some("claude-earlier"))
+    );
+    wait_for(&m, &claude.spec.id, "ARGS=--resume claude-earlier").await;
+    assert_eq!(
+        codex.status,
+        SessionStatus::Stopped,
+        "the other one waits for continue"
+    );
+    m.act(&codex.spec.id, Action::Start).await.unwrap();
+    wait_for(&m, &codex.spec.id, "CODEX ARGS=resume codex-earlier").await;
+
+    // Attached conversations are marked, and continuing again reuses the same session.
+    assert!(m.conversations(&path).iter().all(|c| c.session.is_some()));
+    let again = m
+        .continue_conversation(SessionKind::Claude, &path, "claude-earlier", None, true)
+        .unwrap();
+    assert_eq!(again.spec.id, claude.spec.id);
+    for s in [&claude.spec.id, &codex.spec.id] {
+        m.delete(s).await.unwrap();
+    }
+}

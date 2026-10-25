@@ -111,6 +111,15 @@ pub enum Command {
     },
     /// Which kimo session am I?
     Whoami,
+    /// Earlier Claude and Codex conversations in a folder (default: the current one).
+    History { folder: Option<String> },
+    /// Continue one of those conversations as a kimo session.
+    Continue {
+        /// Conversation id (or its beginning) from `kimo history`.
+        id: String,
+        #[arg(long)]
+        folder: Option<String>,
+    },
     /// List the other kimos paired with this one.
     Peers,
     /// Pair with or forget another kimo (lab box, Raspberry Pi, Mac mini…).

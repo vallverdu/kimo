@@ -31,6 +31,7 @@
 - [x] Clear ids: kimo id and resume id shown in the window, the web client and `kimo agents`.
 - [ ] Rename sessions, edit args/folder, reorder or pin them.
 - [x] Projects: new folder (+ git init), existing folder, clone in a visible terminal; branch and agents per project.
+- [x] Adding a folder continues its earlier Claude and Codex conversations; project history with continue (window, phone, `kimo history`/`continue`).
 - [x] Folder picker on the server for new sessions and projects.
 - [ ] Project templates (start a project from a starter folder) and per-project default agent/account.
 - [ ] Worktrees: create a git worktree per agent from a project.

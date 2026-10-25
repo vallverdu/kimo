@@ -56,9 +56,11 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | Method | Path | |
 |---|---|---|
 | GET | `/projects` | list with `branch`, `exists`, `sessions`, `running` |
-| POST | `/projects` | `{mode: new \| existing \| clone, name?, path?, git?, url?}` → `{project, session}` (`session` is the clone terminal) |
+| POST | `/projects` | `{mode: new \| existing \| clone, name?, path?, git?, url?, resume? = true}` → `{project, session, continued}`: `session` is the clone terminal; `continued` are the folder's latest Claude and Codex conversations, continued as sessions (the first one started) |
 | DELETE | `/projects/{id}` | forget (files stay) |
 | GET | `/fs?path=` | subfolders, for folder pickers |
+| GET | `/conversations?path=` | earlier Claude and Codex conversations in a folder, newest first: `agent`, `id`, `title`, `updated_at`, `messages` (your prompts), `session` (when attached) |
+| POST | `/conversations/continue` | `{agent, cwd, id, name?, start? = true}`: continue one as a session (an attached one is reused) |
 
 ## Accounts and usage
 
@@ -124,6 +126,7 @@ kimo.reply(id); kimo.screen(id, lines);
 kimo.waitFor(id, ['idle', 'waiting'], { timeout });   // resolves with the session
 kimo.subscribe(({ sessions, accounts }) => …);        // live updates; returns stop()
 kimo.projects(); kimo.createProject(p); kimo.deleteProject(id); kimo.browse(path);
+kimo.conversations(path); kimo.continueConversation({ agent, cwd, id });
 kimo.accounts(); kimo.usage(); kimo.moveSessions(from, to);
 quietFor(session);                  // seconds since its last output
 ```
@@ -143,6 +146,8 @@ kimo read <id> [--screen] [--lines N]
 kimo wait <id> [--timeout S]
 kimo new <claude|codex|shell> [--name N] [--cwd DIR] [--account A] [--prompt TEXT]
 kimo whoami
+kimo history [folder]                 earlier Claude and Codex conversations here
+kimo continue <conversation> [--folder DIR]
 kimo peers
 kimo peer add <url> <code> [--my-url URL]
 kimo peer remove <id>

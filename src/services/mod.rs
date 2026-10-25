@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod devices;
+pub mod history;
 pub mod network;
 pub mod peers;
 pub mod projects;

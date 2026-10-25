@@ -55,6 +55,10 @@ export class Kimo {
   createProject(project) { return this.request('POST', '/projects', project); }
   /** Forget a project (its files stay). */
   deleteProject(id) { return this.request('DELETE', `/projects/${enc(id)}`); }
+  /** Earlier Claude and Codex conversations in a folder, newest first (`session` set when attached). */
+  conversations(path) { return this.request('GET', `/conversations?path=${enc(path)}`); }
+  /** Continue a conversation as a session: `{agent, cwd, id, name?, start? = true}`. */
+  continueConversation(c) { return this.request('POST', '/conversations/continue', c); }
   /** Subfolders of `path` (default: the projects folder). */
   browse(path) { return this.request('GET', `/fs${path ? `?path=${enc(path)}` : ''}`); }
 

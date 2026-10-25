@@ -8,6 +8,8 @@ First public version.
   subscriptions, skills, settings and devices; a server that keeps agents running when the
   window closes.
 - Claude Code, Codex and shell sessions; pause, stop and continue by conversation id.
+- Adding a folder continues the Claude and Codex conversations that already happened there;
+  every project has a history of earlier conversations (`kimo history`, `kimo continue`).
 - Several Claude and Codex accounts; switch an agent's subscription and continue the same
   conversation; move every agent of an account at once; usage per account.
 - Agent state (working, needs you, idle) and a "needs you" list.

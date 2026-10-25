@@ -63,6 +63,10 @@ fn main() -> Result<()> {
         ),
         Command::Whoami => kimo::cli::whoami(&kimo::cli::client(cfg.port)),
         Command::Peers => kimo::cli::peers(&kimo::cli::client(cfg.port)),
+        Command::History { folder } => kimo::cli::history(&kimo::cli::client(cfg.port), folder),
+        Command::Continue { id, folder } => {
+            kimo::cli::continue_conversation(&kimo::cli::client(cfg.port), &id, folder)
+        }
         Command::Peer { action } => match action {
             kimo::config::PeerAction::Add { url, code, my_url } => {
                 kimo::cli::peer_add(&kimo::cli::client(cfg.port), &url, &code, my_url)

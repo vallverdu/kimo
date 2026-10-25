@@ -19,6 +19,7 @@ export function initProjects({ api, state, run, terminal }) {
           <button class="ui-button k-small" data-new="claude">+ claude</button>
           <button class="ui-button ghost k-small" data-new="codex">+ codex</button>
           <button class="ui-button ghost k-small" data-new="shell">+ shell</button>
+          <button class="ui-button ghost k-small" data-do="history" title="earlier Claude and Codex conversations here">history</button>
           <button class="ui-button k-small k-danger" data-do="forget">forget</button>
         </div></li>`;
     }).join('') : '<li class="ui-empty">No projects yet. Tap + to create one, add a folder or clone a repository.</li>';
@@ -38,6 +39,7 @@ export function initProjects({ api, state, run, terminal }) {
       if (s) terminal.open(s);
       return;
     }
+    if (e.target.closest('[data-do=history]')) return showHistory(p);
     if (e.target.closest('[data-do=forget]') && confirm(`Forget "${p.name}"? Its folder and files stay on disk.`)) {
       run(api.deleteProject(p.id), 'Project forgotten (files kept)');
     }
@@ -65,7 +67,45 @@ export function initProjects({ api, state, run, terminal }) {
     sheet.close();
     form.reset();
     syncMode();
-    if (made.session) terminal.open(made.session);
+    // A clone terminal, or the folder's last conversation that kimo continued.
+    const n = made.continued?.length || 0;
+    if (n) toast(`Continuing ${n === 1 ? 'its last conversation' : `its last ${n} conversations`}`);
+    const open = made.session || made.continued?.[0];
+    if (open) terminal.open(open);
+  });
+
+  // ----- earlier conversations -----
+
+  const historySheet = $('sheet-history');
+  const ago = ms => {
+    const m = Math.max(0, Math.round((Date.now() - ms) / 60000));
+    return m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+  };
+  let historyProject = null;
+  async function showHistory(p) {
+    historyProject = p;
+    $('history-title').textContent = `Earlier conversations · ${p.name}`;
+    $('history-list').innerHTML = '<li class="k-hint">Looking…</li>';
+    historySheet.showModal();
+    try {
+      const list = await api.conversations(p.path);
+      $('history-list').innerHTML = list.length ? list.map(c => `<li data-conv="${esc(c.id)}" data-agent="${esc(c.agent)}" data-session="${esc(c.session || '')}">
+        <div><strong>${esc(c.title)}</strong><small>${esc(c.agent)} · ${ago(c.updated_at)} · ${c.messages} asks</small></div>
+        <button type="button" class="ui-button ${c.session ? 'ghost ' : ''}k-small">${c.session ? 'open' : 'continue'}</button></li>`).join('')
+        : '<li class="k-hint">No Claude or Codex conversations in this folder yet.</li>';
+    } catch (err) { toast(err.message, true); }
+  }
+  historySheet.addEventListener('click', async e => {
+    const li = e.target.closest('button') && e.target.closest('li[data-conv]');
+    if (!li) return;
+    historySheet.close();
+    if (li.dataset.session) {
+      const s = state.sessions.find(x => x.id === li.dataset.session);
+      if (s) terminal.open(s);
+      return;
+    }
+    const s = await run(api.continueConversation({ agent: li.dataset.agent, cwd: historyProject.path, id: li.dataset.conv, name: li.querySelector('strong').textContent.slice(0, 32), start: true }), 'Continuing the conversation');
+    if (s) terminal.open(s);
   });
 
   // ----- folder picker -----

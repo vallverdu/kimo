@@ -223,3 +223,72 @@ pub fn peer_remove(c: &Client, id: &str) -> Result<()> {
     println!("removed {id}");
     Ok(())
 }
+
+fn ago(ms: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let m = now.saturating_sub(ms) / 60_000;
+    match m {
+        0..=59 => format!("{m} min ago"),
+        60..=1439 => format!("{} h ago", m / 60),
+        _ => format!("{} d ago", m / 1440),
+    }
+}
+
+fn folder_or_here(folder: Option<String>) -> String {
+    folder.unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default()
+    })
+}
+
+/// Earlier Claude and Codex conversations in a folder (default: the current one).
+pub fn history(c: &Client, folder: Option<String>) -> Result<()> {
+    let folder = folder_or_here(folder);
+    let list: Value = c.get(&format!("/conversations?path={}", enc(&folder)))?;
+    if list.as_array().is_none_or(Vec::is_empty) {
+        println!("No Claude or Codex conversations in {}", home(&folder));
+        return Ok(());
+    }
+    println!(
+        "{:<7} {:<38} {:<11} {:<5} {:<20} TITLE",
+        "AGENT", "CONVERSATION", "UPDATED", "ASKS", "SESSION"
+    );
+    for v in list.as_array().into_iter().flatten() {
+        println!(
+            "{:<7} {:<38} {:<11} {:<5} {:<20} {}",
+            s(v, "agent"),
+            s(v, "id"),
+            ago(v["updated_at"].as_u64().unwrap_or(0)),
+            v["messages"],
+            v["session"].as_str().unwrap_or("-"),
+            s(v, "title")
+        );
+    }
+    Ok(())
+}
+
+/// Continue a conversation (from `kimo history`) as a kimo session.
+pub fn continue_conversation(c: &Client, id: &str, folder: Option<String>) -> Result<()> {
+    let folder = folder_or_here(folder);
+    let list: Value = c.get(&format!("/conversations?path={}", enc(&folder)))?;
+    let Some(conv) = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|v| s(v, "id") == id || s(v, "id").starts_with(id))
+    else {
+        bail!(
+            "no conversation {id} in {}: see `kimo history`",
+            home(&folder)
+        );
+    };
+    let session = c.post(
+        "/conversations/continue",
+        json!({ "agent": conv["agent"], "cwd": folder, "id": conv["id"], "start": true }),
+    )?;
+    println!("continuing {} as {}", s(conv, "title"), s(&session, "id"));
+    Ok(())
+}

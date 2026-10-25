@@ -42,6 +42,13 @@ pub struct NewProject {
     pub git: bool,
     #[serde(default)]
     pub url: Option<String>,
+    /// Continue the folder's latest Claude and Codex conversations (existing folders).
+    #[serde(default = "yes")]
+    pub resume: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +56,8 @@ pub struct CreatedProject {
     pub project: Project,
     /// The terminal running `git clone`, when cloning.
     pub session: Option<SessionInfo>,
+    /// Earlier conversations in the folder, continued as sessions (the first one is started).
+    pub continued: Vec<SessionInfo>,
 }
 
 /// Folder name for a project name: lowercase words joined by dashes.
@@ -215,7 +224,16 @@ impl Manager {
             )?),
             _ => None,
         };
-        Ok(CreatedProject { project, session })
+        let continued = if req.mode == ProjectMode::Existing && req.resume {
+            self.continue_latest(&project.name, &project.path)
+        } else {
+            vec![]
+        };
+        Ok(CreatedProject {
+            project,
+            session,
+            continued,
+        })
     }
 
     /// Forget a project. Its folder and files stay untouched.

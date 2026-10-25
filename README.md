@@ -19,6 +19,10 @@ and gives you, and the agents themselves, the controls for that.
 - **Projects and terminals.** Drop a folder on the window to make it a project (or create
   one, or clone a repository). Start Claude Code, Codex or a shell in it with one click. Real
   terminals, with tabs, selection and copy.
+- **Pick up where you left off.** When a folder becomes a project, kimo finds the Claude Code
+  and Codex conversations that already happened there and continues the latest ones, so you
+  are back in your work at once. Every project has a *history* of its earlier conversations,
+  each one a click away from continuing.
 - **Subscriptions without logging out.** Add as many Claude and Codex accounts as you have
   and sign in once. Switch an agent to another account at any time and it **continues the
   same conversation**; when one plan hits its limit, move all its agents with one click.
@@ -68,7 +72,9 @@ kimo runs the agent CLIs you already have: install
 1. **Run `kimo`.** The window opens; a kimo server starts in the background if none is
    running (closing the window never stops your agents). On a machine without a screen,
    run `kimo serve`.
-2. **Add a project:** drop a folder on the window, or *+ project*.
+2. **Add a project:** drop a folder on the window, or *+ project*. If Claude or Codex already
+   worked in that folder, kimo continues their latest conversations; the rest are in the
+   project's *history* (`kimo history` in a terminal).
 3. **Start an agent:** *+ claude*, *+ codex* or *+ shell* under the project.
 4. **Add subscriptions:** Subscriptions → add an account → *sign in* (a terminal opens with
    that account's login). Pick the account per agent from the terminal toolbar.
@@ -118,7 +124,7 @@ HTTPS (`tailscale serve`, one click in Devices) it installs as an app.
 
 | | | | |
 |---|---|---|---|
-| ![Agents on a phone](docs/screenshots/phone-agents.png) | ![A terminal on a phone](docs/screenshots/phone-terminal.png) | ![Projects on a phone](docs/screenshots/phone-projects.png) | ![Accounts on a phone](docs/screenshots/phone-accounts.png) |
+| ![Agents on a phone](docs/screenshots/phone-agents.png) | ![A terminal on a phone](docs/screenshots/phone-terminal.png) | ![Earlier conversations of a project on a phone](docs/screenshots/phone-history.png) | ![Accounts on a phone](docs/screenshots/phone-accounts.png) |
 
 ## Build your own apps
 
@@ -180,8 +186,10 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## More screenshots
 
-| Claude Code in kimo | Someone needs you |
+| Drop a folder: its last conversations continue | Earlier conversations of a project |
 |---|---|
+| ![A project added from a folder, continuing its last conversation](docs/screenshots/app-continue.png) | ![The history of a project](docs/screenshots/app-history.png) |
+| **Claude Code in kimo** | **Someone needs you** |
 | ![Claude Code in the kimo window](docs/screenshots/app-claude.png) | ![A session waiting for an answer](docs/screenshots/app-needs-you.png) |
 | **Subscriptions** | **Skills** |
 | ![Subscriptions](docs/screenshots/app-subscriptions.png) | ![Skills](docs/screenshots/app-skills.png) |

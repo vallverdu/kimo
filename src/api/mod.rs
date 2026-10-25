@@ -102,6 +102,8 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/clients/{id}", axum::routing::delete(delete_client))
         .route("/projects", get(list_projects).post(create_project))
         .route("/projects/{id}", axum::routing::delete(delete_project))
+        .route("/conversations", get(list_conversations))
+        .route("/conversations/continue", post(continue_conversation))
         .route("/fs", get(browse))
         .route("/network", get(network))
         .route("/network/https", post(enable_https))
@@ -651,6 +653,44 @@ async fn delete_project(
 ) -> ApiResult<serde_json::Value> {
     app.manager.delete_project(&id)?;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Earlier Claude and Codex conversations in a folder (`?path=`), newest first.
+async fn list_conversations(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    let path = q.get("path").cloned().ok_or_else(|| not_found("path"))?;
+    let manager = app.manager.clone();
+    let list = tokio::task::spawn_blocking(move || manager.conversations(&path))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(list)))
+}
+
+#[derive(Deserialize)]
+struct ContinueBody {
+    agent: crate::core::models::SessionKind,
+    cwd: String,
+    id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default = "yes")]
+    start: bool,
+}
+
+/// Continue an existing conversation as a kimo session (reused if one is attached already).
+async fn continue_conversation(
+    State(app): State<App>,
+    Json(b): Json<ContinueBody>,
+) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let session = tokio::task::spawn_blocking(move || {
+        manager.continue_conversation(b.agent, &b.cwd, &b.id, b.name, b.start)
+    })
+    .await
+    .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!(session)))
 }
 
 async fn browse(

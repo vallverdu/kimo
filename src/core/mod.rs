@@ -3,6 +3,7 @@
 pub mod access;
 pub mod activity;
 pub mod git;
+pub mod history;
 pub mod hostname;
 pub mod launch;
 pub mod lifecycle;

@@ -41,6 +41,10 @@ enum Msg {
     Pairing(String, u64),
     /// Folder listing for the project dialog's picker.
     Folder(Value),
+    /// Earlier conversations of a project: (project name, folder, list).
+    History(String, String, Value),
+    /// A project was added; open what it continued.
+    Added(Value),
     Open(Value),
     Toast(String),
     Error(String),
@@ -132,6 +136,8 @@ pub struct KimoApp {
     peer_info: Vec<Value>,
     peer_url: String,
     peer_code: String,
+    /// The history dialog: project name, folder, conversations.
+    history: Option<(String, String, Vec<Value>)>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     view: View,
@@ -281,6 +287,7 @@ impl KimoApp {
             peer_info: vec![],
             peer_url: String::new(),
             peer_code: String::new(),
+            history: None,
             logo,
             ctx,
             tx,
@@ -454,6 +461,36 @@ impl KimoApp {
                     }
                     self.current = self.hosts.iter().position(|h| h.id == current).unwrap_or(0);
                 }
+                Msg::History(name, folder, list) => {
+                    self.history =
+                        Some((name, folder, list.as_array().cloned().unwrap_or_default()));
+                }
+                Msg::Added(made) => {
+                    let continued = made["continued"].as_array().cloned().unwrap_or_default();
+                    let name = s(&made["project"], "name").to_string();
+                    self.toast(
+                        match continued.len() {
+                            0 => format!("Project added: {name}"),
+                            1 => {
+                                format!("Project added: {name} · continuing its last conversation")
+                            }
+                            n => format!(
+                                "Project added: {name} · continuing its last {n} conversations"
+                            ),
+                        },
+                        false,
+                    );
+                    self.last_projects = Instant::now() - Duration::from_secs(60);
+                    // Open the conversation that was resumed (or the clone terminal).
+                    let open = made["session"]
+                        .as_object()
+                        .map(|_| made["session"].clone())
+                        .or_else(|| continued.first().cloned());
+                    if let Some(session) = open {
+                        let id = s(&session, "id").to_string();
+                        self.open_session(&id);
+                    }
+                }
                 Msg::Folder(listing) => {
                     if let Some(form) = self.project_form.as_mut() {
                         form.listing = Some(listing);
@@ -525,11 +562,10 @@ impl KimoApp {
             };
             let path = dir.display().to_string();
             self.job(move |c| {
-                let made = c.post("/projects", json!({ "mode": "existing", "path": path }))?;
-                Ok(Msg::Toast(format!(
-                    "Project added: {}",
-                    s(&made["project"], "name")
-                )))
+                Ok(Msg::Added(c.post(
+                    "/projects",
+                    json!({ "mode": "existing", "path": path }),
+                )?))
             });
         }
         if hovering {
@@ -724,6 +760,7 @@ impl KimoApp {
         ui.add_space(6.0);
         let mut open: Option<String> = None;
         let mut start: Option<(String, String, String)> = None;
+        let mut history: Option<(String, String)> = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -775,7 +812,7 @@ impl KimoApp {
                                     activity_tag(ui, x);
                                 });
                             }
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 for kind in ["claude", "codex", "shell"] {
                                     if ui.small_button(format!("+ {kind}")).clicked() {
                                         start = Some((
@@ -784,6 +821,15 @@ impl KimoApp {
                                             kind.to_string(),
                                         ));
                                     }
+                                }
+                                if ui
+                                    .small_button("history")
+                                    .on_hover_text(
+                                        "earlier Claude and Codex conversations in this folder",
+                                    )
+                                    .clicked()
+                                {
+                                    history = Some((s(p, "name").to_string(), path.to_string()));
                                 }
                             });
                         });
@@ -817,6 +863,18 @@ impl KimoApp {
         if let Some(id) = open {
             self.open_session(&id);
         }
+        if let Some((name, folder)) = history {
+            self.job(move |c| {
+                let list = c.get(&format!(
+                    "/conversations?path={}",
+                    folder
+                        .replace('%', "%25")
+                        .replace(' ', "%20")
+                        .replace('#', "%23")
+                ))?;
+                Ok(Msg::History(name, folder, list))
+            });
+        }
         if let Some((project, cwd, kind)) = start {
             let taken: Vec<String> = sessions.iter().map(|x| s(x, "name").to_string()).collect();
             let mut name = format!("{project} {kind}");
@@ -845,9 +903,14 @@ impl KimoApp {
         }
         // Tabs of deleted sessions (or of forgotten hosts) close by themselves.
         let hosts = &self.hosts;
+        // A tab opened for a brand-new session waits until the session shows up in the list.
         self.terminals
-            .retain(|t| match hosts.iter().find(|h| h.id == t.host) {
-                Some(h) if h.loaded() => h.sessions().iter().any(|x| s(x, "id") == t.session_id),
+            .retain_mut(|t| match hosts.iter().find(|h| h.id == t.host) {
+                Some(h) if h.loaded() => {
+                    let listed = h.sessions().iter().any(|x| s(x, "id") == t.session_id);
+                    t.seen |= listed;
+                    listed || !t.seen
+                }
                 Some(_) => true,
                 None => false,
             });
@@ -949,15 +1012,17 @@ impl KimoApp {
             .unwrap_or(Value::Null);
         let status = s(&info, "status").to_string();
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             dot(ui, theme::status_color(&status));
             ui.label(RichText::new(&status).size(11.0).color(theme::status_color(&status)));
             activity_tag(ui, &info);
             // Ids: kimo's id (for kimo send/read) and the agent's own resume id.
             for (label, value) in [("id", s(&info, "id").to_string()), ("resume", info["conversation"].as_str().unwrap_or("").to_string())] {
                 if !value.is_empty() {
-                    let r = ui.add(egui::Button::new(RichText::new(format!("{label} {value}")).size(10.5).color(theme::MUTED)).frame(false));
-                    if r.on_hover_text("click to copy").clicked() {
+                    // Long resume ids are shortened; a click copies the full value.
+                    let shown = if label == "resume" && value.chars().count() > 14 { format!("{}…", value.chars().take(8).collect::<String>()) } else { value.clone() };
+                    let r = ui.add(egui::Button::new(RichText::new(format!("{label} {shown}")).size(10.5).color(theme::MUTED)).frame(false));
+                    if r.on_hover_text(format!("{value}\nclick to copy")).clicked() {
                         ui.ctx().copy_text(value.clone());
                         self.toasts.push((format!("Copied {label}: {value}"), false, Instant::now()));
                     }
@@ -1629,18 +1694,91 @@ impl KimoApp {
         if submit {
             let f = self.project_form.take().unwrap_or_default();
             let body = json!({ "mode": f.mode, "name": f.name, "path": if f.path.is_empty() { Value::Null } else { Value::String(f.path) }, "git": f.git, "url": f.url });
-            self.job(move |c| {
-                let made = c.post("/projects", body)?;
-                if made["session"].is_object() {
-                    return Ok(Msg::Open(made["session"].clone()));
-                }
-                Ok(Msg::Toast(format!(
-                    "Project ready: {}",
-                    s(&made["project"], "name")
-                )))
-            });
+            self.job(move |c| Ok(Msg::Added(c.post("/projects", body)?)));
         } else if !open {
             self.project_form = None;
+        }
+    }
+
+    /// Earlier conversations of a project, each one continuable.
+    fn history_dialog(&mut self, ctx: &egui::Context) {
+        let Some((name, folder, list)) = self.history.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut action: Option<(Value, bool)> = None;
+        egui::Window::new(format!("Earlier conversations · {name}"))
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(640.0)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                if list.is_empty() {
+                    ui.label(
+                        RichText::new("No Claude or Codex conversations in this folder yet.")
+                            .color(theme::MUTED),
+                    );
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .show(ui, |ui| {
+                        for c in &list {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(s(c, "agent")).size(10.5).color(theme::TEAL),
+                                );
+                                ui.label(RichText::new(s(c, "title")).color(theme::INK));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let attached = c["session"].as_str().is_some();
+                                        if ui
+                                            .button(if attached { "open" } else { "continue" })
+                                            .clicked()
+                                        {
+                                            action = Some((c.clone(), attached));
+                                        }
+                                        let ago = {
+                                            let now = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map_or(0, |d| d.as_millis() as u64);
+                                            let m = now.saturating_sub(
+                                                c["updated_at"].as_u64().unwrap_or(0),
+                                            ) / 60_000;
+                                            if m < 60 {
+                                                format!("{m} min ago")
+                                            } else if m < 1440 {
+                                                format!("{} h ago", m / 60)
+                                            } else {
+                                                format!("{} d ago", m / 1440)
+                                            }
+                                        };
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{ago} · {} asks",
+                                                c["messages"]
+                                            ))
+                                            .size(10.5)
+                                            .color(theme::MUTED),
+                                        );
+                                    },
+                                );
+                            });
+                            ui.separator();
+                        }
+                    });
+            });
+        if let Some((c, attached)) = action {
+            self.history = None;
+            if attached {
+                let id = s(&c, "session").to_string();
+                self.open_session(&id);
+            } else {
+                let body = json!({ "agent": c["agent"], "cwd": folder, "id": c["id"], "name": short_title(s(&c, "title")), "start": true });
+                self.job(move |cl| Ok(Msg::Open(cl.post("/conversations/continue", body)?)));
+            }
+        } else if !open {
+            self.history = None;
         }
     }
 
@@ -1664,6 +1802,16 @@ impl KimoApp {
                 }
             });
         ctx.request_repaint_after(Duration::from_millis(500));
+    }
+}
+
+/// A session name from a conversation title (short enough for tabs and the sidebar).
+fn short_title(title: &str) -> String {
+    let t: String = title.chars().take(32).collect();
+    if t.chars().count() < title.chars().count() {
+        format!("{}…", t.trim_end())
+    } else {
+        t
     }
 }
 
@@ -1749,6 +1897,7 @@ impl eframe::App for KimoApp {
                 View::Devices => self.devices_view(ui),
             });
         self.project_dialog(&ctx);
+        self.history_dialog(&ctx);
         self.handle_drops(ui);
         self.toasts(&ctx);
     }

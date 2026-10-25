@@ -434,7 +434,7 @@ impl Manager {
         Ok(())
     }
 
-    fn start(&self, id: &str) -> Result<()> {
+    pub(crate) fn start(&self, id: &str) -> Result<()> {
         let mut inner = self.lock();
         let spec = inner
             .state

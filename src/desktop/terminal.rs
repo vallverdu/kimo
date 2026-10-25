@@ -34,6 +34,8 @@ pub struct TerminalView {
     pub session_id: String,
     /// The kimo host the session runs on (`local` or a peer id).
     pub host: String,
+    /// The session has appeared in its host's list (until then a missing session is just new).
+    pub seen: bool,
     term: Term<Responder>,
     parser: Processor,
     link: TerminalLink,
@@ -127,6 +129,7 @@ impl TerminalView {
         Self {
             session_id: session_id.to_string(),
             host: host.to_string(),
+            seen: false,
             term,
             parser: Processor::new(),
             link,
