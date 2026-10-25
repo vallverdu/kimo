@@ -1,274 +1,218 @@
-# kimo
+<p align="center"><img src="assets/brand/kimo.svg" alt="" width="96"></p>
 
-An **agent development environment, all in Rust**. `kimo` opens a native window on the machine
-where your agents run: drop a folder to make it a project, open terminals with Claude Code,
-Codex or a shell, switch subscriptions without logging out, pause or stop agents to free CPU and
-memory, manage skills and settings. Behind the window runs the kimo server (one binary, a few MB),
-and its API is what everything else uses:
+<h1 align="center">kimo</h1>
 
-- **your own PWAs**: Everpano, a project manager or any specialised app creates projects and
-  agents and orchestrates them through the API, with its own key, a small JS SDK and an
-  embeddable `<kimo-terminal>`;
-- **your phone**: pair it with a QR code and use the bundled phone client (a PWA) over your
-  LAN, Tailscale or ZeroTier.
+<p align="center"><b>An agent development environment in Rust.</b><br>
+Projects, terminals and subscriptions for your coding agents, on every machine you own,<br>
+from one app, your phone, or your own apps.</p>
 
-```
-  kimo window (Rust, egui)      phone client (PWA)      your PWAs (SDK)      scripts / Rust client
-            \                          |                      |                     /
-             └──────────────── HTTP + live events + terminal websockets ───────────┘
-                                          kimo server (Rust)
-                       PTYs · projects · subscriptions · skills · settings · /proc stats
-```
+![Agents on two machines talking to each other in the kimo window](docs/screenshots/app-agents-talk.png)
 
-It exists because attention is the bottleneck: you should be able to follow, pause, move and
-continue dozens of agents from a phone, without logging out and in when a subscription runs
-out, and without 26 idle agents eating 30 GB of RAM.
-
-## The kimo app
-
-Native Rust window (egui, terminals on alacritty_terminal). Real run: a Claude Code agent
-(≈650 MB) and two shells. Measured on the test machine, which has no GPU (software rendering):
-the server uses ~10 MB, the window ~113 MB and ~3% of one core while idle; with a GPU the
-window's rendering cost is lower. Closing the window keeps everything running.
-
-![Claude Code in the kimo window](docs/screenshots/app-claude.png)
-
-![A shell with colours and the project sidebar](docs/screenshots/app-shell.png)
-
-| Subscriptions | Skills |
-|---|---|
-| ![Subscriptions](docs/screenshots/app-subscriptions.png) | ![Skills](docs/screenshots/app-skills.png) |
-
-| Settings | Pair a phone |
-|---|---|
-| ![Settings](docs/screenshots/app-settings.png) | ![Devices and QR code](docs/screenshots/app-devices-qr.png) |
-
-- **Projects**: drop a folder on the window (or a file: its folder is used) to add it; or
-  *+ project* to create one (with `git init`), pick an existing folder or clone a repository.
-  Each project lists its agents with their state, and *+ claude / + codex / + shell* starts one.
-- **Terminals**: tabs of live sessions; pause / resume / stop / continue; the session's
-  subscription in a menu (switching restarts the agent on the other account and continues the
-  conversation); quick commands; a message box. Closing a tab or the window never stops an agent.
-- **Subscriptions**: every Claude and Codex login, signed-in state, *sign in*, *move sessions*.
-- **Skills**: every skill your agents have, global and per project (claude.ai-synced and built-in
-  ones read-only); install from `owner/repo/folder`, a git URL or a folder, for Claude, Codex or
-  the shared `.agents`; remove moves the skill to `~/.kimo/skill-backups`.
-- **Settings**: per agent permissions (ask, or skip every prompt), model and extra arguments;
-  terminal font size; quick commands (also used by the phone client).
-- **Devices**: addresses kimo is reachable on, QR code to pair a phone, paired devices, app keys.
-
-## Phone and web client
-
-### Pairing a phone
-
-![Projects on the server](docs/screenshots/desktop-projects.png)
-
-![Devices: QR code to pair a phone](docs/screenshots/desktop-pair-qr.png)
-
-| Scan → pair | Projects on the phone | New project | Folder picker |
-|---|---|---|---|
-| ![Pair this device](docs/screenshots/phone-pair.png) | ![Projects on the phone](docs/screenshots/phone-projects.png) | ![New project sheet](docs/screenshots/phone-new-project.png) | ![Folder picker](docs/screenshots/phone-folder-picker.png) |
-
-![The phone listed as a paired device](docs/screenshots/desktop-devices.png)
-
-### Agents on the phone
-
-Real run on a laptop: a Claude Code agent (≈650 MB, the reason stopping matters), two shells,
-one paused, one stopped; kimo itself uses 6 MB.
-
-| Agents | Every session | Claude Code in a terminal |
-|---|---|---|
-| ![Agents overview](docs/screenshots/phone-agents.png) | ![All sessions: running, paused, stopped](docs/screenshots/phone-agents-all.png) | ![Claude Code in the phone terminal](docs/screenshots/phone-terminal.png) |
-
-| Paused session | Accounts | New session |
-|---|---|---|
-| ![A paused session: frozen, no CPU](docs/screenshots/phone-paused.png) | ![Accounts and moving sessions](docs/screenshots/phone-accounts.png) | ![New session sheet](docs/screenshots/phone-new-session.png) |
-
-A session is *paused* (frozen with SIGSTOP, no CPU, memory kept) or *stopped* (memory freed,
-**continue** brings the conversation back). The terminal has a key bar and a compose box so an
-agent can be driven without a keyboard.
-
-![Agents on desktop](docs/screenshots/desktop-agents.png)
-
-![A terminal on desktop: the test suite running inside kimo](docs/screenshots/desktop-terminal.png)
-
-![Accounts on desktop: move every session of a login to another subscription](docs/screenshots/desktop-accounts.png)
+Coding agents such as Claude Code and Codex are good enough that the bottleneck is no longer
+writing code, it is your attention: following a dozen agents, answering the one that is
+stuck, moving work to another subscription when one hits its limit, and not letting idle
+agents eat all the memory. kimo is a small Rust program that runs your agents in terminals
+and gives you, and the agents themselves, the controls for that.
 
 ## What it does
 
-- **Projects**: create a project folder (optionally `git init`), add an existing folder with
-  a folder picker, or clone a repository (the clone runs in a terminal you can watch). Each
-  project shows its git branch and its agents, with **+ claude / + codex / + shell** to start one
-  there. Forgetting a project never deletes files.
-- **Terminals**: Claude, Codex or shell sessions in any folder; full screen with a phone key bar
-  (esc, tab, ^C, arrows) and a compose box for typing messages.
-- **Pause / stop / continue**: *pause* freezes the whole process tree (SIGSTOP: no CPU, memory
-  kept); *stop* ends it to free the memory; *continue* brings the conversation back. Each Claude
-  session owns its conversation id (`--session-id`, then `--resume <id>`), so agents sharing a
-  folder never pick up each other's conversation; Codex uses `codex resume --last`.
-- **Accounts without logout**: each account gets its own config home
-  (`~/.kimo/accounts/<id>`, via `CLAUDE_CONFIG_DIR` / `CODEX_HOME`); sign in once per account.
-  Every account home links the default home's conversations and settings (`projects/`,
-  `settings.json`, `skills/`… for Claude; `sessions/`, `config.toml`… for Codex), so moving a
-  session to another account restarts it under the new subscription *and continues the same
-  conversation*. Hit a limit? Accounts → **move sessions** moves all of them at once.
-- **Resources**: memory, CPU and process count per session (whole process tree, from `/proc`),
-  machine free memory and kimo's own footprint (~5 MB RSS); a warning when memory runs low.
-- **Every device on your network**: kimo listens on all networks and lists its addresses (LAN,
-  Tailscale IP and HTTPS name, ZeroTier). The server's own screen is the owner, no login. Other
-  devices **pair with a QR code** (Devices tab, or `kimo pair` in a terminal): a one-time code,
-  valid 10 minutes, becomes that device's own key; unpair it anytime. One tap serves kimo over
-  HTTPS on your tailnet (`tailscale serve`, on a free port: other services stay as they are), so
-  phones can install it as an app.
-- **Clean environment**: sessions do not inherit kimo's token or the state of a parent agent
-  session (`CLAUDECODE`, `CLAUDE_CODE_*`), so kimo can itself be started from an agent.
-- **A backend for your other PWAs**: per-app keys bound to the app's origin and to a scope
-  (read or control), CORS, a live event stream and a JS SDK served by kimo (below).
+- **Projects and terminals.** Drop a folder on the window to make it a project (or create
+  one, or clone a repository). Start Claude Code, Codex or a shell in it with one click. Real
+  terminals, with tabs, selection and copy.
+- **Subscriptions without logging out.** Add as many Claude and Codex accounts as you have
+  and sign in once. Switch an agent to another account at any time and it **continues the
+  same conversation**; when one plan hits its limit, move all its agents with one click.
+  kimo shows **usage per account** (Claude tokens, Codex plan limits and reset times).
+- **Pause, stop, continue.** Pause freezes an agent (no CPU); stop frees its memory; continue
+  resumes its own conversation by id. Memory and CPU per agent, always visible.
+- **Agents that work together.** Every agent has a clear id and resume id. Agents run
+  `kimo agents`, `kimo send`, `kimo wait`, `kimo read` and `kimo new` to list, message, wait
+  for and start other agents; the bundled `kimo-agents` skill teaches them how.
+- **Know who needs you.** Each agent is *working*, *needs you* (asking a question or an
+  approval) or *idle*. The window and the phone show what needs you first.
+- **Several machines, one app.** Pair the kimo on your laptop with the ones on a GPU box, a
+  Raspberry Pi or a Mac mini. Their projects and terminals appear in the same window, and
+  agents message each other across machines as `gpu-lab/trainer-1a2b`.
+- **Your phone.** Pair it with a QR code and use the bundled phone client over your LAN,
+  Tailscale or ZeroTier.
+- **Your own apps.** Everything goes through a small HTTP API with live events. Give a web app
+  its own key and it can create projects, start agents and orchestrate them with the JS SDK
+  and an embeddable `<kimo-terminal>`.
+- **Skills and settings.** See and manage your agents' skills (install from GitHub, a git URL
+  or a folder); set permissions, model and arguments per agent; save quick commands.
+- **Light.** One binary. The server uses about 10 MB of memory; the agents are what you pay for.
 
-## Run
+## Install
 
-Needs Linux and Rust (`curl https://sh.rustup.rs -sSf | sh`).
+Linux (x86_64, ARM64) and macOS (Apple silicon, Intel):
 
 ```bash
-cargo run --release              # opens the kimo window (starts the server in the background)
-cargo run --release -- serve     # only the server, no window (headless machines, systemd)
-cargo test                       # unit, API, PTY and desktop tests
+curl -fsSL https://raw.githubusercontent.com/vallverdu/kimo/main/install.sh | sh
+# without the window, for headless machines (servers, Raspberry Pi):
+curl -fsSL https://raw.githubusercontent.com/vallverdu/kimo/main/install.sh | sh -s -- --server
 ```
 
-1. **On the server** run `kimo`: the window opens. If no kimo server is running, the window
-   starts one in the background (log in `~/.kimo/kimo.log`); closing the window leaves it and
-   your agents running. The server's own browser at `http://localhost:7777` is the owner too.
-2. **Pair your phone**: Devices → *show QR code* → scan it with the phone camera → *Pair*.
-   On a machine without a screen run `kimo pair`: it prints the QR code in the terminal.
-3. **Install the phone client as an app** (optional): Devices → *enable HTTPS* (Tailscale),
-   pair again using the HTTPS address and choose "Add to home screen".
-
-The window is the `desktop` cargo feature (on by default). For a headless build without GUI
-libraries: `cargo build --release --no-default-features` (≈4 MB; `kimo` then runs the server).
-
-**Run it as a service** so it starts with the machine:
+From source (Rust stable):
 
 ```bash
-cargo install --path .
-mkdir -p ~/.config/systemd/user && cp contrib/kimo.service ~/.config/systemd/user/
-systemctl --user daemon-reload && systemctl --user enable --now kimo
-loginctl enable-linger $USER     # keep running when you are logged out
+cargo install --git https://github.com/vallverdu/kimo kimo
+cargo install --git https://github.com/vallverdu/kimo kimo --no-default-features   # server only
 ```
 
-Settings come from flags or the environment (`.env.example`): `KIMO_BIND` (default `all`; or
-`tailscale`, `zerotier`, `localhost`, an IP), `KIMO_PORT`, `KIMO_PROJECTS_DIR` (default `~/dev`),
-`KIMO_LOCAL_OWNER` (set `false` on machines shared with other users), `KIMO_TOKEN` (optional
-owner token for scripts), `KIMO_DATA_DIR`, `KIMO_SCROLLBACK`, `KIMO_ORIGINS`.
+kimo runs the agent CLIs you already have: install
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or
+[Codex](https://github.com/openai/codex) first.
 
-**Add an account:** Accounts → + → name and provider → **sign in** (opens a terminal running
-`claude auth login` / `codex login` with that account's config home). Then pick the account
-when creating a session, or switch it from the session row.
+## Quick start
 
-## Connect your PWAs
+1. **Run `kimo`.** The window opens; a kimo server starts in the background if none is
+   running (closing the window never stops your agents). On a machine without a screen,
+   run `kimo serve`.
+2. **Add a project:** drop a folder on the window, or *+ project*.
+3. **Start an agent:** *+ claude*, *+ codex* or *+ shell* under the project.
+4. **Add subscriptions:** Subscriptions → add an account → *sign in* (a terminal opens with
+   that account's login). Pick the account per agent from the terminal toolbar.
+5. **Let agents work together:** Skills → *install kimo-agents*.
+6. **Pair your phone:** Devices → *show QR code*, scan it (`kimo pair` prints the QR code in
+   a terminal). For an installable app, use *enable HTTPS* (Tailscale) and pair again.
+7. **Pair your other machines:** on the other machine run `kimo pair`; here, Devices → Other
+   kimos → its address and the code (or `kimo peer add <address> <code>`).
 
-![An example app on another origin driving kimo's agents](docs/screenshots/app-agent-board.png)
+## Agents working together
 
-1. **Give the app a key.** kimo → **Apps** → **+**: name, the app's origin (e.g.
-   `https://pm.your-tailnet.ts.net`) and a scope: **control** (start, pause, stop, switch accounts,
-   type, open terminals) or **read** (watch only). The key is shown once; revoke it anytime.
-   Logins and keys themselves stay with the owner token.
-2. **Load the SDK from kimo** and use the key:
+Inside any kimo session, agents (and you) can use:
+
+```bash
+kimo agents                          # ID, NAME, HOST, KIND, STATE, RESUME ID, FOLDER
+kimo send reviewer "Review src/parser.rs and report problems"
+kimo wait reviewer                   # until it is idle, needs input or stops
+kimo read reviewer                   # its last answer, from its own transcript
+kimo read reviewer --screen          # its recent terminal screen
+kimo new claude --name reviewer --prompt "Review src/parser.rs"   # start a helper
+kimo send gpu-lab/trainer-1a2b "Start the training run"           # an agent on another machine
+```
+
+Messages arrive signed: `[kimo message from agent coordinator (id mini/coordinator-0bffa3);
+reply with: kimo send mini/coordinator-0bffa3 "…"]`, so the receiver knows who asks and how
+to answer. The id is kimo's; the resume id is the agent's own conversation id (Claude's
+session id, or the id Codex writes in its log). Both show in the window and in `kimo agents`.
+
+## Several machines
+
+Every kimo can pair with others (a one-time code; both sides learn about each other). Then:
+
+- the window's **host** menu shows each machine's projects, sessions, subscriptions, skills and
+  settings, and opens their terminals directly;
+- `kimo agents` lists the agents of every machine as `host/id`, and `send`, `read`, `wait` and
+  the API's session calls work on them;
+- kimos talk HTTP, so any network where they reach each other works: Tailscale, ZeroTier, your
+  LAN, or SSH port forwarding in both directions (`ssh -L` and `-R`).
+
+Give each machine a clear name with `--name` or `KIMO_NAME` (default: its hostname).
+
+## Phone and web
+
+The phone client is a web app served by kimo itself: agents, projects, accounts, devices, and
+a terminal with a key bar and a message box. Pair a phone with the QR code in Devices; over
+HTTPS (`tailscale serve`, one click in Devices) it installs as an app.
+
+| | | | |
+|---|---|---|---|
+| ![Agents on a phone](docs/screenshots/phone-agents.png) | ![A terminal on a phone](docs/screenshots/phone-terminal.png) | ![Projects on a phone](docs/screenshots/phone-projects.png) | ![Accounts on a phone](docs/screenshots/phone-accounts.png) |
+
+## Build your own apps
+
+Create a key for your app (web client → Apps, or `POST /api/clients`), limited to its origin
+and to `read` or `control`, and load the SDK from kimo:
 
 ```js
-import { Kimo, quietFor } from 'https://kimo.your-tailnet.ts.net/sdk/kimo.js';
-import 'https://kimo.your-tailnet.ts.net/sdk/kimo-terminal.js';   // defines <kimo-terminal>
+import { Kimo } from 'https://kimo.your-tailnet.ts.net/sdk/kimo.js';
+import 'https://kimo.your-tailnet.ts.net/sdk/kimo-terminal.js';   // <kimo-terminal session="…">
 
 const kimo = new Kimo({ url: 'https://kimo.your-tailnet.ts.net', token: 'kimo_…' });
-
-kimo.subscribe(({ sessions, accounts }) => render(sessions));      // live, no polling
-await kimo.createSession({ name: 'invoices', kind: 'claude', cwd: '~/dev/everpano' });
-await kimo.send(id, 'run the tests and fix what fails');           // message an agent
-await kimo.pause(id); await kimo.stop(id); await kimo.start(id);    // start = continue
-await kimo.moveSessions('work-max', 'personal-pro');                 // subscription limit hit
-quietFor(session);                                                   // seconds since last output
-
-const term = document.querySelector('kimo-terminal');               // <kimo-terminal session="…">
-term.kimo = kimo; term.setAttribute('session', id); term.send('/compact\r');
+kimo.subscribe(({ sessions }) => render(sessions));                // live updates
+const { project } = await kimo.createProject({ mode: 'new', name: 'invoices', git: true });
+const agent = await kimo.createSession({ name: 'builder', kind: 'claude', cwd: project.path });
+await kimo.send(agent.id, 'Create the invoice model with tests');
+await kimo.waitFor(agent.id);                                       // until it stops working
+console.log((await kimo.reply(agent.id)).text);                     // its answer
 ```
 
-A key only works from the origins it lists, so a leaked key cannot be used from another
-website, and no website can reach kimo without a key, even on localhost. Pages on HTTPS must reach
-kimo over HTTPS too (`tailscale serve`). A complete example app, one static file, is in
-[`examples/agent-board`](examples/agent-board): its own origin, its own look, live list,
-pause/stop/continue, embedded terminal and message box.
+[`examples/agent-board`](examples/agent-board) is a complete app in one HTML file. The full
+HTTP API, SDK and CLI reference is in [docs/api.md](docs/api.md).
 
-| Agent board on a phone | Apps tab | New key |
+## Run as a service
+
+- **Linux (systemd user service):** `cp contrib/kimo.service ~/.config/systemd/user/`, then
+  `systemctl --user enable --now kimo` and `loginctl enable-linger $USER`.
+- **macOS (LaunchAgent):** `cp contrib/ai.kimo.plist ~/Library/LaunchAgents/`, then
+  `launchctl load -w ~/Library/LaunchAgents/ai.kimo.plist`.
+- A desktop launcher for Linux is in `contrib/kimo.desktop`.
+
+## Configuration
+
+Flags or environment variables (see [.env.example](.env.example)):
+
+| Variable | Default | |
 |---|---|---|
-| ![Agent board on a phone](docs/screenshots/app-agent-board-phone.png) | ![Apps tab](docs/screenshots/phone-apps.png) | ![New app key](docs/screenshots/phone-app-key.png) |
+| `KIMO_BIND` | `all` | where to listen: `all`, `localhost`, `tailscale`, `zerotier` or an IP |
+| `KIMO_PORT` | `7777` | |
+| `KIMO_NAME` | hostname | this machine's name for paired kimos |
+| `KIMO_PROJECTS_DIR` | `~/dev` | where new projects are created |
+| `KIMO_LOCAL_OWNER` | `true` | requests from this machine itself are the owner |
+| `KIMO_TOKEN` | | optional owner token for scripts |
+| `KIMO_DATA_DIR` | `~/.kimo` | state, account homes, backups |
 
-## API
+## Security model
 
-All under `/api`, JSON, `Authorization: Bearer <key>` (or `?token=` for websockets and
-EventSource). The owner (the server itself, paired devices, `KIMO_TOKEN`) may do everything;
-app keys are limited by scope and origin.
+- **The owner** is this machine itself (requests that come from it, not through a proxy),
+  paired devices and paired kimos, and `KIMO_TOKEN` if you set one. The owner can do
+  everything, including running commands on this machine through terminals.
+- **Pairing** uses one-time codes valid for 10 minutes; every device and machine gets its own
+  revocable key.
+- **App keys** are limited to their origins (CORS) and to `read` or `control`; they never
+  manage logins, keys, devices, peers, skills or settings.
+- Account credentials stay in each account's own config folder (`~/.kimo/accounts/<id>`);
+  kimo's state file (keys included) is readable only by you.
+- On a machine shared with other people, set `KIMO_LOCAL_OWNER=false` and pair your devices.
 
-| Method | Path | |
-|---|---|---|
-| GET | `/status` | memory, kimo RSS, counts |
-| GET (SSE) | `/events` | `update` events with `{sessions, accounts}` on every change |
-| GET, POST | `/sessions` | list; create `{name, kind: claude\|codex\|shell, cwd, account?, args?, command?, start?}` |
-| GET, DELETE | `/sessions/{id}` | one session; delete (stops it first) |
-| POST | `/sessions/{id}/action` | `{action: start\|pause\|resume\|stop\|restart}` |
-| POST | `/sessions/{id}/account` | `{account: id\|null}`: switch subscription, continues the conversation |
-| POST | `/sessions/{id}/input` | `{text}`: type into the terminal |
-| GET (ws) | `/sessions/{id}/term` | terminal: binary frames both ways, text `{"type":"resize","cols","rows"}` |
-| GET, POST | `/accounts` | list (with `signed_in`); create `{name, provider}` |
-| DELETE | `/accounts/{id}` | delete (refused while sessions use it) |
-| POST | `/accounts/{id}/login` | start a sign-in terminal |
-| POST | `/accounts/{id}/move` | `{to: id\|null}`: move all its sessions (`default` = default login) |
-| GET, POST | `/clients` | owner only: list app keys (no secrets); create `{name, origins, scope: read\|control}` → key |
-| DELETE | `/clients/{id}` | owner only: revoke an app key |
-| GET, POST | `/projects` | list (branch, session counts); create `{mode: new\|existing\|clone, name?, path?, git?, url?}` |
-| DELETE | `/projects/{id}` | forget a project (files stay) |
-| GET | `/fs?path=` | subfolders, for folder pickers (control keys and owner) |
-| GET | `/network` | owner: addresses kimo is reachable on, Tailscale name and HTTPS URL |
-| POST | `/network/https` | owner: serve kimo over HTTPS on the tailnet |
-| POST | `/pairing` | owner: one-time pairing code (10 min) |
-| POST | `/pair` | `{code, name}` → the new device's key (no key needed, the code is the proof) |
-| GET, DELETE | `/devices`, `/devices/{id}` | owner: paired devices; unpair |
-| GET | `/qr?text=` | owner: QR code as SVG |
-| GET, PUT | `/settings` | owner: agents (`permissions: manual\|yolo`, `model`, `args`, `enabled`), `terminal.font_size`, `quick_commands` |
-| GET | `/agents` | agent CLIs installed on the machine, with versions |
-| GET | `/skills?project=` | skills (name, description, agent, scope, path, `managed` = read-only) |
-| POST | `/skills` | owner: install `{source, skill?, agents: [claude\|codex\|shared], project?, replace?}` |
-| DELETE | `/skills?path=` | owner: remove a skill (moved to `~/.kimo/skill-backups`) |
+See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
-Sessions carry `status`, `usage {rss_bytes, cpu_percent, processes}`, `last_output_at` (unix ms),
-`account`, `kind`, `cwd`. SDK: `/sdk/kimo.js`, `/sdk/kimo-terminal.js` (loadable from any origin).
+## More screenshots
 
-## Layout
+| Claude Code in kimo | Someone needs you |
+|---|---|
+| ![Claude Code in the kimo window](docs/screenshots/app-claude.png) | ![A session waiting for an answer](docs/screenshots/app-needs-you.png) |
+| **Subscriptions** | **Skills** |
+| ![Subscriptions](docs/screenshots/app-subscriptions.png) | ![Skills](docs/screenshots/app-skills.png) |
+| **Settings** | **Devices and other machines** |
+| ![Settings](docs/screenshots/app-settings.png) | ![Devices](docs/screenshots/app-devices.png) |
 
-```
-src/main.rs            entry: `kimo` (window), `kimo serve`, `kimo pair`
-src/desktop/           the native window (egui): app.rs views, terminal.rs (alacritty_terminal), input.rs, theme.rs
-src/client.rs          blocking Rust API client (HTTP, events, terminals) used by the window
-assets/fonts/          Roboto Mono (OFL) for the window
-src/api/               axum routes, websocket terminal, auth (owner, devices, app keys), embedded PWA
-src/services/          sessions (PTYs, lifecycle, switching), projects, devices (pairing), accounts, store, stats, network
-src/core/              pure logic: models, access rules, lifecycle, launch commands, git HEAD, /proc and network parsing, scrollback
-contrib/kimo.service   systemd user unit
-web/                   the phone/web client (PWA, web-timber style, xterm.js vendored), embedded in the binary
-web/sdk/               the SDK other PWAs load from kimo: kimo.js (API + events), kimo-terminal.js
-examples/agent-board/  a separate example app using only the SDK and an app key
-tests/                 PTY integration tests with a fake `claude`; API access tests (CORS, keys, scopes, events)
+## Platforms and limitations
+
+- Linux and macOS. The macOS build is compiled and tested in CI; reports from real Macs are
+  welcome.
+- Agents run inside the kimo server: restarting the server stops them (they continue their
+  conversation when started again).
+- Agent state (*working*, *needs you*) comes from output timing and the prompt shapes of
+  Claude Code, Codex and common CLIs; unusual prompts may show as idle.
+- Claude usage is counted in tokens from the transcripts of agents run through kimo; plan
+  percentages are shown for Codex, which records them in its logs.
+- `codex login` completes in a browser on the machine itself; sign Codex accounts in there once.
+
+## Development
+
+```bash
+cargo run               # the window (starts a server in the background)
+cargo run -- serve      # only the server
+cargo test              # unit, API, PTY and two-server tests
 ```
 
-## Limitations
+Layout: `src/core` (pure logic), `src/services` (sessions, projects, accounts, usage, peers,
+skills…), `src/api` (HTTP and websockets), `src/desktop` (the window), `src/cli.rs`
+(`kimo agents`, `send`…), `web/` (phone client and SDK). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- Codex sessions resume the folder's *last* Codex conversation (Codex has no way to set the
-  id up front): avoid two Codex sessions in the same folder for now.
-- Linux only for now (`/proc`, process groups).
-- The window's terminal has no text selection/copy yet (Ctrl+C is ^C), and symbols missing from
-  Roboto Mono (some emoji and icons) show as blanks.
-- Sessions live inside the kimo process: stopping kimo stops the agents (they continue with
-  *continue* afterwards). A detachable session holder is on the TODO list.
-- `codex login` signs in through a browser callback on the machine itself; from a phone, sign
-  Codex accounts in once at the computer or with `codex login --with-api-key`.
-- "The server is the owner" trusts every request from the machine itself (not through a
-  proxy). On a machine shared with other Unix users, run with `KIMO_LOCAL_OWNER=false` and pair
-  devices with `KIMO_TOKEN` instead.
+## License
+
+MIT OR Apache-2.0, at your option. Bundled third-party components are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

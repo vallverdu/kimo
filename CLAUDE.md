@@ -8,17 +8,17 @@ Brand: `assets/brand/kimo.svg` (master) → `python3 scripts/make-icons.py` make
 ## Layers (dependencies point down)
 
 ```
-src/main.rs        entry point only: `kimo` (window) / `kimo serve` / `kimo pair`
-src/desktop/       native window (egui), a client of the server through src/client.rs — never calls services directly
-src/api/           HTTP/websocket handlers and static files; no business rules
-src/services/      I/O: sessions.rs (PTYs, lifecycle), accounts.rs, store.rs (only file touching state.json), stats.rs, network.rs
-src/core/          pure, synchronous, no I/O: models, lifecycle, launch, procfs, scrollback, network parsing
+src/main.rs        entry point only: kimo (window) / serve / pair / agents / send / read / wait / new / peer…
+src/cli.rs         the command-line client (people and agents), over src/client.rs
+src/desktop/       the window (egui) and its terminal widget (alacritty_terminal); a client of the API
+src/api/           HTTP routes, websockets, access control, forwarding of host/id calls, embedded web client
+src/services/      I/O: sessions (PTYs, lifecycle), projects, accounts, usage, talk (messages, replies),
+                   peers (other kimos), devices, skills, store (the only code writing state.json), stats, network
+src/core/          pure, synchronous, no I/O: models, access, launch, lifecycle, activity, usage, replies,
+                   procfs/ps parsing, network parsing, git HEAD, skills front matter, host names
 src/config.rs      clap flags with env fallbacks (see .env.example)
-web/sdk/           public SDK for any PWA: kimo.js (API + events), kimo-terminal.js (<kimo-terminal>)
-web/js/api.js      kimo's own page: an SDK instance with this device's key (or none on the server itself)
-web/js/app.js      agents, accounts, apps views and wiring; projects.js and devices.js own their views; ui.js helpers
-web/js/terminal.js wraps <kimo-terminal> with the phone key bar and compose box
-src/core/access.rs who may call what from which origin (keep it pure and tested)
+web/               phone/web client (base.css, app.css, kimo.css; js/ modules) and the SDK (web/sdk)
+skills/            the bundled kimo-agents skill (embedded in the binary)
 ```
 
 ## Rules

@@ -6,13 +6,17 @@
 - [x] Terminals in the window on alacritty_terminal: colours, keys, Tab, Ctrl+C, paste, scrollback, resize, terminal replies.
 - [x] Projects sidebar with drag-and-drop of folders, + claude / + codex / + shell per project.
 - [x] Subscriptions, Skills, Settings and Devices (QR pairing) views.
-- [ ] Text selection and copy in the terminal; mouse reporting for TUIs that use the mouse.
-- [ ] Symbol/emoji fallback font so agent icons (✓ ⏵ ✻) render.
+- [x] Text selection and copy in the terminal (drag, double-click, Ctrl+C with a selection, Ctrl+Shift+C, right-click).
+- [ ] Mouse reporting for TUIs that use the mouse.
+- [x] Symbol fallback fonts (DejaVu Sans Mono, Noto Sans Symbols 2) so agent icons and box drawing render.
+- [ ] Emoji font, and the few symbols still missing (⎿).
 - [ ] Split panes (several terminals side by side) and keyboard shortcuts to switch tabs.
 - [ ] Native folder dialog for "+ project" (xdg portal) besides the server folder picker.
-- [ ] App icon and .desktop file; `kimo install` (service + launcher).
+- [x] App icon (the kimo logo) and a .desktop launcher (`contrib/kimo.desktop`).
+- [ ] `kimo install` (service + launcher + icon in one command).
 - [ ] Lower the window's idle cost: repaint only when shown values change (usage updates arrive every 2 s), measure on a GPU desktop.
-- [ ] Notifications from the window (agent waiting / done) once agent state exists.
+- [ ] Desktop notifications when an agent needs you or finishes.
+- [x] Host switcher: every paired kimo in one window (projects, sessions, terminals, settings).
 
 ## Core Terminal Management
 
@@ -23,7 +27,8 @@
 - [ ] Detachable session holder so agents survive a kimo restart/upgrade (separate tiny PTY daemon or re-attach via tmux).
 - [x] Pin each Claude session to its own conversation (`--session-id` / `--resume <id>`); fresh start when the transcript does not exist yet.
 - [x] Do not leak kimo's token or a parent agent's `CLAUDE_CODE_*` environment into sessions.
-- [ ] Pin Codex sessions to their conversation (read the id from `~/.codex/sessions` after start) instead of `resume --last`.
+- [x] Pin Codex sessions to their conversation (id read from the Codex log after start; `codex resume <id>`).
+- [x] Clear ids: kimo id and resume id shown in the window, the web client and `kimo agents`.
 - [ ] Rename sessions, edit args/folder, reorder or pin them.
 - [x] Projects: new folder (+ git init), existing folder, clone in a visible terminal; branch and agents per project.
 - [x] Folder picker on the server for new sessions and projects.
@@ -35,9 +40,8 @@
 - [x] Enable definition and management of multiple Claude and Codex accounts. (one config home per account, signed-in status)
 - [x] Implement a mechanism for seamless switching between subscriptions. (per-session account select, restarts and continues)
 - [x] Allow users to easily change subscriptions without agent logout. (Accounts → move sessions, shared conversations via links)
-- [ ] Usage per subscription: record which account each session ran under (and when), then
-      - Codex: read `rate_limits` from its session logs (used %, window, reset time are there);
-      - Claude: sum tokens per account from the transcripts (`usage` per message); plan % only if Anthropic exposes it.
+- [x] Usage per subscription: runs per account; Claude tokens (5 h / 7 days) from transcripts; Codex plan limits and reset times from its logs.
+- [ ] Claude plan percentages, if Anthropic exposes them in a supported way.
 - [ ] Handle subscription limits: detect "limit reached" (output / Codex `rate_limit_reached_type`) and offer or perform the move to another account automatically.
 - [ ] Phone-friendly Codex sign-in (device code flow or token import).
 
@@ -58,7 +62,7 @@
 - [x] Develop a mobile control interface for managing agents.
 - [x] Ensure seamless integration with Tailscale or Zerotier for mobile access.
 - [ ] Push notifications when an agent waits for input, finishes or hits a limit (Web Push from the server).
-- [ ] "Needs attention" view: sessions whose last output is a question/permission prompt, with quick replies via `/input`.
+- [x] "Needs you": sessions waiting for an answer or approval, first in the phone list and a button in the window.
 - [x] Event stream (SSE) instead of 2 s polling (`/api/events`, used by kimo's own PWA).
 
 ## Platform for other PWAs
@@ -92,10 +96,27 @@
 - [ ] Skill updates: show when an installed skill's source has a newer version.
 - [ ] MCP servers per agent (list, add, remove).
 
+## Agents working together and several machines
+
+- [x] `kimo agents | send | read | wait | new | whoami`; signed messages; last answer from the agent's own transcript.
+- [x] Bundled `kimo-agents` skill (one-click install) that teaches agents to use them.
+- [x] Pair kimos with each other (`kimo peer add`, Devices → Other kimos); agents of every machine as `host/id`; messages, reads and actions routed across machines.
+- [ ] Remote terminals in the phone client (proxy the terminal websocket through the local kimo).
+- [ ] HTTPS between kimos (TLS in the client) and SSH as a built-in transport.
+- [ ] Group chat / shared channel for a team of agents on a task.
+
+## Release
+
+- [x] License MIT OR Apache-2.0, third-party notices; own web stylesheet (no commercial theme).
+- [x] CI (Linux and macOS) and release builds (Linux x86_64/arm64, macOS arm64/x86_64), install script.
+- [x] macOS support (compile-checked and tested in CI): ps/sysctl/vm_stat stats, ifconfig, LaunchAgent.
+- [ ] Run on a real Mac and a Raspberry Pi; Wayland and a GPU desktop for the window.
+- [ ] Publish the clean public repository and tag v0.1.0.
+
 ## Ideas from herdr (herdrdev/herdr)
 
-- [ ] Agent state per session: `working`, `blocked` (needs an answer/approval), `done`, `idle`. Prefer the agents' own hooks (Claude Code hooks, Codex `notify`) reporting to kimo over reading the screen; expose it in events and the SDK (`kimo.wait(id, 'idle')`).
-- [ ] "Needs you" list and notifications driven by that state (the most useful thing for a phone).
-- [ ] One-call orchestration for apps: create project + start agent + first prompt; `prompt --wait`.
+- [x] Agent state per session (working, waiting, idle) from output timing and approval prompts; in events, the SDK (`waitFor`) and the CLI (`kimo wait`).
+- [ ] Use the agents' own hooks (Claude Code hooks, Codex `notify`) for exact state, and a `done` state.
+- [x] Orchestration from apps and agents: `kimo new --prompt`, `send`, `wait`, `read`; SDK `send`, `waitFor`, `reply`.
 - [ ] Plugins: a folder with a `kimo-plugin.toml` manifest; event hooks (session.blocked, session.done, project.created…), actions, and an optional web UI that kimo serves under `/plugins/<id>/` with its own app key, so a plugin can be a full PWA hosted by kimo. Install from GitHub, review before enabling.
 - [ ] More agents: OpenCode, Cursor, Copilot, Gemini… (launch + resume command per agent).

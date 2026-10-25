@@ -72,6 +72,12 @@ export class Kimo {
   restart(id) { return this.act(id, 'restart'); }
   /** Move a session to another account (null = default login); it continues its conversation. */
   setAccount(id, account) { return this.request('POST', `/sessions/${enc(id)}/account`, { account }); }
+  /** The agent's last answer (from its own transcript), or its recent screen for shells. */
+  reply(id) { return this.request('GET', `/sessions/${enc(id)}/reply`); }
+  /** Recent terminal text of a session (escape codes removed). */
+  screen(id, lines = 40) { return this.request('GET', `/sessions/${enc(id)}/screen?lines=${lines}`); }
+  /** Message an agent as another agent (`from`: the sender's session id), like `kimo send`. */
+  message(id, text, from) { return this.request('POST', `/sessions/${enc(id)}/message`, { text, from }); }
   /** Type raw text into the terminal. */
   type(id, text) { return this.request('POST', `/sessions/${enc(id)}/input`, { text }); }
   /** Send a message to an agent: the text, then Enter (separately, so TUIs see typing, not a paste). */
