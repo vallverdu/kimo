@@ -1,7 +1,7 @@
 //! kimo: terminals, accounts and resources for coding agents, driven from a phone.
 
 pub mod api;
-#[cfg(feature = "desktop")]
+pub mod cli;
 pub mod client;
 pub mod config;
 pub mod core;

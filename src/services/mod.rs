@@ -8,4 +8,5 @@ pub mod sessions;
 pub mod skills;
 pub mod stats;
 pub mod store;
+pub mod talk;
 pub mod usage;

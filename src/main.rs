@@ -31,6 +31,35 @@ fn main() -> Result<()> {
         Command::App => app(&cfg),
         Command::Serve => runtime()?.block_on(serve(cfg)),
         Command::Pair => runtime()?.block_on(pair(cfg.port)),
+        Command::Agents { json } => kimo::cli::agents(&kimo::cli::client(cfg.port), json),
+        Command::Send { to, message } => {
+            kimo::cli::send(&kimo::cli::client(cfg.port), &to, &message.join(" "))
+        }
+        Command::Read {
+            agent,
+            screen,
+            lines,
+        } => kimo::cli::read(&kimo::cli::client(cfg.port), &agent, screen, lines),
+        Command::Wait { agent, timeout } => kimo::cli::wait(
+            &kimo::cli::client(cfg.port),
+            &agent,
+            std::time::Duration::from_secs(timeout),
+        ),
+        Command::New {
+            kind,
+            name,
+            cwd,
+            account,
+            prompt,
+        } => kimo::cli::new(
+            &kimo::cli::client(cfg.port),
+            &kind,
+            name,
+            cwd,
+            account,
+            prompt,
+        ),
+        Command::Whoami => kimo::cli::whoami(&kimo::cli::client(cfg.port)),
     }
 }
 

@@ -450,7 +450,7 @@ impl Manager {
             .kind
             .provider()
             .map(|p| inner.state.settings.agents.get(p).clone());
-        let launch = launch::build(
+        let mut launch = launch::build(
             &spec,
             account.as_ref(),
             &self.cfg.data_dir,
@@ -459,6 +459,20 @@ impl Manager {
             prefs.as_ref(),
         )
         .map_err(|e| anyhow!(e))?;
+        // Agents can reach kimo (`kimo agents`, `kimo send`…): its address and its binary on PATH.
+        launch.env.push((
+            "KIMO_URL".into(),
+            format!("http://127.0.0.1:{}", self.cfg.port),
+        ));
+        if let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+        {
+            let path = std::env::var("PATH").unwrap_or_default();
+            launch
+                .env
+                .push(("PATH".into(), format!("{}:{path}", dir.display())));
+        }
         let live = inner
             .live
             .get_mut(id)

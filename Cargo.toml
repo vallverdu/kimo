@@ -25,15 +25,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
-# Desktop app (feature "desktop", on by default): native window, terminal emulator, local API client.
+# Rust API client (CLI, peers, window).
 eframe = { version = "0.37", optional = true, default-features = false, features = ["glow", "x11", "wayland", "default_fonts"] }
 alacritty_terminal = { version = "0.26", optional = true }
-ureq = { version = "3", optional = true, default-features = false, features = ["json"] }
-tungstenite = { version = "0.30", optional = true, default-features = false, features = ["handshake"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# Desktop app (feature "desktop", on by default): native window and terminal emulator.
 
 [features]
 default = ["desktop"]
-desktop = ["dep:eframe", "dep:alacritty_terminal", "dep:ureq", "dep:tungstenite"]
+desktop = ["dep:eframe", "dep:alacritty_terminal"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -89,6 +89,9 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/sessions/{id}/action", post(session_action))
         .route("/sessions/{id}/account", post(session_account))
         .route("/sessions/{id}/input", post(session_input))
+        .route("/sessions/{id}/message", post(session_message))
+        .route("/sessions/{id}/reply", get(session_reply))
+        .route("/sessions/{id}/screen", get(session_screen))
         .route("/sessions/{id}/term", get(terminal))
         .route("/accounts", get(list_accounts).post(create_account))
         .route("/accounts/{id}", axum::routing::delete(delete_account))
@@ -263,10 +266,11 @@ async fn get_session(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    // By id, name or unique id prefix (what people and agents type).
     app.manager
-        .session(&id)
+        .resolve(&id)
         .map(|s| Json(json!(s)))
-        .ok_or_else(|| not_found("session"))
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -347,6 +351,52 @@ async fn session_input(
         .ok_or_else(|| not_found("session"))?;
     app.manager.write(&id, body.text.into_bytes());
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct MessageBody {
+    text: String,
+    /// The sending session (id or name), so the receiver knows who asks and can answer.
+    #[serde(default)]
+    from: Option<String>,
+}
+
+/// Message another agent: typed into it (as a paste, then Enter), signed with the sender.
+async fn session_message(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(body): Json<MessageBody>,
+) -> ApiResult<serde_json::Value> {
+    let to = app
+        .manager
+        .message(&id, &body.text, body.from.as_deref())
+        .await?;
+    Ok(Json(json!({ "ok": true, "to": to })))
+}
+
+/// The agent's last reply (from its log) or its recent screen.
+async fn session_reply(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let reply = tokio::task::spawn_blocking(move || manager.reply(&id))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!(reply)))
+}
+
+async fn session_screen(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    let lines = q
+        .get("lines")
+        .and_then(|l| l.parse().ok())
+        .unwrap_or(40)
+        .min(2000);
+    Ok(Json(json!(app.manager.screen(&id, lines)?)))
 }
 
 async fn list_accounts(State(app): State<App>) -> Json<serde_json::Value> {

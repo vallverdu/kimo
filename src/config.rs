@@ -62,6 +62,50 @@ pub enum Command {
     Serve,
     /// Show a QR code in this terminal to pair a phone with the kimo running on this machine.
     Pair,
+    /// List the agents (id, name, state, resume id, folder).
+    Agents {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a message to an agent (signed with your session when run inside kimo).
+    Send {
+        /// Agent id or name (`kimo agents`).
+        to: String,
+        /// The message.
+        #[arg(required = true, num_args = 1..)]
+        message: Vec<String>,
+    },
+    /// Print an agent's last reply (or its recent screen with --screen).
+    Read {
+        agent: String,
+        #[arg(long)]
+        screen: bool,
+        #[arg(long, default_value_t = 40)]
+        lines: usize,
+    },
+    /// Wait until an agent is not working any more.
+    Wait {
+        agent: String,
+        /// Give up after this many seconds.
+        #[arg(long, default_value_t = 900)]
+        timeout: u64,
+    },
+    /// Start a new agent (claude, codex or shell), optionally with a first message.
+    New {
+        kind: String,
+        #[arg(long)]
+        name: Option<String>,
+        /// Folder (default: the current one).
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long)]
+        account: Option<String>,
+        /// First message, sent once the agent is ready.
+        #[arg(long)]
+        prompt: Option<String>,
+    },
+    /// Which kimo session am I?
+    Whoami,
 }
 
 impl Config {

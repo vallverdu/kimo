@@ -328,3 +328,42 @@ async fn codex_sessions_learn_their_id_and_resume_it() {
     wait_for(&m, &s.spec.id, &format!("CODEX ARGS=resume {id}")).await;
     m.delete(&s.spec.id).await.unwrap();
 }
+
+#[tokio::test]
+async fn agents_message_each_other_and_read_replies() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    let m = manager(tmp.path());
+    let shell = |name: &str, cmd: &[&str]| NewSession {
+        name: name.into(),
+        kind: SessionKind::Shell,
+        cwd: "~".into(),
+        account: None,
+        args: vec![],
+        command: Some(cmd.iter().map(|s| s.to_string()).collect()),
+    };
+    let alice = m.create(shell("alice", &["/bin/sh"]), true).unwrap();
+    let bob = m.create(shell("bob", &["cat"]), true).unwrap();
+    // Names, ids and id prefixes all resolve.
+    assert_eq!(m.resolve("bob").unwrap().spec.id, bob.spec.id);
+    assert_eq!(m.resolve(&bob.spec.id[..5]).unwrap().spec.id, bob.spec.id);
+    assert!(m.resolve("nobody").is_err());
+    // A message is typed into bob, signed by alice with how to answer.
+    let to = m
+        .message("bob", "please review the parser", Some(&alice.spec.id))
+        .await
+        .unwrap();
+    assert_eq!(to, bob.spec.id);
+    let expected = format!(
+        "[kimo message from agent alice (id {}); reply with: kimo send {} ",
+        alice.spec.id, alice.spec.id
+    );
+    wait_for(&m, &bob.spec.id, &expected).await;
+    // Reading a shell gives its screen text.
+    let reply = m.reply("bob").unwrap();
+    assert_eq!(reply.source, "terminal");
+    assert!(reply.text.contains("please review the parser"));
+    // Stopped agents do not take messages.
+    m.act(&bob.spec.id, Action::Stop).await.unwrap();
+    assert!(m.message("bob", "hi", None).await.is_err());
+}

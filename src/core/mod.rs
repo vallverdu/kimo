@@ -8,6 +8,7 @@ pub mod lifecycle;
 pub mod models;
 pub mod network;
 pub mod procfs;
+pub mod replies;
 pub mod scrollback;
 pub mod skills;
 pub mod usage;
