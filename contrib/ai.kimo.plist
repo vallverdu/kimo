@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- kimo server as a macOS LaunchAgent: starts at login, restarts on failure.
+     cargo install --path . && cp contrib/ai.kimo.plist ~/Library/LaunchAgents/
+     launchctl load -w ~/Library/LaunchAgents/ai.kimo.plist
+     Logs: /tmp/kimo.log. Edit the path below if kimo is not in ~/.cargo/bin. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.kimo</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string><string>-lc</string><string>exec "$HOME/.cargo/bin/kimo" serve</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/kimo.log</string>
+  <key>StandardErrorPath</key><string>/tmp/kimo.log</string>
+</dict>
+</plist>

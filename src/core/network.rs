@@ -57,7 +57,34 @@ pub struct Interface {
     pub kind: NetKind,
 }
 
-/// Usable IPv4 interfaces from `ip -4 -o addr show`; containers, bridges and link-local skipped.
+fn classify(name: &str, ip: Ipv4Addr) -> Option<Interface> {
+    let virtual_iface = [
+        "docker", "br-", "veth", "virbr", "cni", "flannel", "lxc", "bridge", "vmenet", "anpi",
+    ]
+    .iter()
+    .any(|p| name.starts_with(p));
+    if virtual_iface || ip.is_link_local() {
+        return None;
+    }
+    let in_cgnat = ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]);
+    let kind = if ip.is_loopback() {
+        NetKind::Localhost
+    } else if name.starts_with("tailscale") || in_cgnat {
+        NetKind::Tailscale
+    } else if name.starts_with("zt") || name.starts_with("feth") {
+        NetKind::ZeroTier
+    } else {
+        NetKind::Lan
+    };
+    Some(Interface {
+        name: name.to_string(),
+        ip,
+        kind,
+    })
+}
+
+/// Usable IPv4 interfaces from `ip -4 -o addr show` (Linux); containers, bridges and
+/// link-local addresses skipped.
 pub fn parse_interfaces(output: &str) -> Vec<Interface> {
     output
         .lines()
@@ -69,29 +96,29 @@ pub fn parse_interfaces(output: &str) -> Vec<Interface> {
                 return None;
             }
             let ip: Ipv4Addr = parts.next()?.split('/').next()?.parse().ok()?;
-            let virtual_iface = ["docker", "br-", "veth", "virbr", "cni", "flannel", "lxc"]
-                .iter()
-                .any(|p| name.starts_with(p));
-            if virtual_iface || ip.is_link_local() {
-                return None;
-            }
-            let in_cgnat = ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]);
-            let kind = if ip.is_loopback() {
-                NetKind::Localhost
-            } else if name.starts_with("tailscale") || in_cgnat {
-                NetKind::Tailscale
-            } else if name.starts_with("zt") {
-                NetKind::ZeroTier
-            } else {
-                NetKind::Lan
-            };
-            Some(Interface {
-                name: name.to_string(),
-                ip,
-                kind,
-            })
+            classify(name, ip)
         })
         .collect()
+}
+
+/// Usable IPv4 interfaces from `ifconfig` (macOS, BSD).
+pub fn parse_ifconfig(output: &str) -> Vec<Interface> {
+    let mut out = vec![];
+    let mut name = String::new();
+    for line in output.lines() {
+        if !line.starts_with([' ', '\t']) {
+            name = line.split(':').next().unwrap_or("").to_string();
+        } else if let Some(rest) = line.trim().strip_prefix("inet ") {
+            if let Some(ip) = rest
+                .split_whitespace()
+                .next()
+                .and_then(|a| a.parse::<Ipv4Addr>().ok())
+            {
+                out.extend(classify(&name, ip));
+            }
+        }
+    }
+    out
 }
 
 /// This machine's MagicDNS name from `tailscale status --json` (without the trailing dot).
@@ -218,6 +245,26 @@ mod tests {
         assert_eq!(
             pick_address(&mine, "http://127.0.0.1:7796").unwrap(),
             "http://localhost:7777"
+        );
+    }
+
+    #[test]
+    fn reads_ifconfig() {
+        let out = "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\n\
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\tether 3c:22:fb:00:00:01\n\tinet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255\n\
+utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280\n\tinet 100.88.1.2 --> 100.88.1.2 netmask 0xffffffff\n\
+bridge100: flags=8863<UP> mtu 1500\n\tinet 192.168.64.1 netmask 0xffffff00\n";
+        let found: Vec<_> = parse_ifconfig(out)
+            .into_iter()
+            .map(|i| (i.name, i.kind))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("lo0".into(), NetKind::Localhost),
+                ("en0".into(), NetKind::Lan),
+                ("utun4".into(), NetKind::Tailscale)
+            ]
         );
     }
 

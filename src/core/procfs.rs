@@ -30,6 +30,36 @@ pub fn parse_stat(line: &str) -> Option<ProcStat> {
     })
 }
 
+/// `[[dd-]hh:]mm:ss[.ss]` (ps CPU time) → hundredths of a second.
+pub fn parse_cpu_time(t: &str) -> Option<u64> {
+    let (days, rest) = match t.split_once('-') {
+        Some((d, r)) => (d.parse::<u64>().ok()?, r),
+        None => (0, t),
+    };
+    let mut secs = 0.0f64;
+    for part in rest.split(':') {
+        secs = secs * 60.0 + part.parse::<f64>().ok()?;
+    }
+    Some(((days as f64 * 86_400.0 + secs) * 100.0).round() as u64)
+}
+
+/// One line of `ps -axo pid=,ppid=,rss=,time=` (macOS and other systems without /proc).
+/// `rss` is in KiB; cpu ticks are hundredths of a second.
+pub fn parse_ps_line(line: &str, page_size: u64) -> Option<ProcStat> {
+    let mut f = line.split_whitespace();
+    let pid = f.next()?.parse().ok()?;
+    let ppid = f.next()?.parse().ok()?;
+    let rss_kb: u64 = f.next()?.parse().ok()?;
+    let cpu_ticks = parse_cpu_time(f.next()?)?;
+    Some(ProcStat {
+        pid,
+        ppid,
+        state: 'S',
+        cpu_ticks,
+        rss_pages: rss_kb * 1024 / page_size.max(1),
+    })
+}
+
 /// Sum of a process and all its descendants.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TreeUsage {
@@ -115,6 +145,19 @@ mod tests {
             }
         );
         assert_eq!(t.tree_usage(77).processes, 0);
+    }
+
+    #[test]
+    fn ps_lines() {
+        assert_eq!(parse_cpu_time("0:01.50"), Some(150));
+        assert_eq!(parse_cpu_time("1:02:03"), Some(372_300));
+        assert_eq!(parse_cpu_time("2-00:00:01"), Some(17_280_100));
+        let s = parse_ps_line("  4242     1  20480   0:03.25", 16384).unwrap();
+        assert_eq!(
+            (s.pid, s.ppid, s.cpu_ticks, s.rss_pages),
+            (4242, 1, 325, 1280)
+        );
+        assert!(parse_ps_line("garbage", 4096).is_none());
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! Resolving a bind target to an address (asks tailscale / ip when needed).
 
 use crate::core::network::{
-    parse_interfaces, parse_tailscale_dns, parse_tailscale_ip, parse_zerotier_ip,
-    tailscale_https_url, tailscale_used_ports, BindTarget, NetKind,
+    parse_ifconfig, parse_interfaces, parse_tailscale_dns, parse_tailscale_ip, tailscale_https_url,
+    tailscale_used_ports, BindTarget, Interface, NetKind,
 };
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
@@ -17,25 +17,46 @@ fn output(program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// The Tailscale CLI (on macOS it lives inside the app bundle).
+fn tailscale() -> &'static str {
+    const APP: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+    if cfg!(target_os = "macos")
+        && Command::new(tailscale()).arg("version").output().is_err()
+        && std::path::Path::new(APP).exists()
+    {
+        APP
+    } else {
+        "tailscale"
+    }
+}
+
+/// This machine's IPv4 interfaces (`ip` on Linux, `ifconfig` elsewhere).
+pub fn interfaces() -> Vec<Interface> {
+    if cfg!(target_os = "linux") {
+        parse_interfaces(&output("ip", &["-4", "-o", "addr", "show"]).unwrap_or_default())
+    } else {
+        parse_ifconfig(&output("ifconfig", &[]).unwrap_or_default())
+    }
+}
+
 pub fn resolve(target: &BindTarget) -> Result<IpAddr> {
     match target {
         BindTarget::Localhost => Ok(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         BindTarget::Lan => Ok(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         BindTarget::Ip(ip) => Ok(*ip),
-        BindTarget::Tailscale => parse_tailscale_ip(&output("tailscale", &["ip", "-4"])?)
+        BindTarget::Tailscale => parse_tailscale_ip(&output(tailscale(), &["ip", "-4"])?)
             .ok_or_else(|| anyhow!("no Tailscale address: is tailscale up?")),
-        BindTarget::ZeroTier => parse_zerotier_ip(&output("ip", &["-4", "-o", "addr", "show"])?)
+        BindTarget::ZeroTier => interfaces()
+            .into_iter()
+            .find(|i| i.kind == NetKind::ZeroTier)
+            .map(|i| IpAddr::V4(i.ip))
             .ok_or_else(|| anyhow!("no ZeroTier interface (zt*) with an IPv4 address")),
     }
 }
 
 /// Every IPv4 address of this machine (to recognise requests coming from the machine itself).
 pub fn local_ips() -> Vec<IpAddr> {
-    let out = output("ip", &["-4", "-o", "addr", "show"]).unwrap_or_default();
-    let mut ips: Vec<IpAddr> = parse_interfaces(&out)
-        .into_iter()
-        .map(|i| IpAddr::V4(i.ip))
-        .collect();
+    let mut ips: Vec<IpAddr> = interfaces().into_iter().map(|i| IpAddr::V4(i.ip)).collect();
     ips.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
     ips
 }
@@ -65,8 +86,7 @@ pub struct TailscaleInfo {
 
 /// Where kimo can be reached, given the address it listens on.
 pub fn info(bound: IpAddr, port: u16) -> NetworkInfo {
-    let ip_out = output("ip", &["-4", "-o", "addr", "show"]).unwrap_or_default();
-    let mut addresses: Vec<Address> = parse_interfaces(&ip_out)
+    let mut addresses: Vec<Address> = interfaces()
         .into_iter()
         .filter(|i| {
             bound.is_unspecified()
@@ -89,11 +109,11 @@ pub fn info(bound: IpAddr, port: u16) -> NetworkInfo {
             },
         })
         .collect();
-    let tailscale = which("tailscale").then(|| {
-        let dns_name = output("tailscale", &["status", "--json"])
+    let tailscale = which(tailscale()).then(|| {
+        let dns_name = output(tailscale(), &["status", "--json"])
             .ok()
             .and_then(|s| parse_tailscale_dns(&s));
-        let https_url = output("tailscale", &["serve", "status", "--json"])
+        let https_url = output(tailscale(), &["serve", "status", "--json"])
             .ok()
             .and_then(|s| tailscale_https_url(&s, port));
         TailscaleInfo {
@@ -134,7 +154,7 @@ fn which(program: &str) -> bool {
 /// Serve kimo over HTTPS on the tailnet with `tailscale serve`, on a free HTTPS port
 /// (never one another service already uses). Returns the URL.
 pub fn enable_tailscale_https(port: u16) -> Result<String> {
-    let status = output("tailscale", &["serve", "status", "--json"]).unwrap_or_default();
+    let status = output(tailscale(), &["serve", "status", "--json"]).unwrap_or_default();
     if let Some(url) = tailscale_https_url(&status, port) {
         return Ok(url);
     }
@@ -143,7 +163,7 @@ pub fn enable_tailscale_https(port: u16) -> Result<String> {
         .into_iter()
         .find(|p| !used.contains(p) && *p != port)
         .ok_or_else(|| anyhow!("no free HTTPS port for tailscale serve"))?;
-    let out = Command::new("tailscale")
+    let out = Command::new(tailscale())
         .args([
             "serve",
             "--bg",
@@ -159,7 +179,7 @@ pub fn enable_tailscale_https(port: u16) -> Result<String> {
         }
         bail!("tailscale serve failed: {}", err.trim());
     }
-    let status = output("tailscale", &["serve", "status", "--json"]).unwrap_or_default();
+    let status = output(tailscale(), &["serve", "status", "--json"]).unwrap_or_default();
     tailscale_https_url(&status, port)
         .ok_or_else(|| anyhow!("tailscale serve did not report the new address"))
 }

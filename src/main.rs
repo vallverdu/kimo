@@ -17,8 +17,10 @@ fn main() -> Result<()> {
         )
         .init();
     let cfg = Config::parse();
-    let has_display =
-        std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    // macOS always has a screen session for GUI apps; Linux needs X11 or Wayland.
+    let has_display = cfg!(target_os = "macos")
+        || std::env::var_os("DISPLAY").is_some()
+        || std::env::var_os("WAYLAND_DISPLAY").is_some();
     let command = cfg
         .command
         .clone()
