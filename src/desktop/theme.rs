@@ -54,12 +54,22 @@ pub fn apply(ctx: &egui::Context) {
             "../../assets/fonts/RobotoMono.ttf"
         ))),
     );
+    // Fallbacks for the symbols agents draw (● ✓ ✻ ❯ ⏵, box drawing) that Roboto Mono lacks.
+    fonts.font_data.insert(
+        "dejavu-mono".into(),
+        Arc::new(FontData::from_static(include_bytes!("../../assets/fonts/DejaVuSansMono.ttf"))),
+    );
+    fonts.font_data.insert(
+        "noto-symbols".into(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../../assets/fonts/NotoSansSymbols2-Regular.ttf"
+        ))),
+    );
     for family in [FontFamily::Monospace, FontFamily::Proportional] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .insert(0, "roboto-mono".into());
+        let list = fonts.families.entry(family).or_default();
+        for (i, name) in ["roboto-mono", "dejavu-mono", "noto-symbols"].into_iter().enumerate() {
+            list.insert(i, name.into());
+        }
     }
     ctx.set_fonts(fonts);
 
