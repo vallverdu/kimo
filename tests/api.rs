@@ -163,7 +163,7 @@ async fn app_keys_are_bound_to_origins_and_scopes() {
                 "/api/clients",
                 None,
                 Some("admin-secret"),
-                Some(r#"{"name":"Everpano","origins":["https://everpano.tail.ts.net"]}"#),
+                Some(r#"{"name":"Acme ERP","origins":["https://erp.tail.ts.net"]}"#),
             ))
             .await
             .unwrap(),
@@ -199,7 +199,7 @@ async fn app_keys_are_bound_to_origins_and_scopes() {
         .oneshot(req(
             "GET",
             "/api/sessions",
-            Some("https://everpano.tail.ts.net"),
+            Some("https://erp.tail.ts.net"),
             Some(&key),
             None,
         ))
@@ -228,7 +228,7 @@ async fn app_keys_are_bound_to_origins_and_scopes() {
         .oneshot(req(
             "POST",
             "/api/sessions",
-            Some("https://everpano.tail.ts.net"),
+            Some("https://erp.tail.ts.net"),
             control["token"].as_str(),
             Some(new),
         ))
@@ -360,7 +360,7 @@ async fn pairing_codes_work_once_and_devices_can_be_revoked() {
     assert_eq!(qr.headers()[header::CONTENT_TYPE], "image/svg+xml");
 
     // The phone trades the code for its key.
-    let body = format!(r#"{{"code":"{code}","name":"Jordi's phone"}}"#);
+    let body = format!(r#"{{"code":"{code}","name":"Ana's phone"}}"#);
     let device = json(
         app.clone()
             .oneshot(remote(req("POST", "/api/pair", None, None, Some(&body))))
@@ -408,7 +408,7 @@ async fn pairing_codes_work_once_and_devices_can_be_revoked() {
             .unwrap(),
     )
     .await;
-    assert_eq!(devices[0]["name"], "Jordi's phone");
+    assert_eq!(devices[0]["name"], "Ana's phone");
     assert!(devices[0].get("token").is_none());
 
     let id = devices[0]["id"].as_str().unwrap();
@@ -451,19 +451,19 @@ async fn projects_new_existing_clone_and_browse() {
     let (status, made) = call(
         "POST",
         "/api/projects".into(),
-        Some(r#"{"name":"Everpano Invoices","mode":"new","git":true}"#.into()),
+        Some(r#"{"name":"Acme Invoices","mode":"new","git":true}"#.into()),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{made}");
     assert_eq!(
         made["project"]["path"],
-        dev.join("everpano-invoices").display().to_string()
+        dev.join("acme-invoices").display().to_string()
     );
-    assert!(dev.join("everpano-invoices/.git").is_dir());
+    assert!(dev.join("acme-invoices/.git").is_dir());
     let (_, again) = call(
         "POST",
         "/api/projects".into(),
-        Some(r#"{"name":"everpano invoices","mode":"new"}"#.into()),
+        Some(r#"{"name":"acme invoices","mode":"new"}"#.into()),
     )
     .await;
     assert!(again["error"].as_str().unwrap().contains("already"));
@@ -505,7 +505,7 @@ async fn projects_new_existing_clone_and_browse() {
     assert_eq!(list.len(), 3);
     let invoices = list
         .iter()
-        .find(|p| p["name"] == "Everpano Invoices")
+        .find(|p| p["name"] == "Acme Invoices")
         .unwrap();
     assert!(invoices["branch"].is_string());
     assert_eq!(
@@ -528,7 +528,7 @@ async fn projects_new_existing_clone_and_browse() {
     assert_eq!(
         names,
         vec![
-            ("everpano-invoices".into(), true),
+            ("acme-invoices".into(), true),
             ("old-site".into(), false),
             ("origin".into(), true)
         ]
@@ -538,7 +538,7 @@ async fn projects_new_existing_clone_and_browse() {
     let id = invoices["id"].as_str().unwrap();
     let (status, _) = call("DELETE", format!("/api/projects/{id}"), None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(dev.join("everpano-invoices/.git").is_dir());
+    assert!(dev.join("acme-invoices/.git").is_dir());
 }
 
 #[tokio::test]

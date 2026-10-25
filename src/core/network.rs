@@ -214,25 +214,25 @@ mod tests {
     const IP_ADDR: &str = "1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever\n\
         2: enp89s0    inet 169.254.97.139/16 brd 169.254.255.255 scope link enp89s0\n\
         3: wlp0s20f3    inet 192.168.1.142/24 brd 192.168.1.255 scope global dynamic wlp0s20f3\n\
-        4: tailscale0    inet 100.92.183.13/32 scope global tailscale0\n\
+        4: tailscale0    inet 100.101.1.10/32 scope global tailscale0\n\
         5: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n\
         6: ztabc    inet 10.147.17.4/24 scope global ztabc\n";
 
     #[test]
     fn picks_the_address_a_peer_reaches() {
         let mine = vec![
-            (NetKind::Tailscale, "http://100.92.183.13:7777".to_string()),
+            (NetKind::Tailscale, "http://100.101.1.10:7777".to_string()),
             (NetKind::Lan, "http://192.168.1.142:7777".to_string()),
             (NetKind::ZeroTier, "http://10.147.17.4:7777".to_string()),
             (NetKind::Localhost, "http://localhost:7777".to_string()),
         ];
         assert_eq!(
             pick_address(&mine, "http://100.70.1.2:7777").unwrap(),
-            "http://100.92.183.13:7777"
+            "http://100.101.1.10:7777"
         );
         assert_eq!(
             pick_address(&mine, "https://lab.tail1234.ts.net").unwrap(),
-            "http://100.92.183.13:7777"
+            "http://100.101.1.10:7777"
         );
         assert_eq!(
             pick_address(&mine, "http://192.168.1.50:7777").unwrap(),
@@ -281,7 +281,7 @@ bridge100: flags=8863<UP> mtu 1500\n\tinet 192.168.64.1 netmask 0xffffff00\n";
                 ("wlp0s20f3".into(), "192.168.1.142".into(), NetKind::Lan),
                 (
                     "tailscale0".into(),
-                    "100.92.183.13".into(),
+                    "100.101.1.10".into(),
                     NetKind::Tailscale
                 ),
                 ("ztabc".into(), "10.147.17.4".into(), NetKind::ZeroTier),
@@ -292,9 +292,9 @@ bridge100: flags=8863<UP> mtu 1500\n\tinet 192.168.64.1 netmask 0xffffff00\n";
     #[test]
     fn reads_tailscale_status_and_serve() {
         assert_eq!(
-            parse_tailscale_dns(r#"{"Self":{"DNSName":"worker-nuc.tail8c8040.ts.net."}}"#)
+            parse_tailscale_dns(r#"{"Self":{"DNSName":"nuc.tail1234.ts.net."}}"#)
                 .as_deref(),
-            Some("worker-nuc.tail8c8040.ts.net")
+            Some("nuc.tail1234.ts.net")
         );
         let serve = r#"{"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true}},"Web":{
             "nuc.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8800"}}},

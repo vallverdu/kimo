@@ -304,9 +304,9 @@ mod tests {
 
     #[test]
     fn names() {
-        assert_eq!(folder_name("Everpano Invoices v2"), "everpano-invoices-v2");
+        assert_eq!(folder_name("Acme Invoices v2"), "acme-invoices-v2");
         assert_eq!(folder_name("  /// "), "");
-        assert_eq!(repo_name("git@github.com:vallverdu/kimo.git"), "kimo");
-        assert_eq!(repo_name("https://github.com/vallverdu/kimo/"), "kimo");
+        assert_eq!(repo_name("git@github.com:someone/kimo.git"), "kimo");
+        assert_eq!(repo_name("https://github.com/someone/kimo/"), "kimo");
     }
 }

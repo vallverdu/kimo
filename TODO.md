@@ -27,7 +27,7 @@
 - [ ] Rename sessions, edit args/folder, reorder or pin them.
 - [x] Projects: new folder (+ git init), existing folder, clone in a visible terminal; branch and agents per project.
 - [x] Folder picker on the server for new sessions and projects.
-- [ ] Project templates (copy a starter from ~/templates) and per-project default agent/account.
+- [ ] Project templates (start a project from a starter folder) and per-project default agent/account.
 - [ ] Worktrees: create a git worktree per agent from a project.
 
 ## Account & Subscription Management
@@ -68,7 +68,7 @@
 - [x] JS SDK served by kimo (`/sdk/kimo.js`) and an embeddable `<kimo-terminal>` element; kimo's own PWA uses both.
 - [x] `last_output_at` per session so apps can show "quiet for".
 - [x] Example app on another origin (`examples/agent-board`).
-- [ ] Connect Everpano and the project manager (agents per project/company, links from tasks to sessions).
+- [ ] Example integrations: a project manager that links tasks to agent sessions.
 - [ ] Richer events: per-session `waiting for input`, `finished`, `limit reached` (parsed from output) for app notifications.
 - [ ] Webhooks for server-side apps (POST events to a URL) in addition to SSE.
 - [ ] Per-key limits (which folders/sessions an app may touch) and an audit log of app actions.

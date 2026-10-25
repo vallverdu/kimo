@@ -1,6 +1,6 @@
 # kimo: conventions for agents
 
-Shared architecture: `~/templates/foundation/ARCHITECTURE.md`. The web client has its
+Layers: entry point → UI (window, web client) → services (I/O) → core (pure logic). The web client has its
 own small CSS (`web/css/base.css`, `app.css`, `kimo.css`) on top of `css/tokens.css`: never
 hard-code colours or font sizes, use the `--color-*` variables. Icons are inline SVG line icons.
 Brand: `assets/brand/kimo.svg` (master) → `python3 scripts/make-icons.py` makes every icon.
