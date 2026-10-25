@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+	<title>Agent board · kimo example</title>
+	<link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400&display=swap" rel="stylesheet">
+	<style>
+		/* A different app with its own look; values follow the shared tokens. */
+		:root { --color-background: #ffffff; --color-ink: #232323; --color-muted: #898989; --color-line: #e5e5e5; --color-surface: #f9f9f9;
+			--color-good: #2f8f4e; --color-warn: #b7791f; --color-bad: #d63345; --color-teal: #12939a; --color-accent: #ff4556; }
+		* { box-sizing: border-box; }
+		body { margin: 0; font: 300 14px/1.6 "Roboto Mono", ui-monospace, monospace; color: var(--color-ink); background: var(--color-surface); }
+		header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px; background: var(--color-ink); color: #fff; }
+		header strong { font-weight: 400; letter-spacing: 1px; }
+		header small { color: #bbb; }
+		main { max-width: 1240px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+		@media (min-width: 900px) { main { grid-template-columns: 380px minmax(0, 1fr); } }
+		h2 { font-size: 12px; font-weight: 400; letter-spacing: 2px; text-transform: uppercase; border-bottom: 1px solid var(--color-ink); padding-bottom: 8px; margin: 0 0 12px; }
+		.panel { background: var(--color-background); border: 1px solid var(--color-line); padding: 16px; }
+		form.connect { display: grid; gap: 8px; }
+		input, button { font: inherit; font-size: 16px; padding: 8px 10px; border: 1px solid #ccc; background: #fff; color: var(--color-ink); }
+		button { border-color: var(--color-ink); cursor: pointer; font-size: 13px; }
+		button.primary { background: var(--color-ink); color: #fff; }
+		ul { list-style: none; margin: 0; padding: 0; }
+		li.agent { padding: 12px 0; border-bottom: 1px solid var(--color-line); cursor: pointer; }
+		li.agent.selected { background: var(--color-surface); margin: 0 -16px; padding: 12px 16px; }
+		.row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+		.name { font-size: 16px; }
+		.meta { font-size: 12px; color: var(--color-muted); }
+		.dot { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+		.running { color: var(--color-good); } .paused { color: var(--color-warn); } .stopped { color: var(--color-muted); } .exited { color: var(--color-bad); }
+		.quiet { color: var(--color-accent); }
+		.actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+		.actions button { padding: 4px 10px; }
+		kimo-terminal { height: 52vh; border: 1px solid var(--color-line); padding: 4px; background: #fff; }
+		form.message { display: flex; gap: 8px; margin-top: 8px; }
+		form.message input { flex: 1; }
+		.error { color: var(--color-bad); font-size: 12px; min-height: 1em; }
+		.empty { color: var(--color-muted); padding: 24px 0; text-align: center; }
+	</style>
+</head>
+<body>
+	<header><div><strong>AGENT BOARD</strong><br><small>an example app connected to kimo</small></div><small id="where"></small></header>
+	<main>
+		<section>
+			<div class="panel" id="setup">
+				<h2>Connect</h2>
+				<form class="connect" id="connect">
+					<input name="url" placeholder="kimo URL, e.g. https://kimo.tailnet.ts.net" required>
+					<input name="token" placeholder="app key (kimo → Apps)" required>
+					<button class="primary">Connect</button>
+					<div class="error" id="error"></div>
+				</form>
+			</div>
+			<div class="panel" id="board" hidden>
+				<h2>Agents <span class="meta" id="summary"></span></h2>
+				<ul id="agents"></ul>
+			</div>
+		</section>
+		<section class="panel" id="detail" hidden>
+			<h2 id="detail-title">Terminal</h2>
+			<kimo-terminal id="term"></kimo-terminal>
+			<form class="message" id="message"><input name="text" placeholder="Message the agent…" autocomplete="off"><button class="primary">Send</button></form>
+		</section>
+	</main>
+	<script type="module">
+		// Everything below is all an app needs: the SDK from kimo, an app key, and the API.
+		const $ = id => document.getElementById(id);
+		const esc = v => String(v ?? '').replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+		const mb = b => `${Math.round(b / 1048576)} MB`;
+		const saved = JSON.parse(localStorage.getItem('agent-board') || '{}');
+		let kimo, quietFor, selected = null, sessions = [];
+		$('where').textContent = location.origin;
+
+		async function connect({ url, token }) {
+			url = url.replace(/\/+$/, '');
+			const sdk = await import(`${url}/sdk/kimo.js`);
+			await import(`${url}/sdk/kimo-terminal.js`);
+			kimo = new sdk.Kimo({ url, token });
+			quietFor = sdk.quietFor;
+			await kimo.sessions(); // fails early on a wrong key or origin
+			localStorage.setItem('agent-board', JSON.stringify({ url, token }));
+			$('term').kimo = kimo;
+			$('setup').hidden = true;
+			$('board').hidden = false;
+			kimo.subscribe(update);
+			setInterval(() => update({ sessions }), 5000); // refresh "quiet for"
+		}
+
+		function update(data) {
+			sessions = data.sessions;
+			const running = sessions.filter(s => s.status === 'running').length;
+			const ram = sessions.reduce((t, s) => t + s.usage.rss_bytes, 0);
+			$('summary').textContent = `${running} running · ${mb(ram)}`;
+			$('agents').innerHTML = sessions.length ? sessions.map(s => {
+				const quiet = quietFor(s);
+				const live = s.status === 'running' || s.status === 'paused';
+				return `<li class="agent ${s.id === selected ? 'selected' : ''}" data-id="${esc(s.id)}">
+					<div class="row"><span class="name">${esc(s.name)}</span><span class="dot ${s.status}">● ${s.status}</span></div>
+					<div class="meta">${esc(s.kind)} · ${live ? `${mb(s.usage.rss_bytes)} · ${s.usage.cpu_percent}% cpu` : 'no memory used'}
+						${quiet != null && live ? ` · <span class="${quiet > 300 ? 'quiet' : ''}">quiet ${quiet < 60 ? `${quiet}s` : `${Math.round(quiet / 60)}m`}</span>` : ''}</div>
+					<div class="actions">
+						${s.status === 'running' ? '<button data-do="pause">pause</button>' : ''}
+						${s.status === 'paused' ? '<button data-do="resume">resume</button>' : ''}
+						${live ? '<button data-do="stop">stop</button>' : '<button data-do="start">continue</button>'}
+					</div></li>`;
+			}).join('') : '<li class="empty">No agents running in kimo.</li>';
+		}
+
+		$('agents').addEventListener('click', async e => {
+			const id = e.target.closest('[data-id]')?.dataset.id;
+			if (!id) return;
+			const action = e.target.closest('button')?.dataset.do;
+			if (action) {
+				try { await kimo.act(id, action); } catch (err) { alert(err.message); }
+				return;
+			}
+			selected = id;
+			const s = sessions.find(x => x.id === id);
+			$('detail').hidden = false;
+			$('detail-title').textContent = `Terminal · ${s.name}`;
+			$('term').setAttribute('session', id);
+			update({ sessions });
+		});
+
+		$('message').addEventListener('submit', async e => {
+			e.preventDefault();
+			const box = e.target.elements.text;
+			if (!selected || !box.value) return;
+			await kimo.send(selected, box.value);
+			box.value = '';
+		});
+
+		$('connect').addEventListener('submit', e => {
+			e.preventDefault();
+			const f = e.target.elements;
+			connect({ url: f.url.value, token: f.token.value }).catch(err => { $('error').textContent = err.message; });
+		});
+
+		// ?kimo=…&key=… (handy for a first setup link), else the saved connection.
+		const q = new URLSearchParams(location.search);
+		const initial = q.get('kimo') ? { url: q.get('kimo'), token: q.get('key') } : saved;
+		if (initial.url) {
+			$('connect').elements.url.value = initial.url;
+			$('connect').elements.token.value = initial.token || '';
+			connect(initial).catch(err => { $('error').textContent = err.message; });
+			if (q.get('kimo')) history.replaceState(null, '', location.pathname);
+		}
+	</script>
+</body>
+</html>
