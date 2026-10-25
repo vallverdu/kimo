@@ -70,8 +70,21 @@ fn repo_name(url: &str) -> String {
         .to_string()
 }
 
+/// Current branch; `.git` is a folder in a normal checkout and a `gitdir: …` file in a worktree.
 fn branch(path: &Path) -> Option<String> {
-    parse_head(&std::fs::read_to_string(path.join(".git/HEAD")).ok()?)
+    let git = path.join(".git");
+    let dir = if git.is_file() {
+        let pointer = std::fs::read_to_string(&git).ok()?;
+        let target = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
+        if target.is_absolute() {
+            target
+        } else {
+            path.join(target)
+        }
+    } else {
+        git
+    };
+    parse_head(&std::fs::read_to_string(dir.join("HEAD")).ok()?)
 }
 
 impl Manager {
@@ -264,6 +277,30 @@ pub struct Entry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_of_checkouts_and_worktrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(branch(&repo).as_deref(), Some("main"));
+        let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(repo.join(".git/worktrees/wt")).unwrap();
+        std::fs::write(
+            repo.join(".git/worktrees/wt/HEAD"),
+            "ref: refs/heads/feature\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", repo.join(".git/worktrees/wt").display()),
+        )
+        .unwrap();
+        assert_eq!(branch(&wt).as_deref(), Some("feature"));
+        assert_eq!(branch(tmp.path()), None);
+    }
 
     #[test]
     fn names() {

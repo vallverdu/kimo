@@ -18,7 +18,7 @@ pub struct Config {
     #[arg(long, env = "KIMO_BIND", default_value = "all")]
     pub bind: String,
 
-    #[arg(long, env = "KIMO_PORT", default_value_t = 7777)]
+    #[arg(long, global = true, env = "KIMO_PORT", default_value_t = 7777)]
     pub port: u16,
 
     /// Optional owner token for scripts. Devices normally pair with a QR code instead.
