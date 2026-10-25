@@ -1,0 +1,39 @@
+/* Generated from foundation/design/tokens.json by build.mjs: do not edit. */
+:root {
+  --color-background: #ffffff;
+  --color-surface: #f9f9f9;
+  --color-ink: #232323;
+  --color-text: #666666;
+  --color-muted: #898989;
+  --color-line: #e5e5e5;
+  --color-accent: #ff4556;
+  --color-accent-hover: #e63c4c;
+  --color-teal: #12939a;
+  --color-good: #2f8f4e;
+  --color-warn: #b7791f;
+  --color-bad: #d63345;
+  --color-info-surface: #f0f9f9;
+  --color-alert-surface: #fff4f5;
+  --color-canvas3d: #ffffff;
+  --color-line3d: #111111;
+  --font-family: "Roboto Mono", ui-monospace, Menlo, Consolas, monospace;
+  --font-size-base: 14px;
+  --font-size-small: 12px;
+  --font-size-title: 36px;
+  --font-size-section: 14px;
+  --font-weight-light: 300;
+  --font-weight-regular: 400;
+  --letter-spacing-section: 2px;
+  --space-xs: 4px;
+  --space-s: 8px;
+  --space-m: 16px;
+  --space-l: 24px;
+  --space-xl: 40px;
+  --radius-none: 0px;
+  --radius-s: 2px;
+  --radius-pill: 999px;
+  --line-thin: 1px;
+  --line-stroke: 2px;
+  --layout-max-width: 1240px;
+  --layout-gutter-mobile: 16px;
+}

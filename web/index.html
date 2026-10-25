@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover,interactive-widget=resizes-content">
+	<title>kimo · agents</title>
+	<link rel="icon" type="image/svg+xml" href="icons/favicon.svg">
+	<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+	<link rel="manifest" href="manifest.webmanifest">
+	<meta name="theme-color" content="#ffffff">
+	<meta name="apple-mobile-web-app-capable" content="yes">
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400&display=swap" rel="stylesheet">
+	<link rel="stylesheet" href="vendor/timber/css/core.min.css">
+	<link rel="stylesheet" href="vendor/timber/css/skin.css">
+	<link rel="stylesheet" href="vendor/xterm/xterm.css">
+	<link rel="stylesheet" href="css/tokens.css">
+	<link rel="stylesheet" href="css/app.css">
+	<link rel="stylesheet" href="css/kimo.css">
+</head>
+<body>
+	<header class="ui-header"><div class="row">
+		<a class="ui-brand" href="#agents"><img class="ui-avatar" src="icons/icon.svg" alt="" width="44" height="44">
+			<span><strong>kimo</strong><small>agent environment</small></span></a>
+		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li></ul>
+	</div></header>
+
+	<main class="ui-main"><div class="row"><div class="column width-12">
+		<section id="view-agents">
+			<h1 class="ui-page-title">Agents</h1>
+			<p class="ui-lead">Every terminal on this machine: pause to free CPU, stop to free memory, start to continue.</p>
+			<div class="ui-stats" id="stats"></div>
+			<div id="alerts"></div>
+			<h3 class="ui-section-title">Sessions</h3>
+			<ul class="k-sessions" id="sessions"></ul>
+		</section>
+		<section id="view-accounts" hidden>
+			<h1 class="ui-page-title">Accounts</h1>
+			<p class="ui-lead">Subscriptions you can switch agents between without logging out. Conversations are shared.</p>
+			<h3 class="ui-section-title">Logins</h3>
+			<ul class="k-sessions" id="accounts"></ul>
+		</section>
+	</div></div></main>
+
+	<nav class="ui-tabbar k-tabbar" aria-label="Sections">
+		<a href="#agents" data-view="agents"><span class="icon-code"></span>Agents</a>
+		<a href="#accounts" data-view="accounts"><span class="icon-users"></span>Accounts</a>
+	</nav>
+	<button class="ui-fab" id="add" aria-label="New"><span class="icon-plus"></span></button>
+
+	<!-- Terminal (full screen) -->
+	<section class="k-term" id="term" hidden>
+		<header class="k-term-bar">
+			<button class="k-icon" id="term-back" aria-label="Back"><span class="icon-arrow-left"></span></button>
+			<div class="k-term-title"><strong id="term-name"></strong><span class="ui-badge" id="term-status"></span></div>
+			<button class="ui-button ghost k-small" id="term-pause">pause</button>
+		</header>
+		<div class="k-term-screen" id="term-screen"></div>
+		<div class="k-keys" id="keys">
+			<button data-key="esc">esc</button><button data-key="tab">tab</button><button data-key="ctrlc">^C</button>
+			<button data-key="up">↑</button><button data-key="down">↓</button><button data-key="left">←</button><button data-key="right">→</button>
+			<button data-key="enter">⏎</button>
+		</div>
+		<form class="k-compose" id="compose">
+			<textarea name="text" rows="1" placeholder="Message the agent…" aria-label="Message" autocomplete="off"></textarea>
+			<button class="ui-button">Send</button>
+		</form>
+	</section>
+
+	<dialog class="ui-sheet" id="sheet-session"><form method="dialog">
+		<h3>New session</h3>
+		<div class="ui-kinds">
+			<label><input type="radio" name="kind" value="claude" checked>Claude</label>
+			<label><input type="radio" name="kind" value="codex">Codex</label>
+			<label><input type="radio" name="kind" value="shell">Shell</label>
+		</div>
+		<label>Name<input name="name" required placeholder="api refactor" autocomplete="off"></label>
+		<label>Folder<input name="cwd" placeholder="~/dev/project" autocomplete="off" list="recent-folders"></label>
+		<datalist id="recent-folders"></datalist>
+		<label data-for="agent">Account<select name="account"></select></label>
+		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button class="ui-button">Start</button></div>
+	</form></dialog>
+
+	<dialog class="ui-sheet" id="sheet-account"><form method="dialog">
+		<h3>New account</h3>
+		<div class="ui-kinds">
+			<label><input type="radio" name="provider" value="claude" checked>Claude</label>
+			<label><input type="radio" name="provider" value="codex">Codex</label>
+		</div>
+		<label>Name<input name="name" required placeholder="Work Max" autocomplete="off"></label>
+		<p class="k-hint">After adding it, tap Sign in once. kimo keeps its credentials apart from the others.</p>
+		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button class="ui-button">Add</button></div>
+	</form></dialog>
+
+	<dialog class="ui-sheet" id="sheet-token"><form method="dialog">
+		<h3>Access token</h3>
+		<p class="k-hint">kimo printed a link with the token when it started. Paste the token here.</p>
+		<label>Token<input name="token" required autocomplete="off"></label>
+		<div class="ui-sheet-actions"><button class="ui-button">Connect</button></div>
+	</form></dialog>
+
+	<script src="vendor/xterm/xterm.js"></script>
+	<script src="vendor/xterm/addon-fit.js"></script>
+	<script src="js/api.js"></script>
+	<script src="js/terminal.js"></script>
+	<script src="js/app.js"></script>
+</body>
+</html>

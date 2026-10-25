@@ -1,0 +1,49 @@
+/* kimo layer on top of app.css. Values come from tokens.css. Prefix: k-. */
+.k-tabbar { grid-template-columns: repeat(2, 1fr) !important; }
+.ui-sheet input:not([type=radio]) { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid #ccc; font-size: 1.6rem; background: var(--color-background); color: var(--color-ink); height: auto; font-family: inherit; }
+.k-hint { font-size: 1.2rem; color: var(--color-muted); margin: 0; }
+.ui-stats { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+
+/* Session and account rows */
+.k-sessions { list-style: none; margin: 0 0 4rem; padding: 0; }
+.k-sessions > li { margin: 0; padding: 1.6rem 0; border-bottom: 1px solid var(--color-line); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .6rem 1.6rem; align-items: center; }
+.k-sessions .k-name { font-size: 1.7rem; color: var(--color-ink); background: none; border: 0; padding: 0; margin: 0; text-align: left; cursor: pointer; font-family: inherit; font-weight: 300; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-sessions .k-name:hover { text-decoration: underline; }
+.k-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .4rem 1.6rem; font-size: 1.2rem; color: var(--color-muted); }
+.k-meta code { background: none; padding: 0; color: inherit; font-size: inherit; overflow-wrap: anywhere; }
+.k-meta .k-num { color: var(--color-ink); font-variant-numeric: tabular-nums; }
+.k-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; }
+.k-actions select { margin: 0; padding: .7rem .8rem; border: 1px solid #ccc; font-size: 1.3rem; height: auto; background: var(--color-background); width: auto; max-width: 100%; }
+.ui-button.k-small { padding: .7rem 1.2rem; font-size: 1.2rem; }
+.ui-button.k-danger { border-color: var(--color-bad); background: var(--color-background); color: var(--color-bad); }
+.ui-button.k-danger:hover { background: var(--color-bad); color: var(--color-background); }
+.ui-badge.running { color: var(--color-good); }
+.ui-badge.paused { color: var(--color-warn); }
+.ui-badge.stopped { color: var(--color-muted); }
+.ui-badge.exited { color: var(--color-bad); }
+.k-bar { grid-column: 1 / -1; height: 3px; background: var(--color-line); }
+.k-bar span { display: block; height: 100%; background: var(--color-teal); }
+
+/* Full-screen terminal */
+.k-term { position: fixed; inset: 0; z-index: 30; background: var(--color-background); display: flex; flex-direction: column; height: 100dvh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+.k-term-bar { display: flex; align-items: center; gap: 1rem; padding: .8rem 1.2rem; border-bottom: 1px solid var(--color-line); }
+.k-term-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 1.2rem; }
+.k-term-title strong { font-weight: 400; font-size: 1.5rem; color: var(--color-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k-icon { background: none; border: 0; margin: 0; padding: .6rem; font-size: 2rem; line-height: 1; color: var(--color-ink); cursor: pointer; }
+.k-term-screen { flex: 1; min-height: 0; padding: .4rem 0 0 .6rem; }
+.k-term-screen .xterm { height: 100%; }
+.k-keys { display: flex; gap: 1px; background: var(--color-line); border-top: 1px solid var(--color-line); overflow-x: auto; }
+.k-keys button { flex: 1 0 auto; min-width: 44px; margin: 0; padding: 1rem .8rem; border: 0; background: var(--color-surface); color: var(--color-ink); font-family: inherit; font-size: 1.3rem; cursor: pointer; }
+.k-keys button:active { background: var(--color-line); }
+.k-compose { display: flex; gap: .8rem; padding: .8rem; margin: 0; border-top: 1px solid var(--color-line); }
+.k-compose textarea { flex: 1; margin: 0; padding: .8rem; border: 1px solid #ccc; font-size: 1.6rem; font-family: inherit; resize: none; min-height: 0; height: auto; max-height: 30vh; color: var(--color-ink); }
+.k-compose .ui-button { flex: none; }
+@media (min-width: 961px) { .k-keys { display: none; } }
+.k-sessions { padding-bottom: 8rem; }
+.ui-brand, .ui-brand:hover, .ui-brand:visited { color: var(--color-ink); }
+@media (max-width: 600px) {
+  .ui-stats { grid-template-columns: repeat(3, 1fr); }
+  .ui-stat { padding: 1.2rem; }
+  .ui-stat strong { font-size: 2rem; }
+  .ui-page-title { font-size: 3.2rem; }
+}
