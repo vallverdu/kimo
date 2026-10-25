@@ -1,0 +1,770 @@
+//! Terminal sessions: PTYs, process lifecycle, account switching and resource sampling.
+//!
+//! One reader thread and one writer thread per running session; everything else is shared.
+
+use crate::core::launch::{self, Launch};
+use crate::core::lifecycle::{self, Action};
+use crate::core::models::{Account, Provider, SessionKind, SessionSpec, SessionStatus, State};
+use crate::core::procfs::cpu_percent;
+use crate::core::scrollback::Scrollback;
+use crate::services::{accounts, stats, store::Store};
+use anyhow::{anyhow, bail, Context, Result};
+use axum::body::Bytes;
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, mpsc};
+
+pub struct ManagerConfig {
+    pub data_dir: PathBuf,
+    pub user_home: PathBuf,
+    pub shell: String,
+    pub scrollback_bytes: usize,
+}
+
+/// What the API shows for a session.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionInfo {
+    #[serde(flatten)]
+    pub spec: SessionSpec,
+    pub status: SessionStatus,
+    pub pid: Option<i32>,
+    pub exit_code: Option<u32>,
+    pub usage: Usage,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct Usage {
+    pub rss_bytes: u64,
+    pub cpu_percent: f64,
+    pub processes: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AccountInfo {
+    #[serde(flatten)]
+    pub account: Account,
+    pub signed_in: bool,
+    pub sessions: usize,
+}
+
+/// Fields the user provides to create a session.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct NewSession {
+    pub name: String,
+    pub kind: SessionKind,
+    pub cwd: String,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+}
+
+struct Runtime {
+    pid: i32,
+    master: Box<dyn MasterPty + Send>,
+    input: std_mpsc::Sender<Vec<u8>>,
+    child: Box<dyn Child + Send + Sync>,
+}
+
+struct Live {
+    status: SessionStatus,
+    runtime: Option<Runtime>,
+    scrollback: Arc<Mutex<Scrollback>>,
+    output: broadcast::Sender<Bytes>,
+    /// Bumped on every start/stop so stale exit notices from old processes are ignored.
+    generation: u64,
+    exit_code: Option<u32>,
+    usage: Usage,
+    last_ticks: Option<(u64, Instant)>,
+    size: PtySize,
+}
+
+struct Inner {
+    state: State,
+    live: HashMap<String, Live>,
+}
+
+pub struct Manager {
+    cfg: ManagerConfig,
+    store: Store,
+    inner: Mutex<Inner>,
+    exits: mpsc::UnboundedSender<(String, u64)>,
+}
+
+/// A client attached to a terminal: replayed scrollback plus live output.
+pub struct Attachment {
+    pub replay: Vec<u8>,
+    pub output: broadcast::Receiver<Bytes>,
+}
+
+fn signal_group(pid: i32, sig: libc::c_int) {
+    // SAFETY: plain kill(2) on the session's process group (the PTY child is a session leader).
+    unsafe {
+        libc::kill(-pid, sig);
+    }
+}
+
+fn new_live(cap: usize) -> Live {
+    Live {
+        status: SessionStatus::Stopped,
+        runtime: None,
+        scrollback: Arc::new(Mutex::new(Scrollback::new(cap))),
+        output: broadcast::channel(256).0,
+        generation: 0,
+        exit_code: None,
+        usage: Usage::default(),
+        last_ticks: None,
+        size: PtySize {
+            rows: 40,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+    }
+}
+
+fn slug(name: &str) -> String {
+    let s: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let s = s
+        .split('-')
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let short = &uuid::Uuid::new_v4().simple().to_string()[..6];
+    if s.is_empty() {
+        short.to_string()
+    } else {
+        format!("{}-{short}", &s[..s.len().min(24)])
+    }
+}
+
+impl Manager {
+    /// Load the saved state (all sessions start as stopped) and start the exit listener.
+    /// Must be called inside a tokio runtime.
+    pub fn new(cfg: ManagerConfig) -> Result<Arc<Self>> {
+        let store = Store::new(cfg.data_dir.join("state.json"));
+        let state = store.load()?;
+        let live = state
+            .sessions
+            .iter()
+            .map(|s| (s.id.clone(), new_live(cfg.scrollback_bytes)))
+            .collect();
+        let (exits, mut exits_rx) = mpsc::unbounded_channel();
+        let manager = Arc::new(Self {
+            cfg,
+            store,
+            inner: Mutex::new(Inner { state, live }),
+            exits,
+        });
+        let weak = Arc::downgrade(&manager);
+        tokio::spawn(async move {
+            while let Some((id, generation)) = exits_rx.recv().await {
+                match weak.upgrade() {
+                    Some(m) => m.on_exit(&id, generation),
+                    None => break,
+                }
+            }
+        });
+        Ok(manager)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn save(&self, inner: &Inner) -> Result<()> {
+        self.store.save(&inner.state)
+    }
+
+    // ----- queries -----
+
+    pub fn sessions(&self) -> Vec<SessionInfo> {
+        let inner = self.lock();
+        inner
+            .state
+            .sessions
+            .iter()
+            .filter_map(|s| Self::info(&inner, s))
+            .collect()
+    }
+
+    pub fn session(&self, id: &str) -> Option<SessionInfo> {
+        let inner = self.lock();
+        inner
+            .state
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| Self::info(&inner, s))
+    }
+
+    fn info(inner: &Inner, spec: &SessionSpec) -> Option<SessionInfo> {
+        let live = inner.live.get(&spec.id)?;
+        Some(SessionInfo {
+            spec: spec.clone(),
+            status: live.status,
+            pid: live.runtime.as_ref().map(|r| r.pid),
+            exit_code: live.exit_code,
+            usage: live.usage,
+        })
+    }
+
+    pub fn accounts(&self) -> Vec<AccountInfo> {
+        let inner = self.lock();
+        inner
+            .state
+            .accounts
+            .iter()
+            .map(|a| AccountInfo {
+                account: a.clone(),
+                signed_in: accounts::is_signed_in(&self.cfg.data_dir, a),
+                sessions: inner
+                    .state
+                    .sessions
+                    .iter()
+                    .filter(|s| s.account.as_deref() == Some(&a.id))
+                    .count(),
+            })
+            .collect()
+    }
+
+    // ----- sessions -----
+
+    pub fn create(&self, new: NewSession, start: bool) -> Result<SessionInfo> {
+        let name = new.name.trim();
+        if name.is_empty() {
+            bail!("the session needs a name");
+        }
+        let cwd = if new.cwd.trim().is_empty() {
+            self.cfg.user_home.display().to_string()
+        } else {
+            new.cwd.trim().to_string()
+        };
+        let cwd = match cwd.strip_prefix("~") {
+            Some(rest) => format!("{}{rest}", self.cfg.user_home.display()),
+            None => cwd,
+        };
+        if !std::path::Path::new(&cwd).is_dir() {
+            bail!("folder not found: {cwd}");
+        }
+        let spec = SessionSpec {
+            id: slug(name),
+            name: name.to_string(),
+            kind: new.kind,
+            cwd,
+            account: new.account.filter(|a| !a.is_empty()),
+            args: new.args,
+            command: new.command.filter(|c| !c.is_empty()),
+            started_once: false,
+            extra: Default::default(),
+        };
+        {
+            let mut inner = self.lock();
+            Self::check_account(&inner.state, spec.kind, spec.account.as_deref())?;
+            inner
+                .live
+                .insert(spec.id.clone(), new_live(self.cfg.scrollback_bytes));
+            inner.state.sessions.push(spec.clone());
+            self.save(&inner)?;
+        }
+        if start {
+            self.start(&spec.id)?;
+        }
+        self.session(&spec.id)
+            .ok_or_else(|| anyhow!("session vanished"))
+    }
+
+    fn check_account(state: &State, kind: SessionKind, account: Option<&str>) -> Result<()> {
+        let Some(id) = account else { return Ok(()) };
+        let acc = state
+            .accounts
+            .iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| anyhow!("unknown account: {id}"))?;
+        if kind.provider() != Some(acc.provider) {
+            bail!(
+                "account '{}' is a {:?} account and cannot run a {:?} session",
+                acc.name,
+                acc.provider,
+                kind
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        self.stop_and_wait(id).await?;
+        let mut inner = self.lock();
+        inner.state.sessions.retain(|s| s.id != id);
+        inner.live.remove(id);
+        self.save(&inner)
+    }
+
+    pub async fn act(&self, id: &str, action: Action) -> Result<SessionInfo> {
+        let status = self
+            .session(id)
+            .ok_or_else(|| anyhow!("unknown session: {id}"))?
+            .status;
+        if lifecycle::next(status, action).is_none() {
+            bail!("cannot {action:?} a {status:?} session");
+        }
+        match action {
+            Action::Start => self.start(id)?,
+            Action::Pause => self.signal(id, libc::SIGSTOP, SessionStatus::Paused)?,
+            Action::Resume => self.signal(id, libc::SIGCONT, SessionStatus::Running)?,
+            Action::Stop => self.stop_and_wait(id).await?,
+            Action::Restart => {
+                self.stop_and_wait(id).await?;
+                self.start(id)?;
+            }
+        }
+        self.session(id)
+            .ok_or_else(|| anyhow!("unknown session: {id}"))
+    }
+
+    fn signal(&self, id: &str, sig: libc::c_int, status: SessionStatus) -> Result<()> {
+        let mut inner = self.lock();
+        let live = inner
+            .live
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("unknown session: {id}"))?;
+        let rt = live
+            .runtime
+            .as_ref()
+            .ok_or_else(|| anyhow!("session is not running"))?;
+        signal_group(rt.pid, sig);
+        live.status = status;
+        if status == SessionStatus::Paused {
+            live.usage.cpu_percent = 0.0;
+        }
+        Ok(())
+    }
+
+    fn start(&self, id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let spec = inner
+            .state
+            .sessions
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown session: {id}"))?;
+        let account = match &spec.account {
+            Some(aid) => Some(
+                inner
+                    .state
+                    .accounts
+                    .iter()
+                    .find(|a| &a.id == aid)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("unknown account: {aid}"))?,
+            ),
+            None => None,
+        };
+        if let Some(acc) = &account {
+            accounts::ensure_home(&self.cfg.data_dir, &self.cfg.user_home, acc)?;
+        }
+        let launch = launch::build(
+            &spec,
+            account.as_ref(),
+            &self.cfg.data_dir,
+            spec.started_once,
+            &self.cfg.shell,
+        )
+        .map_err(|e| anyhow!(e))?;
+        let live = inner
+            .live
+            .get_mut(id)
+            .ok_or_else(|| anyhow!("unknown session: {id}"))?;
+        if live.runtime.is_some() {
+            bail!("session is already running");
+        }
+        live.generation += 1;
+        let note = format!(
+            "\r\n\x1b[2m[kimo] {} {}{}\x1b[0m\r\n",
+            if spec.started_once {
+                "resuming"
+            } else {
+                "starting"
+            },
+            launch.program,
+            if launch.args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", launch.args.join(" "))
+            }
+        );
+        live.scrollback.lock().unwrap().push(note.as_bytes());
+        let _ = live.output.send(Bytes::from(note));
+        let runtime = self
+            .spawn(id, live, &launch)
+            .with_context(|| format!("starting {}", launch.program))?;
+        live.runtime = Some(runtime);
+        live.status = SessionStatus::Running;
+        live.exit_code = None;
+        live.last_ticks = None;
+        if let Some(s) = inner.state.sessions.iter_mut().find(|s| s.id == id) {
+            s.started_once = true;
+        }
+        self.save(&inner)
+    }
+
+    fn spawn(&self, id: &str, live: &Live, launch: &Launch) -> Result<Runtime> {
+        let pair = native_pty_system().openpty(live.size)?;
+        let mut cmd = CommandBuilder::new(&launch.program);
+        cmd.args(&launch.args);
+        cmd.cwd(&launch.cwd);
+        for (k, v) in &launch.env {
+            cmd.env(k, v);
+        }
+        let child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+        let pid = child
+            .process_id()
+            .map(|p| p as i32)
+            .ok_or_else(|| anyhow!("no process id"))?;
+        let mut reader = pair.master.try_clone_reader()?;
+        let mut writer = pair.master.take_writer()?;
+
+        let (scrollback, output, exits, generation, sid) = (
+            live.scrollback.clone(),
+            live.output.clone(),
+            self.exits.clone(),
+            live.generation,
+            id.to_string(),
+        );
+        std::thread::Builder::new()
+            .name(format!("pty-out-{id}"))
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let mut buf = [0u8; 8192];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            scrollback.lock().unwrap().push(&buf[..n]);
+                            let _ = output.send(Bytes::copy_from_slice(&buf[..n]));
+                        }
+                    }
+                }
+                let _ = exits.send((sid, generation));
+            })?;
+
+        let (input, input_rx) = std_mpsc::channel::<Vec<u8>>();
+        std::thread::Builder::new()
+            .name(format!("pty-in-{id}"))
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                for data in input_rx {
+                    if writer
+                        .write_all(&data)
+                        .and_then(|_| writer.flush())
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })?;
+        Ok(Runtime {
+            pid,
+            master: pair.master,
+            input,
+            child,
+        })
+    }
+
+    fn on_exit(&self, id: &str, generation: u64) {
+        let mut inner = self.lock();
+        let Some(live) = inner.live.get_mut(id) else {
+            return;
+        };
+        if live.generation != generation {
+            return;
+        }
+        if let Some(mut rt) = live.runtime.take() {
+            let code = match rt.child.try_wait() {
+                Ok(Some(status)) => Some(status.exit_code()),
+                _ => {
+                    signal_group(rt.pid, libc::SIGKILL);
+                    rt.child.wait().ok().map(|s| s.exit_code())
+                }
+            };
+            live.exit_code = code;
+            let note = format!(
+                "\r\n\x1b[2m[kimo] exited ({})\x1b[0m\r\n",
+                code.map_or("?".into(), |c| c.to_string())
+            );
+            live.scrollback.lock().unwrap().push(note.as_bytes());
+            let _ = live.output.send(Bytes::from(note));
+        }
+        live.status = SessionStatus::Exited;
+        live.usage = Usage::default();
+    }
+
+    /// End the session's processes (SIGHUP/SIGTERM, then SIGKILL after 3 s) and wait for them.
+    async fn stop_and_wait(&self, id: &str) -> Result<()> {
+        let runtime = {
+            let mut inner = self.lock();
+            let live = inner
+                .live
+                .get_mut(id)
+                .ok_or_else(|| anyhow!("unknown session: {id}"))?;
+            live.generation += 1;
+            if live.runtime.is_some() {
+                live.status = SessionStatus::Stopped;
+            }
+            live.usage = Usage::default();
+            live.runtime.take()
+        };
+        let Some(mut rt) = runtime else { return Ok(()) };
+        tokio::task::spawn_blocking(move || {
+            for sig in [libc::SIGHUP, libc::SIGTERM, libc::SIGCONT] {
+                signal_group(rt.pid, sig);
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if let Ok(Some(_)) = rt.child.try_wait() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            signal_group(rt.pid, libc::SIGKILL);
+            let _ = rt.child.kill();
+            let _ = rt.child.wait();
+            drop(rt.master);
+        })
+        .await?;
+        let mut inner = self.lock();
+        if let Some(live) = inner.live.get_mut(id) {
+            let note = b"\r\n\x1b[2m[kimo] stopped: memory freed, start to continue\x1b[0m\r\n";
+            live.scrollback.lock().unwrap().push(note);
+            let _ = live.output.send(Bytes::from_static(note));
+        }
+        Ok(())
+    }
+
+    // ----- terminal I/O -----
+
+    pub fn attach(&self, id: &str) -> Option<Attachment> {
+        let inner = self.lock();
+        let live = inner.live.get(id)?;
+        // Subscribe before snapshotting so no output falls between the two.
+        let output = live.output.subscribe();
+        let replay = live.scrollback.lock().unwrap().snapshot();
+        Some(Attachment { replay, output })
+    }
+
+    pub fn write(&self, id: &str, data: Vec<u8>) {
+        let inner = self.lock();
+        if let Some(rt) = inner.live.get(id).and_then(|l| l.runtime.as_ref()) {
+            let _ = rt.input.send(data);
+        }
+    }
+
+    pub fn resize(&self, id: &str, cols: u16, rows: u16) {
+        if cols == 0 || rows == 0 {
+            return;
+        }
+        let mut inner = self.lock();
+        if let Some(live) = inner.live.get_mut(id) {
+            live.size = PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
+            if let Some(rt) = &live.runtime {
+                let _ = rt.master.resize(live.size);
+            }
+        }
+    }
+
+    // ----- accounts -----
+
+    pub fn add_account(&self, name: &str, provider: Provider) -> Result<Account> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("the account needs a name");
+        }
+        let account = Account {
+            id: slug(name),
+            name: name.to_string(),
+            provider,
+            extra: Default::default(),
+        };
+        accounts::ensure_home(&self.cfg.data_dir, &self.cfg.user_home, &account)?;
+        let mut inner = self.lock();
+        inner.state.accounts.push(account.clone());
+        self.save(&inner)?;
+        Ok(account)
+    }
+
+    pub fn delete_account(&self, id: &str) -> Result<()> {
+        let mut inner = self.lock();
+        let users: Vec<_> = inner
+            .state
+            .sessions
+            .iter()
+            .filter(|s| s.account.as_deref() == Some(id))
+            .map(|s| s.name.clone())
+            .collect();
+        if !users.is_empty() {
+            bail!("account is used by: {}", users.join(", "));
+        }
+        inner.state.accounts.retain(|a| a.id != id);
+        self.save(&inner)?;
+        accounts::remove_home(&self.cfg.data_dir, id)
+    }
+
+    /// Session that signs `account_id` in, started in the user's home folder.
+    pub fn login_session(&self, account_id: &str) -> Result<SessionInfo> {
+        let acc = self
+            .lock()
+            .state
+            .accounts
+            .iter()
+            .find(|a| a.id == account_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown account: {account_id}"))?;
+        let kind = match acc.provider {
+            Provider::Claude => SessionKind::Claude,
+            Provider::Codex => SessionKind::Codex,
+        };
+        self.create(
+            NewSession {
+                name: format!("login {}", acc.name),
+                kind,
+                cwd: String::new(),
+                account: Some(acc.id),
+                args: vec![],
+                command: Some(launch::login_command(acc.provider)),
+            },
+            true,
+        )
+    }
+
+    /// Move a session to another account (or the default login). A live session is restarted
+    /// and continues its conversation under the new subscription.
+    pub async fn set_account(&self, id: &str, account: Option<String>) -> Result<SessionInfo> {
+        let was_live = {
+            let mut inner = self.lock();
+            let kind = inner
+                .state
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .ok_or_else(|| anyhow!("unknown session: {id}"))?
+                .kind;
+            Self::check_account(&inner.state, kind, account.as_deref())?;
+            if let Some(s) = inner.state.sessions.iter_mut().find(|s| s.id == id) {
+                s.account = account;
+            }
+            self.save(&inner)?;
+            inner.live.get(id).is_some_and(|l| l.runtime.is_some())
+        };
+        if was_live {
+            self.stop_and_wait(id).await?;
+            self.start(id)?;
+        }
+        self.session(id)
+            .ok_or_else(|| anyhow!("unknown session: {id}"))
+    }
+
+    /// Move every session of `from` (None = default login) of the target's provider to `to`.
+    /// This is the "subscription hit its limit" button.
+    pub async fn move_sessions(&self, from: Option<&str>, to: Option<String>) -> Result<usize> {
+        let ids: Vec<String> = {
+            let inner = self.lock();
+            let provider = to
+                .as_deref()
+                .or(from)
+                .and_then(|t| inner.state.accounts.iter().find(|a| a.id == t))
+                .map(|a| a.provider)
+                .ok_or_else(|| anyhow!("pick an account to move to"))?;
+            inner
+                .state
+                .sessions
+                .iter()
+                .filter(|s| {
+                    s.account.as_deref() == from
+                        && s.kind.provider() == Some(provider)
+                        && s.command.is_none()
+                })
+                .map(|s| s.id.clone())
+                .collect()
+        };
+        for id in &ids {
+            self.set_account(id, to.clone()).await?;
+        }
+        Ok(ids.len())
+    }
+
+    // ----- resources -----
+
+    /// Refresh memory/CPU of every running session from /proc.
+    pub fn sample(&self) {
+        let pids: Vec<(String, i32)> = {
+            let inner = self.lock();
+            inner
+                .live
+                .iter()
+                .filter_map(|(id, l)| l.runtime.as_ref().map(|r| (id.clone(), r.pid)))
+                .collect()
+        };
+        if pids.is_empty() {
+            return;
+        }
+        let table = stats::read_table();
+        let (page, hz, now) = (stats::page_size(), stats::ticks_per_sec(), Instant::now());
+        let mut inner = self.lock();
+        for (id, pid) in pids {
+            let Some(live) = inner.live.get_mut(&id) else {
+                continue;
+            };
+            if live.runtime.as_ref().map(|r| r.pid) != Some(pid) {
+                continue;
+            }
+            let tree = table.tree_usage(pid);
+            let cpu = match live.last_ticks {
+                Some((ticks, at)) => cpu_percent(
+                    ticks,
+                    tree.cpu_ticks,
+                    now.duration_since(at).as_secs_f64(),
+                    hz,
+                ),
+                None => 0.0,
+            };
+            live.last_ticks = Some((tree.cpu_ticks, now));
+            live.usage = Usage {
+                rss_bytes: tree.rss_pages * page,
+                cpu_percent: (cpu * 10.0).round() / 10.0,
+                processes: tree.processes,
+            };
+        }
+    }
+
+    /// Stop every session (on shutdown) so no agent is left orphaned.
+    pub async fn shutdown(&self) {
+        let ids: Vec<String> = self
+            .lock()
+            .live
+            .iter()
+            .filter(|(_, l)| l.runtime.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            let _ = self.stop_and_wait(&id).await;
+        }
+    }
+}
