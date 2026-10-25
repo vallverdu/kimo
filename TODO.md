@@ -1,5 +1,19 @@
 # TODO
 
+## Native app (Rust)
+
+- [x] `kimo` opens a native window (egui) that is a client of the local server (started in the background when needed).
+- [x] Terminals in the window on alacritty_terminal: colours, keys, Tab, Ctrl+C, paste, scrollback, resize, terminal replies.
+- [x] Projects sidebar with drag-and-drop of folders, + claude / + codex / + shell per project.
+- [x] Subscriptions, Skills, Settings and Devices (QR pairing) views.
+- [ ] Text selection and copy in the terminal; mouse reporting for TUIs that use the mouse.
+- [ ] Symbol/emoji fallback font so agent icons (✓ ⏵ ✻) render.
+- [ ] Split panes (several terminals side by side) and keyboard shortcuts to switch tabs.
+- [ ] Native folder dialog for "+ project" (xdg portal) besides the server folder picker.
+- [ ] App icon and .desktop file; `kimo install` (service + launcher).
+- [ ] Lower the window's idle cost: repaint only when shown values change (usage updates arrive every 2 s), measure on a GPU desktop.
+- [ ] Notifications from the window (agent waiting / done) once agent state exists.
+
 ## Core Terminal Management
 
 - [x] Implement a robust terminal emulator within the ADE. (PTY per session + xterm.js in the PWA, scrollback replay on reconnect)
@@ -67,6 +81,16 @@
 - [ ] `kimo install` command (writes the unit, enables lingering) instead of manual steps.
 - [ ] Show the pairing QR on the server's terminal at first start when no device is paired.
 - [ ] mDNS (`kimo.local`) so LAN devices find kimo without an IP.
+
+## Skills and settings (like Orca)
+
+- [x] Skills: list global and per-project skills for Claude, Codex and `.agents`; install from GitHub/git/folder; remove to backup; synced/built-in read-only.
+- [x] Settings: per-agent permissions (manual / yolo), model, extra args, enabled; terminal font size; quick commands.
+- [x] Detect installed agent CLIs and versions.
+- [ ] Skills and settings in the phone/web client too (the API is ready).
+- [ ] Per-project settings (default agent, account, model) and project-scoped quick commands in the UI.
+- [ ] Skill updates: show when an installed skill's source has a newer version.
+- [ ] MCP servers per agent (list, add, remove).
 
 ## Ideas from herdr (herdrdev/herdr)
 

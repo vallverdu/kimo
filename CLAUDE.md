@@ -7,7 +7,8 @@ never hard-code colours or font sizes, use the `--color-*` variables).
 ## Layers (dependencies point down)
 
 ```
-src/main.rs        entry point only: config → Manager → axum server
+src/main.rs        entry point only: `kimo` (window) / `kimo serve` / `kimo pair`
+src/desktop/       native window (egui), a client of the server through src/client.rs — never calls services directly
 src/api/           HTTP/websocket handlers and static files; no business rules
 src/services/      I/O: sessions.rs (PTYs, lifecycle), accounts.rs, store.rs (only file touching state.json), stats.rs, network.rs
 src/core/          pure, synchronous, no I/O: models, lifecycle, launch, procfs, scrollback, network parsing
@@ -27,6 +28,7 @@ src/core/access.rs who may call what from which origin (keep it pure and tested)
 - Owner = the machine itself (not through a proxy), paired devices, or KIMO_TOKEN. Keep that rule in `api::auth` + `core/access.rs`, tested in `tests/api.rs`.
 - Projects are never deleted from disk by kimo: "forget" only unregisters them.
 - Credentials never go in state or git: they live in each account's config home.
+- The native window and every PWA use the same HTTP API: new features land in the API first, then in the window, the web client and the SDK.
 - Every API change goes through the SDK too: kimo's own PWA uses only `web/sdk/`, so other apps get the same features.
 - Errors reach the user as `{ "error": "plain words" }` and a toast; details go to the log.
 - Run `cargo fmt`, `cargo clippy --all-targets` and `cargo test` before committing.

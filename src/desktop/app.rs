@@ -331,8 +331,8 @@ impl KimoApp {
             self.last_projects = Instant::now();
             self.job(|c| Ok(Msg::Projects(c.get("/projects")?)));
         }
-        // Keep the clock-driven parts (status, pairing countdown) moving without busy repainting.
-        self.ctx.request_repaint_after(Duration::from_secs(1));
+        // Wake up only for the next status poll; live data (events, terminal output) repaints by itself.
+        self.ctx.request_repaint_after(Duration::from_secs(3));
     }
 
     fn handle_drops(&mut self, ui: &Ui) {
