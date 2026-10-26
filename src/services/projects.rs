@@ -3,7 +3,7 @@
 
 use crate::core::git::{branch_name, parse_head};
 use crate::core::models::{Project, SessionKind, SessionStatus};
-use crate::services::sessions::{slug, Manager, NewSession, SessionInfo};
+use crate::services::sessions::{canonical, slug, Manager, NewSession, SessionInfo};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -476,6 +476,8 @@ impl Manager {
         } else {
             git(&repo, &["worktree", "add", "-b", &branch, &target])?;
         }
+        // As git records it (macOS: /var is /private/var), so listings and sessions match.
+        let target = canonical(&target);
         let worktree = Worktree {
             path: target.clone(),
             branch: Some(branch.clone()),
@@ -505,10 +507,11 @@ impl Manager {
         let repo = PathBuf::from(&project.path);
         let known = worktrees(&repo)
             .into_iter()
-            .any(|w| !w.primary && w.path == path);
+            .any(|w| !w.primary && canonical(&w.path) == canonical(path));
         if !known {
             bail!("{path} is not a worktree of {}", project.name);
         }
+        let path = &canonical(path);
         let inside: Vec<SessionInfo> = self
             .sessions()
             .into_iter()
