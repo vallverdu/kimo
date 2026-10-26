@@ -71,6 +71,8 @@
 - [x] Design the ADE with a mobile-first approach. (phone layout, bottom tabs, key bar, compose box)
 - [x] Explore PWA (Progressive Web App) integration for accessibility. (manifest, service worker on HTTPS via `tailscale serve`)
 - [x] Develop a mobile control interface for managing agents.
+- [x] Photos for agents from the phone camera or gallery (uploads, thumbnails, paths in the message).
+- [ ] Paste or drop images into the window's message box (same upload).
 - [x] Ensure seamless integration with Tailscale or Zerotier for mobile access.
 - [ ] Push notifications when an agent waits for input, finishes or hits a limit (Web Push from the server).
 - [x] "Needs you": sessions waiting for an answer or approval, first in the phone list and a button in the window.

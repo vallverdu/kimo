@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3
+
+- Phone: send photos to an agent. The camera button takes a photo, the image button picks
+  from the gallery; large photos are shrunk to 2000 px before upload, shown as thumbnails,
+  and their paths go into the message (Claude Code attaches images given by path).
+  `POST /api/sessions/{id}/files` and `kimo.sendFile()` for your own apps; works for agents
+  on paired machines too.
+
 ## 0.1.2
 
 - Subscriptions: Claude accounts signed in on macOS showed as "not signed in" (Claude keeps

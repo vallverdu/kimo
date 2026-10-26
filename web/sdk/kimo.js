@@ -96,6 +96,16 @@ export class Kimo {
   message(id, text, from) { return this.request('POST', `/sessions/${enc(id)}/message`, { text, from }); }
   /** Type raw text into the terminal. */
   type(id, text) { return this.request('POST', `/sessions/${enc(id)}/input`, { text }); }
+  /**
+   * Send a file (a photo, a screenshot: a File or Blob, up to 20 MB) to the session's machine;
+   * returns {path}. Put the path in a message: Claude Code and Codex read images from it.
+   */
+  async sendFile(id, file, name = file.name || 'file') {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return this.request('POST', `/sessions/${enc(id)}/files`, { name, data: btoa(binary) });
+  }
   /** Send a message to an agent: the text, then Enter (separately, so TUIs see typing, not a paste). */
   async send(id, text) {
     await this.type(id, text);

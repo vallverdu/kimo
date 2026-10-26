@@ -672,6 +672,59 @@ async fn project_settings_and_worktrees() {
 }
 
 #[tokio::test]
+async fn photos_for_an_agent_are_saved_where_it_can_read_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let call = |m: &'static str, uri: String, body: Option<String>| {
+        let app = app.clone();
+        async move {
+            let res = app
+                .oneshot(local(req(m, &uri, None, None, body.as_deref())))
+                .await
+                .unwrap();
+            (res.status(), json(res).await)
+        }
+    };
+    let body = format!(
+        r#"{{"name":"cam","kind":"shell","cwd":"{}"}}"#,
+        tmp.path().display()
+    );
+    let (status, s) = call("POST", "/api/sessions".into(), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{s}");
+    let id = s["id"].as_str().unwrap();
+    // "hello" in base64.
+    let (status, saved) = call(
+        "POST",
+        format!("/api/sessions/{id}/files"),
+        Some(r#"{"name":"IMG 1.jpg","data":"aGVsbG8="}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let path = saved["path"].as_str().unwrap();
+    assert!(
+        path.contains(&format!("uploads/{id}/")) && path.ends_with("-IMG-1.jpg"),
+        "{path}"
+    );
+    assert_eq!(std::fs::read(path).unwrap(), b"hello");
+    let (status, _) = call(
+        "POST",
+        format!("/api/sessions/{id}/files"),
+        Some(r#"{"name":"x.jpg","data":"not base64!"}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call(
+        "POST",
+        "/api/sessions/nobody/files".into(),
+        Some(r#"{"name":"x.jpg","data":"aGVsbG8="}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = call("DELETE", format!("/api/sessions/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn settings_and_skills() {
     let tmp = tempfile::tempdir().unwrap();
     let app = router(tmp.path(), None);

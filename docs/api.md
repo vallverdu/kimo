@@ -44,6 +44,7 @@ reaches a session on a paired kimo.
 | GET | `/sessions/{id}/reply` | `{source: transcript \| terminal, text}`: the agent's last answer |
 | GET | `/sessions/{id}/screen?lines=40` | recent terminal text without escape codes |
 | POST | `/sessions/{id}/input` | `{text}`: raw keystrokes |
+| POST | `/sessions/{id}/files` | `{name, data}` (base64, up to 20 MB): save a file for the agent (a photo from the phone) in `~/.kimo/uploads/<session>/` → `{path}`; put the path in a message (Claude Code attaches images given by path) |
 | GET (websocket) | `/sessions/{id}/term` | the terminal: binary frames both ways; text frame `{"type":"resize","cols":…,"rows":…}`; the recent output is replayed on connect |
 
 ## Live events
@@ -134,6 +135,7 @@ kimo.sessions(); kimo.session(id); kimo.createSession(spec); kimo.deleteSession(
 kimo.start(id); kimo.pause(id); kimo.resume(id); kimo.stop(id); kimo.restart(id);
 kimo.setAccount(id, account);       // switch subscription, continues the conversation
 kimo.send(id, text);                // type a message and Enter
+kimo.sendFile(id, file);            // a photo or file for the agent → {path}
 kimo.message(id, text, from);       // like `kimo send`, signed with a sender session
 kimo.reply(id); kimo.screen(id, lines);
 kimo.waitFor(id, ['idle', 'waiting'], { timeout });   // resolves with the session

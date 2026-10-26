@@ -1,6 +1,7 @@
 // Full-screen terminal: a <kimo-terminal> (the SDK element) plus a key bar and a compose box for phones.
 import '../sdk/kimo-terminal.js';
 import { kimo } from './api.js';
+import { toast } from './ui.js';
 
 const el = id => document.getElementById(id);
 const KEYS = { esc: '\x1b', tab: '\t', ctrlc: '\x03', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D', enter: '\r' };
@@ -25,6 +26,7 @@ export const terminal = {
   },
 
   close() {
+    clearAttachments();
     current = null;
     screen.removeAttribute('session');
     el('term').hidden = true;
@@ -54,11 +56,86 @@ const compose = el('compose');
 compose.addEventListener('submit', e => {
   e.preventDefault();
   const box = compose.elements.text;
+  const ready = attachments.filter(a => a.path);
+  if (attachments.some(a => !a.path && !a.error)) return toast('Still sending the image…');
+  if (!box.value.trim() && !ready.length) return;
+  // Image paths first (the agent attaches them), then the words.
+  const text = [...ready.map(a => quote(a.path)), box.value].filter(Boolean).join(' ');
   // Text first, then Enter separately so TUIs treat it as typed input rather than a paste.
-  screen.send(box.value);
+  screen.send(text);
   setTimeout(() => screen.send('\r'), 30);
   box.value = '';
+  clearAttachments();
 });
+
+// ----- photos and images for the agent -----
+
+let attachments = [];
+const quote = p => /^[\w./~@%+=:,-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`;
+
+/** Photos are large: send at most 2000 px, as JPEG, unless the file is already small. */
+async function shrink(file) {
+  if (file.size < 1.5e6 || !/^image\/(jpeg|png|webp|heic|heif)$/.test(file.type)) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 2000 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(ok => canvas.toBlob(ok, 'image/jpeg', 0.85));
+    return blob ? new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }) : file;
+  } catch { return file; }
+}
+
+function renderAttachments() {
+  const list = el('attachments');
+  list.hidden = !attachments.length;
+  list.replaceChildren(...attachments.map((a, i) => {
+    const li = document.createElement('li');
+    li.className = a.error ? 'error' : a.path ? '' : 'busy';
+    li.title = a.error || a.path || 'sending…';
+    const img = document.createElement('img');
+    img.src = a.url;
+    img.alt = '';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', 'remove');
+    remove.addEventListener('click', () => { URL.revokeObjectURL(a.url); attachments.splice(i, 1); renderAttachments(); });
+    li.append(img, remove);
+    return li;
+  }));
+}
+
+function clearAttachments() {
+  attachments.forEach(a => URL.revokeObjectURL(a.url));
+  attachments = [];
+  renderAttachments();
+}
+
+async function attach(files) {
+  if (!current) return;
+  const id = current.id;
+  for (const original of files) {
+    const a = { url: URL.createObjectURL(original), path: null, error: null };
+    attachments.push(a);
+    renderAttachments();
+    try {
+      const file = await shrink(original);
+      a.path = (await kimo.sendFile(id, file, file.name || 'photo.jpg')).path;
+    } catch (err) {
+      a.error = err.message;
+      toast(err.message, true);
+    }
+    renderAttachments();
+  }
+}
+
+compose.querySelectorAll('[data-attach]').forEach(input => input.addEventListener('change', () => {
+  attach([...input.files]);
+  input.value = '';
+}));
 compose.elements.text.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); compose.requestSubmit(); }
 });

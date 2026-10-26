@@ -153,3 +153,31 @@ impl Manager {
         Ok(target.spec.id)
     }
 }
+
+impl Manager {
+    /// Save a file sent to a session (a photo from a phone, a screenshot) where its agent can
+    /// read it: `~/.kimo/uploads/<session>/<time>-<name>`. Returns the path to give the agent.
+    pub fn save_upload(&self, id: &str, name: &str, bytes: &[u8]) -> Result<String> {
+        if self.session(id).is_none() {
+            bail!("unknown session: {id}");
+        }
+        if bytes.is_empty() {
+            bail!("the file is empty");
+        }
+        if bytes.len() > crate::core::uploads::MAX_UPLOAD_BYTES {
+            bail!(
+                "files up to {} MB",
+                crate::core::uploads::MAX_UPLOAD_BYTES >> 20
+            );
+        }
+        let dir = self.cfg.data_dir.join("uploads").join(id);
+        std::fs::create_dir_all(&dir)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis())
+            .to_string();
+        let path = dir.join(crate::core::uploads::file_name(name, &stamp));
+        std::fs::write(&path, bytes).map_err(|e| anyhow!("saving {}: {e}", path.display()))?;
+        Ok(path.display().to_string())
+    }
+}

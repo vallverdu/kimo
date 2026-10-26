@@ -89,6 +89,11 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/sessions/{id}/action", post(session_action))
         .route("/sessions/{id}/account", post(session_account))
         .route("/sessions/{id}/input", post(session_input))
+        .route(
+            "/sessions/{id}/files",
+            // Photos: base64 makes them a third larger than the 20 MB limit.
+            post(session_file).layer(axum::extract::DefaultBodyLimit::max(28 << 20)),
+        )
         .route("/sessions/{id}/message", post(session_message))
         .route("/sessions/{id}/reply", get(session_reply))
         .route("/sessions/{id}/screen", get(session_screen))
@@ -414,6 +419,40 @@ struct InputBody {
 }
 
 /// Type into a session without a terminal (quick replies from a notification, scripts…).
+#[derive(Deserialize)]
+struct FileBody {
+    name: String,
+    /// The file, base64.
+    data: String,
+}
+
+/// A file for the agent (a photo from the phone): saved on the session's machine; the answer's
+/// `path` goes into the message, and Claude Code and Codex read the image from it.
+async fn session_file(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(body): Json<FileBody>,
+) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "/files") {
+        return forward(
+            peer,
+            "POST",
+            path,
+            Some(json!({ "name": body.name, "data": body.data })),
+        )
+        .await;
+    }
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body.data.trim())
+        .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "the file is not base64".into()))?;
+    let manager = app.manager.clone();
+    let path = tokio::task::spawn_blocking(move || manager.save_upload(&id, &body.name, &bytes))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!({ "path": path })))
+}
+
 async fn session_input(
     State(app): State<App>,
     Path(id): Path<String>,
