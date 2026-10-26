@@ -1,8 +1,11 @@
-//! New kimo versions: the latest GitHub release (checked at most every 6 hours, only when a
-//! window or app asks) and installing it over this kimo's own binary.
+//! New kimo versions: the latest GitHub release (checked every hour in the background, with a
+//! system notification once per version), installing it over this kimo's own binary, and
+//! updating by itself when the settings say so and no agent is working.
 
-use crate::core::update::{asset_name, is_newer, parse_release, parse_sha256};
+use crate::core::activity::Activity;
+use crate::core::update::{asset_name, offer, parse_release, parse_sha256};
 use crate::services::network::run_for;
+use crate::services::sessions::Manager;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -11,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const REPO: &str = "vallverdu/kimo";
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 3600);
+const CHECK_EVERY: Duration = Duration::from_secs(3600);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Release {
@@ -20,6 +23,11 @@ pub struct Release {
     /// The latest published version (`v0.1.2`), when known.
     pub latest: Option<String>,
     pub available: bool,
+    /// The version of kimo's binary on disk, when it differs from the running one (after an
+    /// update or the install script, until kimo restarts).
+    pub installed: Option<String>,
+    /// A newer kimo is installed: restarting runs it.
+    pub restart: bool,
     /// The release page (notes).
     pub url: Option<String>,
     pub notes: String,
@@ -99,14 +107,63 @@ fn curl(args: &[&str], limit: Duration) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-/// The latest release (cached for 6 hours; `force` asks GitHub again).
-pub fn check(force: bool) -> Release {
-    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((at, release)) = last.as_ref() {
-        if !force && at.elapsed() < CHECK_EVERY {
-            return release.clone();
+/// The version a kimo binary reports (`kimo 0.1.6`).
+pub fn version_of(binary: &Path) -> Option<String> {
+    let out = run_for(
+        Command::new(binary).arg("--version"),
+        Duration::from_secs(10),
+    )
+    .ok()
+    .filter(|o| o.status.success())?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.split_whitespace().nth(1).map(String::from)
+}
+
+/// The version of this kimo's binary on disk (asked again only when the file changes).
+fn installed() -> Option<String> {
+    static SEEN: Mutex<Option<(std::time::SystemTime, Option<String>)>> = Mutex::new(None);
+    let exe = exe().ok()?;
+    let modified = std::fs::metadata(&exe).and_then(|m| m.modified()).ok()?;
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, version)) = seen.as_ref() {
+        if *at == modified {
+            return version.clone();
         }
     }
+    let version = version_of(&exe);
+    *seen = Some((modified, version.clone()));
+    version
+}
+
+/// The latest release (asked every hour; `force` asks GitHub again now).
+pub fn check(force: bool) -> Release {
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    let fresh = last
+        .as_ref()
+        .filter(|(at, _)| !force && at.elapsed() < CHECK_EVERY)
+        .map(|(_, r)| r.clone());
+    let mut release = match fresh {
+        Some(r) => r,
+        None => {
+            let r = fetch();
+            *last = Some((Instant::now(), r.clone()));
+            r
+        }
+    };
+    drop(last);
+    let installed = installed();
+    let (available, restart) = offer(
+        release.latest.as_deref(),
+        &release.current,
+        installed.as_deref(),
+    );
+    release.available = available;
+    release.restart = restart;
+    release.installed = installed.filter(|_| restart);
+    release
+}
+
+fn fetch() -> Release {
     let current = env!("CARGO_PKG_VERSION").to_string();
     let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let found = curl(
@@ -122,12 +179,14 @@ pub fn check(force: bool) -> Release {
     .and_then(|body| {
         parse_release(&String::from_utf8_lossy(&body)).ok_or_else(|| anyhow!("no release found"))
     });
-    let release = match found {
+    match found {
         Ok((tag, url, notes)) => Release {
-            available: is_newer(&tag, &current),
             manual: manual_reason(),
             current,
             latest: Some(tag),
+            available: false,
+            installed: None,
+            restart: false,
             url: Some(url).filter(|u| !u.is_empty()),
             notes,
             error: None,
@@ -136,14 +195,65 @@ pub fn check(force: bool) -> Release {
             current,
             latest: None,
             available: false,
+            installed: None,
+            restart: false,
             url: None,
             notes: String::new(),
             manual: None,
             error: Some(format!("{e:#}")),
         },
+    }
+}
+
+/// In the background, for as long as the server runs: tell the person about new versions
+/// (once each) and, when the settings say so, update and restart while no agent is working.
+pub fn watch(manager: std::sync::Arc<Manager>) {
+    let seen_file = manager.cfg.data_dir.join("update-notified");
+    std::thread::sleep(Duration::from_secs(30));
+    loop {
+        let release = check(false);
+        let settings = manager.settings().updates;
+        if let Some(latest) = release.latest.as_deref().filter(|_| release.available) {
+            let told = std::fs::read_to_string(&seen_file).unwrap_or_default();
+            if settings.notify && !settings.auto && told.trim() != latest {
+                crate::services::notify::system(
+                    &format!("kimo {latest} is ready"),
+                    "Open kimo and click Update: running agents continue their conversations.",
+                );
+                let _ = std::fs::write(&seen_file, latest);
+            }
+        }
+        let wanted = release.restart || (release.available && release.manual.is_none());
+        let working = manager
+            .sessions()
+            .iter()
+            .any(|s| s.activity == Some(Activity::Working));
+        if settings.auto && wanted && !working {
+            match update_by_itself(&manager, &release) {
+                Ok(version) => {
+                    crate::services::notify::system(
+                        &format!("kimo updated to {version}"),
+                        "Running agents restarted and continue their conversations.",
+                    );
+                    return;
+                }
+                Err(e) => tracing::warn!("cannot update kimo by itself: {e:#}"),
+            }
+        }
+        // Often enough to catch a quiet moment; GitHub is asked at most every hour.
+        std::thread::sleep(Duration::from_secs(if settings.auto { 120 } else { 600 }));
+    }
+}
+
+fn update_by_itself(manager: &Manager, release: &Release) -> Result<String> {
+    let version = if release.available {
+        install(&manager.cfg.data_dir)?
+    } else {
+        release.installed.clone().unwrap_or_default()
     };
-    *last = Some((Instant::now(), release.clone()));
-    release
+    tracing::info!("updating by itself to kimo {version}: restarting");
+    manager.request_restart()?;
+    Ok(version)
 }
 
 fn sha256(file: &Path) -> Result<String> {
@@ -171,6 +281,12 @@ pub fn install(data_dir: &Path) -> Result<String> {
         .clone()
         .ok_or_else(|| anyhow!(release.error.clone().unwrap_or_default()))?;
     if !release.available {
+        if release.restart {
+            bail!(
+                "kimo {} is installed already: restart kimo to use it",
+                release.installed.unwrap_or_default()
+            );
+        }
         bail!("kimo {} is the latest version", release.current);
     }
     if let Some(reason) = release.manual {
@@ -205,14 +321,8 @@ pub fn install(data_dir: &Path) -> Result<String> {
         bail!("cannot unpack the release");
     }
     let new = work.join(&name).join("kimo");
-    let version = run_for(Command::new(&new).arg("--version"), Duration::from_secs(10))
-        .ok()
-        .filter(|o| o.status.success())
-        .ok_or_else(|| anyhow!("the new kimo does not run on this machine"))?;
-    let version = String::from_utf8_lossy(&version.stdout)
-        .trim()
-        .trim_start_matches("kimo ")
-        .to_string();
+    let version =
+        version_of(&new).ok_or_else(|| anyhow!("the new kimo does not run on this machine"))?;
     // Copy next to the binary, then rename over it: running processes keep the old file.
     let staged = exe.with_file_name(".kimo-update");
     std::fs::copy(&new, &staged).with_context(|| format!("writing {}", staged.display()))?;

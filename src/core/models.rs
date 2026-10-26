@@ -250,8 +250,29 @@ pub struct Settings {
     /// once to read Claude's login from the Keychain, so it waits for a yes there.
     #[serde(default = "claude_limits_default")]
     pub claude_limits: bool,
+    #[serde(default)]
+    pub updates: UpdateSettings,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// New kimo versions.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpdateSettings {
+    /// A system notification when a new version is out (once per version).
+    #[serde(default = "yes")]
+    pub notify: bool,
+    /// Install new versions and restart by itself, when no agent is working.
+    #[serde(default)]
+    pub auto: bool,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("every update setting has a default")
+    }
 }
 
 impl Default for Settings {
@@ -417,5 +438,14 @@ mod tests {
         let back = serde_json::to_value(&state).unwrap();
         assert_eq!(back["version"], 3);
         assert_eq!(back["sessions"][0]["pinned"], true);
+    }
+
+    #[test]
+    fn updates_notify_but_do_not_install_by_default() {
+        let settings = Settings::default();
+        assert!(settings.updates.notify);
+        assert!(!settings.updates.auto);
+        let older: Settings = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert_eq!(older.updates, UpdateSettings::default());
     }
 }

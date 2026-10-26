@@ -1,5 +1,5 @@
 // App shell: network first, cached copy when offline. The API is never cached.
-const CACHE = 'kimo-v3';
+const CACHE = 'kimo-v4';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {

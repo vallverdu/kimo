@@ -60,7 +60,8 @@ and gives you, and the agents themselves, the controls for that.
 - **Skills and settings.** See and manage your agents' skills (install from GitHub, a git URL
   or a folder); set permissions, model and arguments per agent; save quick commands.
 - **Light or dark, always current.** Dark mode for the window and the phone; kimo tells you
-  when a new version is out and updates itself in one click.
+  when a new version is out (a notification, a card in the window, a banner on the phone) and
+  updates in one click, or by itself when no agent is working (Settings → Updates).
 - **Light.** One binary. The server uses about 10 MB of memory; the agents are what you pay for.
 
 ## Install

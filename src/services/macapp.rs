@@ -3,6 +3,7 @@
 
 use crate::core::update::is_newer;
 use crate::services::network::run_for;
+use crate::services::update::version_of;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -50,17 +51,6 @@ pub fn app_path(user_home: &Path) -> PathBuf {
     } else {
         user_home.join("Applications").join("kimo.app")
     }
-}
-
-/// The version a kimo binary reports (`kimo 0.1.6`).
-fn version_of(binary: &Path) -> Option<String> {
-    let out = run_for(
-        Command::new(binary).arg("--version"),
-        Duration::from_secs(10),
-    )
-    .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    text.split_whitespace().nth(1).map(String::from)
 }
 
 /// Copy a binary over `to` without ever leaving a half-written file there.
@@ -115,27 +105,43 @@ pub fn ensure(user_home: &Path) {
     if exe.components().any(|c| c.as_os_str() == "target") {
         return;
     }
-    let current = env!("CARGO_PKG_VERSION");
     let app_bin = app_path(user_home).join("Contents/MacOS/kimo");
     let cli = user_home.join(".local/bin/kimo");
-    let stale = |copy: &Path| -> bool {
-        if copy.canonicalize().ok().as_deref() == Some(exe.as_path()) {
-            return false;
+    // The newest of this kimo, the app's and the command's (the install script updates only
+    // the command when the app is not running).
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let mut newest = (exe.clone(), current.clone());
+    let mut versions = Vec::new();
+    for copy in [&app_bin, &cli] {
+        let running = copy.canonicalize().ok().as_deref() == Some(exe.as_path());
+        let version = if running {
+            Some(current.clone())
+        } else {
+            version_of(copy)
+        };
+        if let Some(v) = &version {
+            if is_newer(v, &newest.1) {
+                newest = (copy.clone(), v.clone());
+            }
         }
-        match version_of(copy) {
-            Some(v) => is_newer(current, &v),
-            None => true,
-        }
-    };
-    if !app_bin.exists() || stale(&app_bin) {
-        match install(&exe, user_home) {
-            Ok(app) => tracing::info!("kimo app ready at {}", app.display()),
-            Err(e) => tracing::warn!("cannot set up kimo.app: {e:#}"),
-        }
+        versions.push((copy.clone(), version));
     }
-    if cli.exists() && stale(&cli) {
-        if let Err(e) = copy_binary(&exe, &cli) {
-            tracing::warn!("cannot update {}: {e:#}", cli.display());
+    let (source, version) = newest;
+    for (copy, have) in versions {
+        let behind = have.as_deref().is_none_or(|v| is_newer(&version, v));
+        let is_app = copy == app_bin;
+        if copy == source || !behind {
+            continue;
+        }
+        if is_app {
+            match install(&source, user_home) {
+                Ok(app) => tracing::info!("kimo app at {version} in {}", app.display()),
+                Err(e) => tracing::warn!("cannot set up kimo.app: {e:#}"),
+            }
+        } else if copy.exists() {
+            if let Err(e) = copy_binary(&source, &copy) {
+                tracing::warn!("cannot update {}: {e:#}", copy.display());
+            }
         }
     }
 }

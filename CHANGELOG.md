@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.7
+
+- Updates: kimo checks for new versions every hour and says so once with a system
+  notification, a bounce of the Dock icon, the card in the window and a banner on the phone.
+  Closing the card leaves an *Update* button in the top bar. Settings → Updates: notify, or
+  update by itself when no agent is working.
+- A kimo server older than the window (left running from before an update or the install
+  script) is offered a one-click restart onto the new version; servers before 0.1.2, which
+  cannot restart themselves, are replaced and their running agents started again.
+- The window and the phone app follow their server: when it runs a newer kimo (updated from
+  the phone, by itself or by the install script) the window restarts on it and the phone app
+  reloads.
+- The Mac app and `~/.local/bin/kimo` both move to whichever of them is newest.
+- `/api/update` says `restart` and `installed` when a newer kimo is on disk but not running.
+
 ## 0.1.6
 
 - Mac app: kimo puts `kimo.app` in Applications (Dock, Launchpad, Spotlight) and keeps it and

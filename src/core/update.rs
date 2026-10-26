@@ -17,6 +17,15 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     matches!((parse(latest), parse(current)), (Some(l), Some(c)) if l > c)
 }
 
+/// What a kimo running `current`, whose binary on disk is now `installed` (a newer one is
+/// there after an update or the install script, until kimo restarts), should offer:
+/// `(available, restart)` = a newer release to download, a restart to run the installed one.
+pub fn offer(latest: Option<&str>, current: &str, installed: Option<&str>) -> (bool, bool) {
+    let restart = installed.is_some_and(|i| is_newer(i, current));
+    let on_disk = installed.filter(|_| restart).unwrap_or(current);
+    (latest.is_some_and(|l| is_newer(l, on_disk)), restart)
+}
+
 /// The release archive for a machine (`kimo-aarch64-apple-darwin`), as the release workflow
 /// and install.sh name it; `None` where kimo publishes no build.
 pub fn asset_name(os: &str, arch: &str, window: bool) -> Option<String> {
@@ -64,6 +73,23 @@ mod tests {
         assert!(!is_newer("v0.1.0", "0.1.1"));
         assert!(!is_newer("nightly", "0.1.1"));
         assert!(!is_newer("v0.1.1-rc1", "0.1.1"));
+    }
+
+    #[test]
+    fn what_to_offer() {
+        assert_eq!(offer(Some("v0.1.7"), "0.1.6", Some("0.1.6")), (true, false));
+        assert_eq!(
+            offer(Some("v0.1.6"), "0.1.6", Some("0.1.6")),
+            (false, false)
+        );
+        // Installed but still running the old one: restart, nothing to download.
+        assert_eq!(offer(Some("v0.1.7"), "0.1.1", Some("0.1.7")), (false, true));
+        assert_eq!(offer(Some("v0.1.8"), "0.1.1", Some("0.1.7")), (true, true));
+        // Unknown latest or binary.
+        assert_eq!(offer(None, "0.1.6", Some("0.1.7")), (false, true));
+        assert_eq!(offer(Some("v0.1.7"), "0.1.6", None), (true, false));
+        // A binary older than the running one (a build replaced it) is not offered.
+        assert_eq!(offer(Some("v0.1.7"), "0.1.6", Some("0.1.5")), (true, false));
     }
 
     #[test]

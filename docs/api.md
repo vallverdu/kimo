@@ -89,7 +89,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | POST | `/skills` | install `{source, skill?, agents, project?, replace?}` from `owner/repo/folder`, a git URL or a folder |
 | DELETE | `/skills?path=` | remove (moved to `~/.kimo/skill-backups`) |
 | POST | `/skills/kimo` | install the bundled `kimo-agents` skill `{agents?}` |
-| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]`, `theme: system \| light \| dark` (window and web client) |
+| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]`, `theme: system \| light \| dark` (window and web client), `updates.{notify, auto}` (a system notification once per new version; installing and restarting by itself when no agent is working) |
 | GET | `/agents` | agent CLIs found on the machine, with versions |
 
 ## Devices, network, other kimos
@@ -113,7 +113,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 
 | Method | Path | |
 |---|---|---|
-| GET | `/update?force=` | the latest release on GitHub (checked at most every 6 hours, only when asked): `{current, latest, available, url, notes, manual, error}`; `manual` says why kimo cannot install it itself (built from source, a folder you cannot write) |
+| GET | `/update?force=` | the latest release on GitHub (kimo checks every hour in the background): `{current, latest, available, installed, restart, url, notes, manual, error}`; `restart` means a newer kimo (`installed`) is on disk already, put there by an update or the install script, and restarting runs it; `available` is a newer release still to download; `manual` says why kimo cannot install it itself (built from source, a folder you cannot write) |
 | POST | `/update` | download the release for this machine, check its SHA-256 and put it in place of kimo's binary → `{installed}` |
 | POST | `/update/restart` | restart kimo on the installed version (same process); sessions running now start again, continuing their conversations, once it is back |
 

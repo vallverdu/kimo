@@ -27,6 +27,9 @@
 - [ ] `kimo install` (service + launcher + icon in one command).
 - [ ] Lower the window's idle cost: repaint only when shown values change (usage updates arrive every 2 s), measure on a GPU desktop.
 - [ ] Desktop notifications when an agent needs you or finishes.
+- [x] Update notifications (system notification, Dock bounce, card, top-bar button, phone banner) and updating by itself when idle.
+- [x] Restart a kimo server older than the window (including servers before 0.1.2) in one click.
+- [ ] Click a system notification to open kimo (osascript notifications open Script Editor; needs a notifying helper inside kimo.app).
 - [x] Host switcher: every paired kimo in one window (projects, sessions, terminals, settings).
 
 ## Core Terminal Management

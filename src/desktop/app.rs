@@ -5,6 +5,7 @@ use super::terminal::TerminalView;
 use super::theme::{self, dot, primary, section};
 use crate::client::Client;
 use crate::core::models::{Permissions, QuickCommand, Settings, Theme};
+use crate::core::update::is_newer;
 use anyhow::Result;
 use eframe::egui;
 use eframe::egui::{Align2, Color32, RichText, Ui};
@@ -58,8 +59,10 @@ enum Msg {
     Memory(Value),
     /// What a session's memory is made of: (session id, parts).
     Parts(String, Value),
-    /// The new kimo is installed and the server restarted on it: restart the window too.
-    Restart,
+    /// This machine's kimo server version (`/status`), to follow it after updates.
+    LocalVersion(String),
+    /// The kimo server restarted (after an update): its version now.
+    ServerRestarted(String),
     /// An update step failed.
     UpdateFailed(String),
     Error(String),
@@ -271,9 +274,32 @@ pub struct KimoApp {
     /// Memory breakdown shown under the toolbar: (session id, parts).
     parts: Option<(String, Value)>,
     last_release: Instant,
-    /// The version whose update card was closed.
+    /// The update card that was closed (`update:0.1.7`, `restart:0.1.7`, `behind:0.1.1`).
     dismissed: Option<String>,
     updating: Updating,
+    /// This machine's kimo server version, as it last answered.
+    server_version: Option<String>,
+    /// The update the Dock icon already bounced for.
+    attention_for: Option<String>,
+    /// The server version this window already tried to restart onto.
+    followed: Option<String>,
+}
+
+/// What the update card offers.
+#[derive(Clone, PartialEq)]
+enum Offer {
+    /// A newer release to download and install.
+    Install,
+    /// A newer kimo is on disk already: restarting the server runs it.
+    Restart,
+}
+
+/// An update the card shows: its key (closing it hides that one), title, text and action.
+struct Pending {
+    key: String,
+    title: &'static str,
+    text: String,
+    offer: Offer,
 }
 
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -460,9 +486,12 @@ impl KimoApp {
             seen_freed: None,
             parts: None,
             // The first check a few seconds after start, then every 6 hours.
-            last_release: Instant::now() - Duration::from_secs(6 * 3600 - 5),
+            last_release: Instant::now() - Duration::from_secs(600 - 5),
             dismissed: None,
             updating: Updating::Idle,
+            server_version: None,
+            attention_for: None,
+            followed: None,
         };
         app.job(|c| Ok(Msg::Settings(Box::new(c.get("/settings")?))));
         app
@@ -749,7 +778,17 @@ impl KimoApp {
                     self.refresh_view();
                 }
                 Msg::Note(t) => self.toast(t, false),
-                Msg::Release(v) => self.release = v,
+                Msg::Release(v) => {
+                    self.release = v;
+                    self.ask_attention();
+                }
+                Msg::LocalVersion(v) => self.follow_server(v),
+                Msg::ServerRestarted(v) => {
+                    self.updating = Updating::Idle;
+                    self.toast(format!("kimo {v} is running"), false);
+                    self.local_job(|c| Ok(Msg::Release(c.get("/update")?)));
+                    self.follow_server(v);
+                }
                 Msg::Memory(v) => {
                     // Announce agents kimo stopped to free memory since the last report.
                     let freed = v["freed"].as_array().cloned().unwrap_or_default();
@@ -786,7 +825,6 @@ impl KimoApp {
                     self.memory = v;
                 }
                 Msg::Parts(id, v) => self.parts = Some((id, v)),
-                Msg::Restart => restart_window(),
                 Msg::UpdateFailed(e) => {
                     self.updating = Updating::Idle;
                     self.toast(e, true);
@@ -833,14 +871,22 @@ impl KimoApp {
         if self.last_hosts.elapsed() > Duration::from_secs(15) {
             self.last_hosts = Instant::now();
             self.local_job(|c| Ok(Msg::Hosts(c.get("/peers/keys")?)));
+            if self.updating == Updating::Idle {
+                self.local_job(|c| {
+                    let st: Value = c.get("/status")?;
+                    Ok(Msg::LocalVersion(s(&st, "version").to_string()))
+                });
+            }
         }
         if self.last_projects.elapsed() > Duration::from_secs(10) {
             self.last_projects = Instant::now();
             self.job(|c| Ok(Msg::Projects(c.get("/projects")?)));
         }
-        if self.last_release.elapsed() > Duration::from_secs(6 * 3600) {
+        // The server asks GitHub every hour; this only reads its answer.
+        if self.last_release.elapsed() > Duration::from_secs(600) {
             self.last_release = Instant::now();
-            self.local_job(|c| Ok(Msg::Release(c.get("/update")?)));
+            // Servers older than 0.1.2 have no /update: the version check covers them.
+            self.local_job(|c| Ok(Msg::Release(c.get("/update").unwrap_or(Value::Null))));
         }
         // Wake up only for the next status poll; live data (events, terminal output) repaints by itself.
         self.ctx.request_repaint_after(Duration::from_secs(3));
@@ -1004,6 +1050,26 @@ impl KimoApp {
                 }
             }
             ui.spacing_mut().item_spacing.x = 8.0;
+            // An update stays one click away after its card was closed.
+            if let Some(p) = self.pending_update() {
+                if self.dismissed.as_deref() == Some(p.key.as_str()) {
+                    ui.add_space(8.0);
+                    let label = match p.offer {
+                        Offer::Install => "↑ Update",
+                        Offer::Restart => "↻ Restart to update",
+                    };
+                    let button = egui::Button::new(
+                        RichText::new(label).size(12.5).color(theme::background()),
+                    )
+                    .fill(theme::teal())
+                    .stroke(egui::Stroke::new(1.0, theme::teal()))
+                    .corner_radius(6)
+                    .min_size(egui::vec2(0.0, 28.0));
+                    if ui.add(button).on_hover_text(&p.text).clicked() {
+                        self.dismissed = None;
+                    }
+                }
+            }
             let waiting: Vec<Value> = self
                 .sessions()
                 .into_iter()
@@ -2224,6 +2290,7 @@ impl KimoApp {
         };
         let mut save = false;
         let mut new_theme = None;
+        let mut check_now = false;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             section(ui, "Appearance");
             ui.horizontal(|ui| {
@@ -2291,6 +2358,16 @@ impl KimoApp {
                 ui.label("as heavy");
             });
             ui.label(RichText::new("Only Claude and Codex agents waiting at their prompt are stopped, never working ones, ones asking you something or shells; they continue their conversation when you open them. Most of an agent's memory is often its MCP servers: click an agent's memory figure to see.").size(11.0).color(theme::muted()));
+            section(ui, "Updates");
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("kimo {}", s(&self.status, "version"))).color(theme::ink()));
+                if self.current == 0 && ui.small_button("check now").clicked() {
+                    check_now = true;
+                }
+            });
+            ui.checkbox(&mut settings.updates.notify, "notify me when a new version is out");
+            ui.checkbox(&mut settings.updates.auto, "update by itself (when no agent is working)");
+            ui.label(RichText::new("kimo checks for new versions every hour. Updating restarts running agents; they continue their conversations.").size(11.0).color(theme::muted()));
             section(ui, "Quick commands");
             ui.label(RichText::new("Saved prompts and commands, sent to the open terminal with one click (also on your phone).").size(11.0).color(theme::muted()));
             let mut drop = None;
@@ -2313,6 +2390,22 @@ impl KimoApp {
             save = primary(ui, "save settings").clicked();
         });
         let body = save.then(|| serde_json::to_value(&*settings).unwrap_or(Value::Null));
+        if check_now {
+            self.dismissed = None;
+            self.local_job(|c| {
+                let r: Value = c.get("/update?force=true")?;
+                if let Some(e) = r["error"].as_str() {
+                    return Ok(Msg::Error(format!("cannot check for updates: {e}")));
+                }
+                if r["available"] != true && r["restart"] != true {
+                    return Ok(Msg::Note(format!(
+                        "kimo {} is the latest version",
+                        s(&r, "current")
+                    )));
+                }
+                Ok(Msg::Release(r))
+            });
+        }
         if let Some(value) = new_theme {
             // Only the theme is saved here; other edits wait for "save settings".
             if self.current == 0 {
@@ -3158,18 +3251,93 @@ impl KimoApp {
         }
     }
 
-    fn update_card(&mut self, ctx: &egui::Context) {
+    /// The update to offer, if any: this machine's server behind this window, a newer kimo
+    /// installed but not running yet, or a new release.
+    fn pending_update(&self) -> Option<Pending> {
+        let own = env!("CARGO_PKG_VERSION");
         let r = &self.release;
-        let Some(latest) = r["latest"].as_str().map(String::from) else {
+        if let Some(v) = self.server_version.as_deref().filter(|v| is_newer(own, v)) {
+            return Some(Pending {
+                key: format!("behind:{v}"),
+                title: "Restart kimo",
+                text: format!("kimo {own} is installed, but the kimo server still runs {v}."),
+                offer: Offer::Restart,
+            });
+        }
+        if r["restart"] == true {
+            let installed = s(r, "installed");
+            return Some(Pending {
+                key: format!("restart:{installed}"),
+                title: "Restart to update",
+                text: format!("kimo {installed} is installed."),
+                offer: Offer::Restart,
+            });
+        }
+        let latest = r["latest"].as_str().filter(|_| r["available"] == true)?;
+        Some(Pending {
+            key: format!("update:{latest}"),
+            title: "Update available",
+            text: format!("kimo {latest} is ready."),
+            offer: Offer::Install,
+        })
+    }
+
+    /// Bounce the Dock icon (or flash the taskbar) once per new update.
+    fn ask_attention(&mut self) {
+        let Some(p) = self.pending_update() else {
             return;
         };
-        if r["available"] != true || self.dismissed.as_deref() == Some(latest.as_str()) {
+        if self.attention_for.as_deref() != Some(p.key.as_str()) {
+            self.attention_for = Some(p.key);
+            self.ctx
+                .send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                    egui::UserAttentionType::Informational,
+                ));
+        }
+    }
+
+    /// This machine's server answered with its version: when it runs a newer kimo (updated
+    /// from a phone, by itself or by the install script) the window restarts on it too, once
+    /// its own binary is that new.
+    fn follow_server(&mut self, version: String) {
+        if version.is_empty() {
             return;
         }
-        let manual = r["manual"].as_str().map(String::from);
-        let url = r["url"].as_str().map(String::from);
-        let mut close = false;
-        let mut update = false;
+        let own = env!("CARGO_PKG_VERSION");
+        if is_newer(&version, own) && self.followed.as_deref() != Some(version.as_str()) {
+            self.followed = Some(version.clone());
+            let on_disk = super::EXE
+                .get()
+                .and_then(|exe| crate::services::update::version_of(exe));
+            if on_disk.is_some_and(|d| is_newer(&d, own)) {
+                restart_window();
+            }
+        }
+        self.server_version = Some(version);
+        self.ask_attention();
+    }
+
+    /// "Update available" card (bottom right), like Orca's: one click updates or restarts.
+    fn update_card(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_update() else {
+            return;
+        };
+        if self.dismissed.as_deref() == Some(pending.key.as_str()) {
+            return;
+        }
+        let r = &self.release;
+        let manual = r["manual"]
+            .as_str()
+            .filter(|_| pending.offer == Offer::Install)
+            .map(String::from);
+        let url = r["url"]
+            .as_str()
+            .filter(|_| pending.key.starts_with("update:"))
+            .map(String::from);
+        let auto = (self.current == 0)
+            .then(|| self.settings.as_ref().map(|st| st.updates.auto))
+            .flatten();
+        let (mut close, mut go, mut set_auto) = (false, false, None);
         egui::Area::new(egui::Id::unique("update-card"))
             .anchor(Align2::RIGHT_BOTTOM, [-16.0, -40.0])
             .order(egui::Order::Foreground)
@@ -3184,7 +3352,7 @@ impl KimoApp {
                         ui.set_width(300.0);
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new("Update available")
+                                RichText::new(pending.title)
                                     .size(15.0)
                                     .strong()
                                     .color(theme::ink()),
@@ -3199,17 +3367,13 @@ impl KimoApp {
                                             )
                                             .frame(false),
                                         )
-                                        .on_hover_text("later")
+                                        .on_hover_text("later (Update stays in the top bar)")
                                         .clicked();
                                 },
                             );
                         });
                         ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(format!("kimo {latest} is ready."))
-                                .size(13.5)
-                                .color(theme::text()),
-                        );
+                        ui.label(RichText::new(&pending.text).size(13.5).color(theme::text()));
                         ui.label(
                             RichText::new(
                                 "Running agents restart and continue their conversations.",
@@ -3237,6 +3401,10 @@ impl KimoApp {
                                 });
                             }
                             (None, Updating::Idle) => {
+                                let label = match pending.offer {
+                                    Offer::Install => "Update",
+                                    Offer::Restart => "Restart",
+                                };
                                 let (rect, r) = ui.allocate_exact_size(
                                     egui::vec2(300.0, 34.0),
                                     egui::Sense::click(),
@@ -3250,38 +3418,86 @@ impl KimoApp {
                                 ui.painter().text(
                                     rect.center(),
                                     Align2::CENTER_CENTER,
-                                    "Update",
+                                    label,
                                     egui::FontId::proportional(13.5),
                                     theme::background(),
                                 );
-                                update =
-                                    r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                                go = r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+                            }
+                        }
+                        if let Some(mut on) = auto.filter(|_| manual.is_none()) {
+                            ui.add_space(6.0);
+                            if ui
+                                .checkbox(
+                                    &mut on,
+                                    RichText::new("from now on, update by itself").size(11.5),
+                                )
+                                .on_hover_text("When no agent is working (Settings → Updates)")
+                                .changed()
+                            {
+                                set_auto = Some(on);
                             }
                         }
                     });
             });
         if close {
-            self.dismissed = Some(latest);
+            self.dismissed = Some(pending.key);
         }
-        if update {
-            self.updating = Updating::Busy("Downloading…");
-            let (client, tx, ctx) = (
-                self.hosts[0].client.clone(),
-                self.tx.clone(),
-                self.ctx.clone(),
-            );
-            std::thread::spawn(move || {
-                let msg = match install_and_restart(&client) {
-                    Ok(()) => Msg::Restart,
-                    Err(e) => Msg::UpdateFailed(format!("Update failed: {e}")),
-                };
-                let _ = tx.send(msg);
-                ctx.request_repaint();
+        if let Some(on) = set_auto {
+            if let Some(st) = self.settings.as_mut() {
+                st.updates.auto = on;
+            }
+            self.local_job(move |c| {
+                let mut current: Value = c.get("/settings")?;
+                current["updates"]["auto"] = json!(on);
+                c.put("/settings", current)?;
+                Ok(Msg::Note(if on {
+                    "kimo will update by itself when no agent is working".into()
+                } else {
+                    "kimo will ask before updating".into()
+                }))
             });
+        }
+        if go {
+            self.start_update(pending.offer);
         }
         if self.updating != Updating::Idle {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
+    }
+
+    /// Install the new release (or just restart onto the installed one), restart this
+    /// machine's server and then the window.
+    fn start_update(&mut self, offer: Offer) {
+        self.updating = Updating::Busy(match offer {
+            Offer::Install => "Downloading…",
+            Offer::Restart => "Restarting…",
+        });
+        let (client, tx, ctx) = (
+            self.hosts[0].client.clone(),
+            self.tx.clone(),
+            self.ctx.clone(),
+        );
+        let data_dir = self
+            .prefs
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        std::thread::spawn(move || {
+            let done = (|| {
+                if offer == Offer::Install {
+                    // Downloading takes a while on a slow line.
+                    client.call_timeout("POST", "/update", Some(&json!({})), 900)?;
+                }
+                restart_server(&client, &data_dir)
+            })();
+            let msg = match done {
+                Ok(version) => Msg::ServerRestarted(version),
+                Err(e) => Msg::UpdateFailed(format!("Update failed: {e}")),
+            };
+            let _ = tx.send(msg);
+            ctx.request_repaint();
+        });
     }
 
     /// Earlier conversations of a project, each one continuable.
@@ -3774,24 +3990,102 @@ fn open_url(url: &str) {
     reveal_folder(url);
 }
 
-/// Install the latest release, restart the server on it and wait until it answers again.
-fn install_and_restart(client: &Client) -> Result<()> {
-    // Downloading takes a while on a slow line.
-    client.call_timeout("POST", "/update", Some(&json!({})), 900)?;
-    client.post("/update/restart", json!({}))?;
+/// Restart this machine's kimo server on the kimo installed now and wait until it answers
+/// again; running agents continue their conversations. Returns its version.
+fn restart_server(client: &Client, data_dir: &Path) -> Result<String> {
+    let version = |c: &Client| -> Option<String> {
+        let st: Value = c.call_timeout("GET", "/status", None, 2).ok()?;
+        Some(s(&st, "version").to_string())
+    };
+    let before = version(client).unwrap_or_default();
+    let (status, _, _) = client.raw(
+        "POST",
+        "/update/restart",
+        b"{}".to_vec(),
+        Some("application/json"),
+        10,
+    )?;
+    if status == 404 {
+        // Before 0.1.2 kimo could not restart itself.
+        return replace_old_server(client, data_dir);
+    }
     // The old server stops its agents and execs the new binary: wait for it to go and return.
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut went_away = false;
     while Instant::now() < deadline {
-        let up = client.call_timeout("GET", "/status", None, 2).is_ok();
-        if !up {
-            went_away = true;
-        } else if went_away {
-            return Ok(());
+        match version(client) {
+            None => went_away = true,
+            Some(v) if went_away || v != before => return Ok(v),
+            Some(_) => {}
         }
         std::thread::sleep(Duration::from_millis(250));
     }
     anyhow::bail!("the new kimo server did not come back: see ~/.kimo/kimo.log")
+}
+
+/// A kimo server too old to restart itself: stop it (its agents stop) and start this kimo's
+/// server, then start again the agents that were running.
+fn replace_old_server(client: &Client, data_dir: &Path) -> Result<String> {
+    let port: u16 = client
+        .base()
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .ok_or_else(|| anyhow::anyhow!("cannot tell the server's port"))?;
+    let sessions: Vec<Value> = client.get("/sessions")?;
+    let running: Vec<String> = sessions
+        .iter()
+        .filter(|x| matches!(s(x, "status"), "running" | "paused"))
+        .map(|x| s(x, "id").to_string())
+        .collect();
+    let out = std::process::Command::new("lsof")
+        .args(["-nP", "-t", &format!("-iTCP:{port}"), "-sTCP:LISTEN"])
+        .output()?;
+    let pids: Vec<i32> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse().ok())
+        .collect();
+    let is_kimo = |pid: i32| {
+        std::process::Command::new("ps")
+            .args(["-o", "comm=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim().ends_with("kimo"))
+    };
+    let pid = pids
+        .into_iter()
+        .find(|p| is_kimo(*p))
+        .ok_or_else(|| anyhow::anyhow!("cannot find the kimo server on port {port}"))?;
+    // SAFETY: a plain signal to a process we just identified as the kimo server.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while client.call_timeout("GET", "/status", None, 1).is_ok() {
+        if Instant::now() > deadline {
+            anyhow::bail!("the old kimo server did not stop (pid {pid})");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    super::start_server(port, data_dir)?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let st: Value = loop {
+        if let Ok(st) = client.call_timeout("GET", "/status", None, 2) {
+            break st;
+        }
+        if Instant::now() > deadline {
+            anyhow::bail!("the new kimo server did not start: see ~/.kimo/kimo.log");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    for id in running {
+        if let Err(e) = client.post(
+            &format!("/sessions/{id}/action"),
+            json!({ "action": "start" }),
+        ) {
+            tracing::warn!("cannot start {id} again: {e:#}");
+        }
+    }
+    Ok(s(&st, "version").to_string())
 }
 
 /// Replace this window with the newly installed kimo (same arguments).
@@ -4051,6 +4345,8 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut app = KimoApp::new(ctx.clone(), client.clone(), tmp.path().join("window.json"));
+        // Releases are set by hand below (no GitHub in tests).
+        app.last_release = Instant::now();
         let mut frame = eframe::Frame::_new_kittest();
         let mut run = |app: &mut KimoApp, frames: usize| {
             let mut out = None;
@@ -4145,6 +4441,26 @@ mod tests {
                 assert!(!shown.iter().any(|t| t.contains("default claude login")));
             }
         }
+        // Updates: a new release, a newer kimo installed, a server behind this window.
+        app.last_hosts = Instant::now();
+        app.release = json!({
+            "current": env!("CARGO_PKG_VERSION"), "latest": "v99.0.0",
+            "available": true, "restart": false
+        });
+        let shown = run(&mut app, 3);
+        assert!(shown.iter().any(|t| t == "Update available"), "{shown:?}");
+        assert!(shown.iter().any(|t| t == "kimo v99.0.0 is ready."));
+        app.dismissed = app.pending_update().map(|p| p.key);
+        let shown = run(&mut app, 3);
+        assert!(!shown.iter().any(|t| t == "Update available"));
+        assert!(shown.iter().any(|t| t == "↑ Update"), "{shown:?}");
+        app.release = json!({ "restart": true, "installed": "99.0.0" });
+        assert!(run(&mut app, 3).iter().any(|t| t == "Restart to update"));
+        app.server_version = Some("0.0.1".into());
+        let shown = run(&mut app, 3);
+        assert!(shown.iter().any(|t| t == "Restart kimo"), "{shown:?}");
+        assert!(shown.iter().any(|t| t.contains("still runs 0.0.1")));
+
         let prefs: Value =
             serde_json::from_str(&std::fs::read_to_string(tmp.path().join("window.json")).unwrap())
                 .unwrap();

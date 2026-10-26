@@ -19,13 +19,17 @@ use std::time::{Duration, Instant};
 pub(crate) static EXE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Start `kimo serve` detached (its own session), logging to `~/.kimo/kimo.log`.
-fn start_server(port: u16, data_dir: &std::path::Path) -> Result<()> {
+pub(crate) fn start_server(port: u16, data_dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(data_dir)?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(data_dir.join("kimo.log"))?;
-    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    let exe = match EXE.get() {
+        Some(exe) => exe.clone(),
+        None => std::env::current_exe()?,
+    };
+    let mut cmd = std::process::Command::new(exe);
     cmd.args(["serve", "--port", &port.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)

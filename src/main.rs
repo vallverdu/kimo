@@ -143,6 +143,12 @@ async fn serve(cfg: Config) -> Result<()> {
         }
     });
 
+    // New versions: a notification once each, or updating by itself (Settings → Updates).
+    let watcher = manager.clone();
+    std::thread::Builder::new()
+        .name("kimo-updates".into())
+        .spawn(move || kimo::services::update::watch(watcher))?;
+
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, cfg.port))
         .await
         .with_context(|| {

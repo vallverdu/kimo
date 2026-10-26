@@ -80,21 +80,30 @@ function renderStats() {
   ].join('');
 }
 
-// A new kimo version: install it from here (running agents restart and continue).
+// A new kimo version: install it from here, or restart onto one installed already (running
+// agents restart and continue).
 function updateAlert() {
   const r = state.release;
-  if (!r?.available) return '';
-  const notes = r.url ? ` <a href="${esc(r.url)}" target="_blank" rel="noopener">release notes</a>` : '';
+  if (!r?.available && !r?.restart) return '';
+  const notes = r.available && r.url ? ` <a href="${esc(r.url)}" target="_blank" rel="noopener">release notes</a>` : '';
+  const auto = state.settings && !state.settings.updates?.auto && !(r.available && r.manual)
+    ? '<button class="ui-button k-small" data-do="auto-update">update by itself from now on</button>' : '';
+  const busy = state.updating ? `<span>${esc(state.updating)}</span>` : '';
+  if (r.restart && !r.available) {
+    return `<div class="ui-alert info"><span>kimo ${esc(r.installed)} is installed: restart kimo to use it. Running agents restart and continue their conversations.</span>
+      ${busy || `<button class="ui-button k-small" data-do="restart-kimo">restart</button>${auto}`}</div>`;
+  }
   if (r.manual) return `<div class="ui-alert info"><span>kimo ${esc(r.latest)} is ready.${notes} ${esc(r.manual)}.</span></div>`;
   return `<div class="ui-alert info"><span>kimo ${esc(r.latest)} is ready. Running agents restart and continue their conversations.${notes}</span>
-    ${state.updating ? `<span>${esc(state.updating)}</span>` : '<button class="ui-button k-small" data-do="update">update</button>'}</div>`;
+    ${busy || `<button class="ui-button k-small" data-do="update">update</button>${auto}`}</div>`;
 }
 
-async function installUpdate() {
-  state.updating = 'Downloading…';
+async function installUpdate(download = true) {
+  const before = state.release.current;
+  state.updating = download ? 'Downloading…' : 'Restarting…';
   render();
   try {
-    await api.installUpdate();
+    if (download) await api.installUpdate();
     state.updating = 'Restarting…';
     render();
     await api.restartKimo();
@@ -102,7 +111,7 @@ async function installUpdate() {
     for (let i = 0; i < 120; i++) {
       await new Promise(r => setTimeout(r, 1000));
       const s = await api.status().catch(() => null);
-      if (s && s.version !== state.release.current) return location.reload();
+      if (s && s.version !== before) return location.reload();
     }
     throw new Error('the new kimo did not come back: see ~/.kimo/kimo.log');
   } catch (e) {
@@ -110,6 +119,21 @@ async function installUpdate() {
     render();
     toast(e.message, true);
   }
+}
+
+async function updateByItself() {
+  try {
+    const st = await api.settings();
+    st.updates = { ...st.updates, auto: true };
+    state.settings = await api.saveSettings(st);
+    render();
+    toast('kimo will update by itself when no agent is working');
+  } catch (e) { toast(e.message, true); }
+}
+
+// New versions: the kimo checks every hour; read its answer now and then.
+function checkRelease() {
+  api.release().then(r => { state.release = r; render(); }).catch(() => {});
 }
 
 /** Light or dark, as chosen in Settings → Appearance (`system` follows the device). */
@@ -248,7 +272,7 @@ async function connect() {
   // Owner-only extras: the colour scheme, new versions, other kimos (app keys get a 403).
   api.settings().then(st => { state.settings = st; applyTheme(st.theme); renderAccounts(); }).catch(() => {});
   loadHosts();
-  api.release().then(r => { state.release = r; render(); }).catch(() => {});
+  checkRelease();
   unsubscribe = api.subscribe(({ sessions, accounts }) => {
     state.sessions = sessions;
     state.accounts = accounts;
@@ -289,6 +313,8 @@ addEventListener('hashchange', () => show(location.hash.slice(1)));
 
 $('alerts').addEventListener('click', e => {
   if (e.target.closest('[data-do=update]')) return installUpdate();
+  if (e.target.closest('[data-do=restart-kimo]')) return installUpdate(false);
+  if (e.target.closest('[data-do=auto-update]')) return updateByItself();
   if (e.target.closest('[data-do=free-memory]')) {
     return run(api.freeMemory(), r => `Stopped ${r.stopped.length} idle agent${r.stopped.length === 1 ? '' : 's'}: memory freed`).then(loadMemory);
   }
@@ -559,9 +585,21 @@ if (pairCode) {
 } else {
   connect();
 }
+// The kimo serving this page was updated (from the window, another phone or by itself):
+// reload to get its new web app.
+let servedBy = null;
+async function followUpdates() {
+  const local = api.host ? await api.forHost(null).status().catch(() => null) : state.status;
+  if (!local?.version) return;
+  if (servedBy && local.version !== servedBy) location.reload();
+  servedBy = local.version;
+}
 setInterval(async () => {
   if (document.visibilityState !== 'visible' || !unsubscribe) return;
   try { state.status = await api.status(); renderStats(); } catch { /* the event stream reports problems */ }
   loadMemory();
+  followUpdates();
 }, 5000);
+setInterval(() => { if (document.visibilityState === 'visible' && unsubscribe) checkRelease(); }, 30 * 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && unsubscribe) checkRelease(); });
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});

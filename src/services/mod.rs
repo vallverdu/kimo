@@ -7,6 +7,7 @@ pub mod history;
 pub mod macapp;
 pub mod memory;
 pub mod network;
+pub mod notify;
 pub mod peers;
 pub mod projects;
 pub mod sessions;
