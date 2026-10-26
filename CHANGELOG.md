@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.11
+
+- Terminals belong to projects: a terminal or agent started in a folder outside every project
+  makes that folder a project (not the home folder itself), and at start the folders of older
+  loose sessions become projects. The window's *+* shows inside a project only.
+- Removing a project ends its terminals and agents (window, phone, `DELETE /api/projects/{id}`
+  → `sessions_removed`); its folder stays, and conversations stay in the agents' history.
+- The app icon style changes the Dock icon at once (macOS), without restarting kimo.
+- No dark strip beside the projects panel when its content is wider than the panel.
+
 ## 0.1.10
 
 - The projects panel resizes between 250 points (its content still fits, no dark gap) and

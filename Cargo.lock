@@ -1682,7 +1682,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kimo"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -1693,6 +1693,9 @@ dependencies = [
  "futures-util",
  "libc",
  "mime_guess",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "png",
  "portable-pty",
  "qrcode",

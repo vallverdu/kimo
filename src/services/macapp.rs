@@ -84,6 +84,15 @@ pub fn install(exe: &Path, user_home: &Path) -> Result<PathBuf> {
     Ok(app)
 }
 
+/// The app icon (`.icns`) in its light or dark style.
+pub fn icns(dark: bool) -> &'static [u8] {
+    if dark {
+        ICON_DARK
+    } else {
+        ICON
+    }
+}
+
 /// The app icon's style, light or dark, in Applications (Finder, Launchpad, the Dock when
 /// kimo is not running). Nothing to do when kimo.app is not there.
 pub fn set_icon(user_home: &Path, dark: bool) -> Result<()> {
@@ -95,7 +104,7 @@ pub fn set_icon(user_home: &Path, dark: bool) -> Result<()> {
     if !icon.exists() {
         return Ok(());
     }
-    std::fs::write(&icon, if dark { ICON_DARK } else { ICON })?;
+    std::fs::write(&icon, icns(dark))?;
     // Finder and the Dock notice a changed icon when the bundle's date changes.
     let _ = run_for(Command::new("touch").arg(&app), Duration::from_secs(5));
     seal_and_register(&app);

@@ -1270,3 +1270,77 @@ async fn ports_and_keeping_awake_are_for_the_owner() {
         assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{path}");
     }
 }
+
+#[tokio::test]
+async fn terminals_belong_to_projects_and_go_with_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let site = tmp.path().join("home/site");
+    std::fs::create_dir_all(site.join("web")).unwrap();
+    let new_session = |name: &str, cwd: &std::path::Path| {
+        format!(
+            r#"{{"name":"{name}","kind":"shell","cwd":"{}","start":false}}"#,
+            cwd.display()
+        )
+    };
+    let call = |method: &str, path: &str, body: Option<String>| {
+        local(req(method, path, None, None, body.as_deref()))
+    };
+    // A terminal in a folder outside every project makes it a project; a subfolder joins it.
+    for (name, cwd) in [("one", site.clone()), ("two", site.join("web"))] {
+        let r = app
+            .clone()
+            .oneshot(call("POST", "/api/sessions", Some(new_session(name, &cwd))))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+    }
+    // The home folder itself does not become a project (it would hold all the others).
+    let home = app
+        .clone()
+        .oneshot(call(
+            "POST",
+            "/api/sessions",
+            Some(new_session("home", &tmp.path().join("home"))),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(home.status(), StatusCode::OK);
+    let projects = json(
+        app.clone()
+            .oneshot(call("GET", "/api/projects", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let projects = projects.as_array().unwrap();
+    assert_eq!(projects.len(), 1, "{projects:?}");
+    assert_eq!(projects[0]["name"], "site");
+    assert_eq!(projects[0]["sessions"], 2);
+
+    // Removing the project ends its terminals; the folder stays.
+    let id = projects[0]["id"].as_str().unwrap().to_string();
+    let removed = json(
+        app.clone()
+            .oneshot(call("DELETE", &format!("/api/projects/{id}"), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(removed["sessions_removed"], 2);
+    let sessions = json(
+        app.clone()
+            .oneshot(call("GET", "/api/sessions", None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let names: Vec<&str> = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    assert_eq!(names, vec!["home"]);
+    assert!(site.join("web").is_dir());
+}

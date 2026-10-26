@@ -182,6 +182,8 @@ async fn serve(cfg: Config) -> Result<()> {
             bound: ip,
         },
     );
+    // Terminals belong to projects: folders of older loose sessions become projects.
+    manager.adopt_loose_sessions();
     let resumed = manager.resume_after_restart();
     if resumed > 0 {
         println!("  continued {resumed} sessions that were running before the restart");

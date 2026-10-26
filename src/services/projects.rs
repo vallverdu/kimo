@@ -140,6 +140,17 @@ fn branch(path: &Path) -> Option<String> {
 
 /// The folder itself and the other worktrees of its repository, from the files git keeps in
 /// `.git/worktrees` (no git process: this runs on every project listing).
+/// A project's folders: its own and its git worktrees'.
+fn folders_of(project: &Project) -> Vec<String> {
+    let mut folders = vec![project.path.clone()];
+    folders.extend(
+        worktrees(Path::new(&project.path))
+            .into_iter()
+            .map(|w| w.path),
+    );
+    folders
+}
+
 fn worktrees(path: &Path) -> Vec<Worktree> {
     let Some(dir) = git_dir(path) else {
         return vec![];
@@ -382,7 +393,76 @@ impl Manager {
         })
     }
 
-    /// Forget a project. Its folder and files stay untouched.
+    /// Terminals always belong to a project: a folder outside every project (and its git
+    /// worktrees) becomes one, named after it. Not the home folder or `/`, which would hold
+    /// every other project.
+    pub fn adopt_folder(&self, cwd: &str) -> Result<()> {
+        let path = Path::new(cwd);
+        if path == self.cfg.user_home || path.parent().is_none() {
+            return Ok(());
+        }
+        let projects = self.lock().state.projects.clone();
+        if projects
+            .iter()
+            .any(|p| folders_of(p).iter().any(|f| path.starts_with(f)))
+        {
+            return Ok(());
+        }
+        let created = self.create_project(NewProject {
+            name: String::new(),
+            mode: ProjectMode::Existing,
+            path: Some(cwd.to_string()),
+            git: false,
+            url: None,
+            resume: false,
+        })?;
+        tracing::info!("{cwd} is now the project {}", created.project.name);
+        Ok(())
+    }
+
+    /// At start: the folders of sessions outside every project become projects (outer
+    /// folders first, so a subfolder joins its parent's project).
+    pub fn adopt_loose_sessions(&self) {
+        let mut cwds: Vec<String> = self
+            .lock()
+            .state
+            .sessions
+            .iter()
+            .filter(|s| !crate::core::launch::is_login(s))
+            .map(|s| s.cwd.clone())
+            .collect();
+        cwds.sort_by_key(|c| c.len());
+        cwds.dedup();
+        for cwd in cwds.iter().filter(|c| Path::new(c).is_dir()) {
+            if let Err(e) = self.adopt_folder(cwd) {
+                tracing::warn!("cannot make {cwd} a project: {e:#}");
+            }
+        }
+    }
+
+    /// The sessions working in a project's folders (its own and its worktrees').
+    pub fn sessions_of_project(&self, id: &str) -> Result<Vec<String>> {
+        let inner = self.lock();
+        let project = inner
+            .state
+            .projects
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown project: {id}"))?;
+        drop(inner);
+        let folders = folders_of(&project);
+        Ok(self
+            .lock()
+            .state
+            .sessions
+            .iter()
+            .filter(|s| folders.iter().any(|f| Path::new(&s.cwd).starts_with(f)))
+            .map(|s| s.id.clone())
+            .collect())
+    }
+
+    /// Forget a project (the API ends its sessions first). Its folder and files stay untouched.
     pub fn delete_project(&self, id: &str) -> Result<()> {
         let mut inner = self.lock();
         let before = inner.state.projects.len();

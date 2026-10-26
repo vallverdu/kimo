@@ -770,12 +770,20 @@ async fn create_project(
     Ok(Json(json!(created)))
 }
 
+/// Forget a project and end its terminals and agents (its folder stays; conversations stay
+/// in the agents' history).
 async fn delete_project(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    let sessions = app.manager.sessions_of_project(&id)?;
     app.manager.delete_project(&id)?;
-    Ok(Json(json!({ "ok": true })))
+    for s in &sessions {
+        app.manager.delete(s).await?;
+    }
+    Ok(Json(
+        json!({ "ok": true, "sessions_removed": sessions.len() }),
+    ))
 }
 
 async fn update_project(

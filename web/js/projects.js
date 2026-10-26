@@ -63,8 +63,8 @@ export function initProjects({ api, state, run, terminal }) {
     if (tree && confirm(`Remove the worktree ${shortPath(tree)}? git refuses if it has uncommitted changes; the branch stays.`)) {
       return run(api.removeWorktree(p.id, tree), 'Worktree removed');
     }
-    if (e.target.closest('[data-do=forget]') && confirm(`Forget "${p.name}"? Its folder and files stay on disk.`)) {
-      run(api.deleteProject(p.id), 'Project forgotten (files kept)');
+    if (e.target.closest('[data-do=forget]') && confirm(`Forget "${p.name}" and end its terminals and agents? Its folder and files stay on disk; conversations stay in the agents' history.`)) {
+      run(api.deleteProject(p.id), 'Project forgotten with its terminals (files kept)');
     }
   });
 

@@ -1466,7 +1466,7 @@ impl KimoApp {
         ui.add_space(4.0);
         let sessions = self.sessions();
         section(ui, "Projects");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let add = egui::Button::new(RichText::new("+ project").color(theme::background()))
                 .fill(theme::accent())
                 .stroke(egui::Stroke::new(1.0, theme::accent()));
@@ -1988,44 +1988,50 @@ impl KimoApp {
                         });
                     });
             }
-            let plus =
-                egui::Button::new(RichText::new("+").size(16.0).color(theme::ink())).frame(false);
-            egui::containers::menu::MenuButton::from_button(plus)
-                .ui(ui, |ui| {
-                    ui.set_min_width(190.0);
-                    let place = if label.is_empty() {
-                        "your home folder".to_string()
-                    } else {
-                        short_path(&new_cwd, 30)
-                    };
-                    ui.label(
-                        RichText::new(format!("in {place}"))
-                            .size(10.5)
-                            .color(theme::muted()),
-                    );
-                    for (kind, text) in [
-                        ("shell", "New terminal"),
-                        ("claude", "Claude"),
-                        ("codex", "Codex"),
-                    ] {
-                        let shortcut = (kind == "shell").then_some(if cfg!(target_os = "macos") {
-                            "⌘T"
+            // Terminals belong to a project: "+" only inside one.
+            if project.is_some() {
+                let plus = egui::Button::new(RichText::new("+").size(16.0).color(theme::ink()))
+                    .frame(false);
+                egui::containers::menu::MenuButton::from_button(plus)
+                    .ui(ui, |ui| {
+                        ui.set_min_width(190.0);
+                        let place = if label.is_empty() {
+                            "your home folder".to_string()
                         } else {
-                            "Ctrl+T"
-                        });
-                        let button = egui::Button::new(text).shortcut_text(shortcut.unwrap_or(""));
-                        if ui.add(button).clicked() {
-                            start = Some(kind);
-                            ui.close();
+                            short_path(&new_cwd, 30)
+                        };
+                        ui.label(
+                            RichText::new(format!("in {place}"))
+                                .size(10.5)
+                                .color(theme::muted()),
+                        );
+                        for (kind, text) in [
+                            ("shell", "New terminal"),
+                            ("claude", "Claude"),
+                            ("codex", "Codex"),
+                        ] {
+                            let shortcut =
+                                (kind == "shell").then_some(if cfg!(target_os = "macos") {
+                                    "⌘T"
+                                } else {
+                                    "Ctrl+T"
+                                });
+                            let button =
+                                egui::Button::new(text).shortcut_text(shortcut.unwrap_or(""));
+                            if ui.add(button).clicked() {
+                                start = Some(kind);
+                                ui.close();
+                            }
                         }
-                    }
-                })
-                .0
-                .on_hover_text("new terminal or agent in this project");
+                    })
+                    .0
+                    .on_hover_text("new terminal or agent in this project");
+            }
         });
-        if ui
-            .ctx()
-            .input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::T))
+        if project.is_some()
+            && ui
+                .ctx()
+                .input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::T))
         {
             start = Some("shell");
         }
@@ -2792,6 +2798,7 @@ impl KimoApp {
                 .send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(
                     super::window_icon(dark),
                 ))));
+            super::set_dock_icon(dark);
             std::thread::spawn(move || {
                 if let Err(e) = crate::services::macapp::set_icon(&crate::config::user_home(), dark)
                 {
@@ -3503,7 +3510,7 @@ impl KimoApp {
             ),
             Confirm::RemoveProject { name, .. } => (
                 format!("Remove {name}?"),
-                "kimo forgets the project. Its folder and files stay where they are, and its agents move to Other sessions.".to_string(),
+                "kimo forgets the project and ends its terminals and agents. Its folder and files stay where they are, and Claude and Codex conversations stay in their history.".to_string(),
             ),
             Confirm::RemoveWorktree { path, .. } => (
                 "Remove this worktree?".to_string(),
@@ -3540,9 +3547,20 @@ impl KimoApp {
                     });
                 }
                 Some(Confirm::RemoveProject { id, .. }) => {
-                    self.action("Project removed: its folder is untouched", move |c| {
-                        c.delete(&format!("/projects/{id}"))
-                    });
+                    self.project = None;
+                    // Its terminals end with it: their tabs go now.
+                    let ended: Vec<String> = self
+                        .sessions()
+                        .iter()
+                        .filter(|x| self.project_of(x).as_deref() == Some(id.as_str()))
+                        .map(|x| s(x, "id").to_string())
+                        .collect();
+                    self.terminals.retain(|t| !ended.contains(&t.session_id));
+                    self.active = self.active.min(self.terminals.len().saturating_sub(1));
+                    self.action(
+                        "Project removed with its terminals: its folder is untouched",
+                        move |c| c.delete(&format!("/projects/{id}")),
+                    );
                 }
                 Some(Confirm::RemoveWorktree { project, path }) => {
                     self.action("Worktree removed", move |c| {
@@ -4734,6 +4752,12 @@ fn qr(ui: &mut Ui, text: &str, size: f32) {
 }
 
 impl eframe::App for KimoApp {
+    /// Behind the panels: the projects panel's colour, so a panel content wider than its
+    /// width never leaves a dark strip next to it.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        theme::surface().to_normalized_gamma_f32()
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.handle_messages();
         self.poll();

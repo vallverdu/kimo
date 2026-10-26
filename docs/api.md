@@ -36,7 +36,7 @@ reaches a session on a paired kimo.
 | Method | Path | |
 |---|---|---|
 | GET | `/sessions` | list; `?all=1` adds the sessions of paired kimos |
-| POST | `/sessions` | create `{name, kind, cwd?, account?, args?, command?, start? = true}` |
+| POST | `/sessions` | create `{name, kind, cwd?, account?, args?, command?, start? = true}`; terminals belong to projects, so a `cwd` outside every project (and its worktrees) becomes a project named after the folder (not the home folder itself) |
 | GET, DELETE | `/sessions/{id}` | one session; delete (stops it first) |
 | POST | `/sessions/{id}/action` | `{action: start \| pause \| resume \| stop \| restart}` |
 | POST | `/sessions/{id}/account` | `{account: id \| null}`: switch subscription; a running agent restarts and continues its conversation |
@@ -60,7 +60,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | GET | `/projects` | list with `color`, `branch`, `exists`, `sessions`, `running` and `worktrees` (`[{path, branch, primary}]`, the project's folder first) |
 | POST | `/projects` | `{mode: new \| existing \| clone, name?, path?, git?, url?, resume? = true}` → `{project, session, continued, reopened}`: `session` is the clone terminal; `continued` are the folder's latest Claude and Codex conversations, continued as sessions (the first one started; sessions already attached to them are reused). Adding a folder that already is a project opens it: `reopened: true` |
 | PATCH | `/projects/{id}` | `{name?, color?}`: rename, or set the sidebar colour (`#rrggbb`, `""` for none) |
-| DELETE | `/projects/{id}` | forget (files stay) |
+| DELETE | `/projects/{id}` | forget it and end its terminals and agents → `{sessions_removed}`; files stay, conversations stay in the agents' history |
 | POST | `/projects/{id}/worktrees` | `{name, agent?: claude \| codex \| shell}` → `{worktree, session}`: `git worktree add` of branch `name` (made git-safe; an existing branch is checked out) in `~/.kimo/worktrees/<repository>/<branch>`, with an agent started in it |
 | DELETE | `/projects/{id}/worktrees?path=` | `git worktree remove` (refused with uncommitted changes, or while agents run there; the branch stays); its stopped sessions are removed → `{sessions_removed}` |
 | GET | `/fs?path=` | subfolders, for folder pickers |

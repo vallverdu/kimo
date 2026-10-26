@@ -426,6 +426,10 @@ impl Manager {
         if spec.kind == SessionKind::Claude && spec.command.is_none() {
             spec.conversation = Some(uuid::Uuid::new_v4().to_string());
         }
+        // Every terminal belongs to a project (sign-in terminals end by themselves).
+        if !crate::core::launch::is_login(&spec) {
+            self.adopt_folder(&spec.cwd)?;
+        }
         {
             let mut inner = self.lock();
             Self::check_account(&inner.state, spec.kind, spec.account.as_deref())?;

@@ -67,6 +67,26 @@ pub(crate) fn window_icon(dark: bool) -> egui::IconData {
     }
 }
 
+/// Show the light or dark app icon in the Dock now (macOS; a window icon does not reach the
+/// Dock there). Called on the UI thread.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_dock_icon(dark: bool) {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(crate::services::macapp::icns(dark));
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        // SAFETY: on the main thread (the marker proves it), with an image AppKit decoded.
+        unsafe { NSApplication::sharedApplication(mtm).setApplicationIconImage(Some(&image)) };
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn set_dock_icon(_dark: bool) {}
+
 pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
     if let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
         let _ = EXE.set(exe);
@@ -126,4 +146,19 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
         }),
     )
     .map_err(|e| anyhow!("cannot open the window: {e}"))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    #[test]
+    fn both_app_icons_decode_for_the_dock() {
+        use objc2::AnyThread;
+        use objc2_app_kit::NSImage;
+        use objc2_foundation::NSData;
+        for dark in [false, true] {
+            let data = NSData::with_bytes(crate::services::macapp::icns(dark));
+            let image = NSImage::initWithData(NSImage::alloc(), &data);
+            assert!(image.is_some(), "dark: {dark}");
+        }
+    }
 }
