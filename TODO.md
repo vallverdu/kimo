@@ -60,8 +60,11 @@
 
 - [x] Track resource usage (CPU, RAM, network) of each terminal. (RAM, CPU, process count per process tree; network still missing)
 - [ ] Per-session network usage (cgroup or /proc/<pid>/net is per-namespace: needs cgroups v2).
-- [ ] Implement resource limits to prevent agent saturation: memory budget that auto-stops the longest-idle agents, optional per-session cgroup memory.max.
-- [ ] Auto-pause/stop sessions idle for N minutes (no output, no input).
+- [x] Implement resource limits to prevent agent saturation: when memory is critical, idle Claude/Codex agents are stopped (biggest first) and continue when opened; low-memory card with "stop idle agents". (Settings → Memory)
+- [ ] Optional per-session cgroup memory.max (Linux).
+- [x] Auto-stop sessions idle for N minutes (Settings → Memory → stop agents idle for more than).
+- [x] Memory breakdown per agent (the agent, each MCP server or tool it started).
+- [ ] Share MCP servers between agents of a project (each Claude Code starts its own copies: often 30-50 % of an agent's memory).
 - [x] Provide visualizations of resource consumption. (stat tiles, per-session memory bar, low-memory alert)
 - [ ] History chart of memory/CPU per session.
 - [x] Optimize the Rust codebase for minimal resource footprint. (3.5 MB binary, ~5 MB RSS, two small threads per running session)

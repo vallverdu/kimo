@@ -115,7 +115,15 @@ async fn serve(cfg: Config) -> Result<()> {
         loop {
             tick.tick().await;
             let m = sampler.clone();
-            let _ = tokio::task::spawn_blocking(move || m.sample()).await;
+            let memory = tokio::task::spawn_blocking(move || {
+                m.sample();
+                kimo::services::stats::system_memory()
+            })
+            .await;
+            // Stop idle agents when memory runs out (or after the idle time in the settings).
+            if let Ok(memory) = memory {
+                sampler.guard_memory(memory).await;
+            }
         }
     });
 

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.5
+
+- Memory: when memory runs low, the window and the phone say so, list the biggest agents and
+  stop the idle ones with one click. When memory is almost full kimo stops idle Claude and
+  Codex agents by itself (biggest first; never working ones, ones asking you something, or
+  shells) and tells you; they show as *asleep* and continue their conversation when opened.
+- Settings → Memory: turn that off, stop agents idle for more than N minutes, and the size
+  above which an agent shows as heavy.
+- What an agent's memory is made of: click its memory figure to see the agent itself and each
+  MCP server or tool it started (each Claude Code runs its own copies of your MCP servers).
+- `GET /api/memory`, `POST /api/memory/free`, `GET /api/sessions/{id}/memory`; SDK
+  `memory()`, `freeMemory()`, `sessionMemory(id)`.
+- Fix: a `claude` or `codex` CLI that hangs on `--version` no longer blocks Settings and
+  kimo's shutdown (10 s limit).
+
 ## 0.1.4
 
 - Devices: choosing another address (Tailscale, ZeroTier, local network) redraws the QR code

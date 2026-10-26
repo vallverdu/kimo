@@ -43,6 +43,7 @@ reaches a session on a paired kimo.
 | POST | `/sessions/{id}/message` | `{text, from?}`: message an agent (typed as a paste, then Enter), signed with the sender session |
 | GET | `/sessions/{id}/reply` | `{source: transcript \| terminal, text}`: the agent's last answer |
 | GET | `/sessions/{id}/screen?lines=40` | recent terminal text without escape codes |
+| GET | `/sessions/{id}/memory` | what its memory is made of: `[{pid, label, bytes, processes}]`, the agent first, then each process it started with its children (MCP servers, builds), biggest first |
 | POST | `/sessions/{id}/input` | `{text}`: raw keystrokes |
 | POST | `/sessions/{id}/files` | `{name, data}` (base64, up to 20 MB): save a file for the agent (a photo from the phone) in `~/.kimo/uploads/<session>/` → `{path}`; put the path in a message (Claude Code attaches images given by path) |
 | GET (websocket) | `/sessions/{id}/term` | the terminal: binary frames both ways; text frame `{"type":"resize","cols":…,"rows":…}`; the recent output is replayed on connect |
@@ -121,7 +122,9 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | GET | `/clients` | app keys (without secrets) |
 | POST | `/clients` | `{name, origins, scope: read \| control}` → the key, shown once |
 | DELETE | `/clients/{id}` | revoke |
-| GET | `/status` | `host`, `version`, memory, kimo's own memory |
+| GET | `/status` | `host`, `version`, memory (`memory_pressure`: `ok`, `low`, `critical`), kimo's own memory |
+| GET | `/memory` | `total_bytes`, `available_bytes`, `agents_bytes`, `pressure`, `low_bytes`, `critical_bytes`, `heavy` (agent ids over the setting), `idle` (agents that can be stopped now), `freed[] {id, name, at, bytes, reason}` (agents kimo stopped: `low memory`, `idle` or `asked`) |
+| POST | `/memory/free` | stop every idle Claude and Codex agent now; `{stopped: [ids]}`. They continue their conversation when started (stopped agents carry `freed`) |
 
 ## JS SDK
 
@@ -138,6 +141,7 @@ kimo.send(id, text);                // type a message and Enter
 kimo.sendFile(id, file);            // a photo or file for the agent → {path}
 kimo.message(id, text, from);       // like `kimo send`, signed with a sender session
 kimo.reply(id); kimo.screen(id, lines);
+kimo.memory(); kimo.freeMemory(); kimo.sessionMemory(id);
 kimo.waitFor(id, ['idle', 'waiting'], { timeout });   // resolves with the session
 kimo.subscribe(({ sessions, accounts }) => …);        // live updates; returns stop()
 kimo.projects(); kimo.createProject(p); kimo.updateProject(id, { name, color });

@@ -98,6 +98,9 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/sessions/{id}/reply", get(session_reply))
         .route("/sessions/{id}/screen", get(session_screen))
         .route("/sessions/{id}/term", get(terminal))
+        .route("/sessions/{id}/memory", get(session_memory))
+        .route("/memory", get(memory))
+        .route("/memory/free", post(free_memory))
         .route("/accounts", get(list_accounts).post(create_account))
         .route("/accounts/{id}", axum::routing::delete(delete_account))
         .route("/accounts/{id}/login", post(login_account))
@@ -278,6 +281,7 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         "mem_available_bytes": mem_available,
         "sessions": sessions.len(),
         "agents_rss_bytes": sessions.iter().map(|s| s.usage.rss_bytes).sum::<u64>(),
+        "memory_pressure": crate::core::memory::pressure(mem_total, mem_available),
     }))
 }
 
@@ -535,6 +539,41 @@ async fn session_reply(
         .await
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     Ok(Json(json!(reply)))
+}
+
+/// What an agent's memory is made of (the agent, its MCP servers, tools it runs).
+async fn session_memory(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    if let Some((peer, path)) = remote(&app, &id, "/memory") {
+        return forward(peer, "GET", path, None).await;
+    }
+    if app.manager.session(&id).is_none() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            format!("unknown session: {id}"),
+        ));
+    }
+    let manager = app.manager.clone();
+    let parts = tokio::task::spawn_blocking(move || manager.memory_parts(&id))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(parts)))
+}
+
+async fn memory(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let report = tokio::task::spawn_blocking(move || manager.memory())
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(report)))
+}
+
+/// Stop every idle agent now; their conversations continue when they start again.
+async fn free_memory(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let stopped = app.manager.free_idle().await;
+    Ok(Json(json!({ "stopped": stopped })))
 }
 
 async fn session_screen(

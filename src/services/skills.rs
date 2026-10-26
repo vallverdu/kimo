@@ -366,11 +366,13 @@ pub fn detect_agents() -> Vec<AgentCli> {
     ["claude", "codex"]
         .into_iter()
         .map(|kind| {
-            let out = Command::new(kind)
-                .arg("--version")
-                .output()
-                .ok()
-                .filter(|o| o.status.success());
+            // A CLI stuck on --version (an update prompt, a broken install) must not hang kimo.
+            let out = crate::services::network::run_for(
+                Command::new(kind).arg("--version"),
+                std::time::Duration::from_secs(10),
+            )
+            .ok()
+            .filter(|o| o.status.success());
             AgentCli {
                 kind,
                 installed: out.is_some(),

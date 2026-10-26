@@ -77,6 +77,9 @@ pub struct SessionSpec {
     /// Running when kimo restarted for an update: started again (continuing) once it is back.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub resume_on_start: bool,
+    /// Set when kimo stopped this agent to free memory (cleared when it starts again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub freed: Option<Freed>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -238,8 +241,52 @@ pub struct Settings {
     /// Light or dark colours for the window and the web client.
     #[serde(default)]
     pub theme: Theme,
+    #[serde(default)]
+    pub memory: MemorySettings,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Why and when kimo stopped an agent to free memory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Freed {
+    /// Unix ms.
+    pub at: u64,
+    pub bytes: u64,
+    /// "low memory", "idle" or "asked".
+    pub reason: String,
+}
+
+/// What kimo does about memory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemorySettings {
+    /// When memory is critical, stop idle Claude and Codex agents (biggest first); they
+    /// continue their conversation when opened.
+    #[serde(default = "yes")]
+    pub free_when_low: bool,
+    /// Stop agents idle for longer than this many minutes (0 = never).
+    #[serde(default)]
+    pub stop_idle_after_minutes: u32,
+    /// Agents using more than this many MB are shown as heavy.
+    #[serde(default = "default_heavy_mb")]
+    pub heavy_mb: u32,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+fn default_heavy_mb() -> u32 {
+    1500
+}
+
+impl Default for MemorySettings {
+    fn default() -> Self {
+        Self {
+            free_when_low: true,
+            stop_idle_after_minutes: 0,
+            heavy_mb: default_heavy_mb(),
+            extra: Map::new(),
+        }
+    }
 }
 
 /// Colour scheme: the system's, or always light or dark.

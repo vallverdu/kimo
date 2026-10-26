@@ -570,3 +570,59 @@ async fn sessions_running_at_an_update_restart_start_again() {
     assert_eq!(m.resume_after_restart(), 0, "the mark is cleared");
     m.shutdown().await;
 }
+
+#[tokio::test]
+async fn agents_stopped_to_free_memory_say_so_and_continue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    fake_agents();
+    let m = manager(tmp.path());
+    let acc = m.add_account("Mem", Provider::Claude).unwrap();
+    let s = m
+        .create(
+            NewSession {
+                name: "big".into(),
+                kind: SessionKind::Claude,
+                cwd: work.display().to_string(),
+                account: Some(acc.id.clone()),
+                args: vec![],
+                command: None,
+            },
+            true,
+        )
+        .unwrap();
+    let id = s.spec.id.clone();
+    let conv = s.spec.conversation.clone().unwrap();
+    wait_for(&m, &id, &format!("ARGS=--session-id {conv}")).await;
+    // Let the fake agent write its transcript, so starting again resumes it.
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+
+    // What its memory is made of: at least the agent itself.
+    m.sample();
+    let parts = m.memory_parts(&id);
+    assert!(!parts.is_empty() && parts[0].bytes > 0, "{parts:?}");
+    let report = m.memory();
+    assert!(report.total_bytes > 0 && report.agents_bytes > 0);
+
+    // Stopped to free memory: the reason is kept and reported.
+    assert_eq!(
+        m.free_agents(std::slice::from_ref(&id), "low memory").await,
+        vec![id.clone()]
+    );
+    let info = m.session(&id).unwrap();
+    assert_eq!(info.status, SessionStatus::Stopped);
+    assert_eq!(info.spec.freed.as_ref().unwrap().reason, "low memory");
+    assert_eq!(
+        m.memory().freed.first().map(|f| f.id.as_str()),
+        Some(id.as_str())
+    );
+
+    // Opening it again continues the same conversation, and the mark goes away.
+    m.act(&id, Action::Start).await.unwrap();
+    wait_for(&m, &id, &format!("ARGS=--resume {conv}")).await;
+    assert!(m.session(&id).unwrap().spec.freed.is_none());
+    assert!(m.memory().freed.is_empty());
+    m.shutdown().await;
+}

@@ -100,6 +100,28 @@ pub fn self_rss_bytes() -> u64 {
         * 1024
 }
 
+/// A process's command line (program and arguments).
+#[cfg(target_os = "linux")]
+pub fn cmdline(pid: i32) -> Vec<String> {
+    fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|b| {
+            b.split(|&c| c == 0)
+                .filter(|a| !a.is_empty())
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A process's command line (from `ps`; arguments split at spaces).
+#[cfg(not(target_os = "linux"))]
+pub fn cmdline(pid: i32) -> Vec<String> {
+    run("ps", &["-o", "args=", "-p", &pid.to_string()])
+        .split_whitespace()
+        .map(String::from)
+        .collect()
+}
+
 /// (total, available) system memory in bytes: `sysctl hw.memsize` and `vm_stat`.
 #[cfg(not(target_os = "linux"))]
 pub fn system_memory() -> (u64, u64) {

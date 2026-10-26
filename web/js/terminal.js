@@ -16,6 +16,8 @@ export const terminal = {
   get current() { return current; },
 
   open(session) {
+    // Agents kimo stopped to free memory continue as soon as they are opened.
+    if (session.freed && session.status === 'stopped') kimo.act(session.id, 'start').catch(() => {});
     current = session;
     el('term').hidden = false;
     document.body.style.overflow = 'hidden';

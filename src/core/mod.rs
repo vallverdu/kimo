@@ -8,6 +8,7 @@ pub mod history;
 pub mod hostname;
 pub mod launch;
 pub mod lifecycle;
+pub mod memory;
 pub mod models;
 pub mod network;
 pub mod procfs;

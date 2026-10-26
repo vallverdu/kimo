@@ -119,6 +119,8 @@ pub struct Manager {
     pub(crate) pairing: Mutex<HashMap<String, Instant>>,
     /// Asked to restart (after an update): `kimo serve` stops and starts the new binary.
     restart: tokio::sync::Notify,
+    /// When kimo last stopped agents to free memory (figures lag while processes exit).
+    pub(crate) last_freed: Mutex<Option<Instant>>,
 }
 
 /// A folder path with symlinks resolved (macOS `/var` → `/private/var`), so paths written by
@@ -220,6 +222,7 @@ impl Manager {
             changes: watch::channel(0).0,
             pairing: Mutex::new(HashMap::new()),
             restart: tokio::sync::Notify::new(),
+            last_freed: Mutex::new(None),
         });
         let weak = Arc::downgrade(&manager);
         tokio::spawn(async move {
@@ -357,6 +360,7 @@ impl Manager {
             started_once: false,
             conversation: None,
             resume_on_start: false,
+            freed: None,
             extra: Default::default(),
         };
         if spec.kind == SessionKind::Claude && spec.command.is_none() {
@@ -529,6 +533,7 @@ impl Manager {
         live.last_ticks = None;
         if let Some(s) = inner.state.sessions.iter_mut().find(|s| s.id == id) {
             s.started_once = true;
+            s.freed = None;
         }
         // Remember which account this run uses (usage per subscription).
         if let (Some(provider), None) = (spec.kind.provider(), &spec.command) {

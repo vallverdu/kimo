@@ -99,6 +99,32 @@ impl ProcTable {
         }
         usage
     }
+
+    /// An agent's memory by part: the root process alone, then each child with everything it
+    /// started (an MCP server, a build, a dev server), biggest first.
+    pub fn tree_parts(&self, root: i32) -> Vec<(i32, TreeUsage)> {
+        let Some(s) = self.by_pid.get(&root) else {
+            return vec![];
+        };
+        let mut parts = vec![(
+            root,
+            TreeUsage {
+                processes: 1,
+                cpu_ticks: s.cpu_ticks,
+                rss_pages: s.rss_pages,
+            },
+        )];
+        let mut kids: Vec<(i32, TreeUsage)> = self
+            .children
+            .get(&root)
+            .into_iter()
+            .flatten()
+            .map(|&pid| (pid, self.tree_usage(pid)))
+            .collect();
+        kids.sort_by_key(|(_, u)| std::cmp::Reverse(u.rss_pages));
+        parts.extend(kids);
+        parts
+    }
 }
 
 /// CPU percentage (100 = one full core) between two tick samples.
@@ -165,5 +191,24 @@ mod tests {
         assert_eq!(cpu_percent(100, 200, 1.0, 100.0), 100.0);
         assert_eq!(cpu_percent(200, 100, 1.0, 100.0), 0.0);
         assert_eq!(cpu_percent(0, 50, 0.0, 100.0), 0.0);
+    }
+
+    #[test]
+    fn splits_a_tree_into_parts() {
+        let p = |pid, ppid, rss| ProcStat {
+            pid,
+            ppid,
+            state: 'S',
+            cpu_ticks: 0,
+            rss_pages: rss,
+        };
+        let t = ProcTable::new([p(10, 1, 500), p(11, 10, 70), p(12, 11, 150), p(13, 10, 300)]);
+        let parts: Vec<(i32, u64)> = t
+            .tree_parts(10)
+            .iter()
+            .map(|(pid, u)| (*pid, u.rss_pages))
+            .collect();
+        assert_eq!(parts, vec![(10, 500), (13, 300), (11, 220)]);
+        assert!(t.tree_parts(99).is_empty());
     }
 }

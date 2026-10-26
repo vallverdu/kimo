@@ -33,7 +33,10 @@ and gives you, and the agents themselves, the controls for that.
   Codex conversation on the machine, inside kimo or not, per day, per project (or repository)
   and per subscription, from the agents' own logs. Also on the phone and as `kimo usage`.
 - **Pause, stop, continue.** Pause freezes an agent (no CPU); stop frees its memory; continue
-  resumes its own conversation by id. Memory and CPU per agent, always visible.
+  resumes its own conversation by id. Memory and CPU per agent, always visible, with a
+  breakdown (the agent itself, each MCP server, builds). When memory runs low kimo warns you,
+  and when it is almost full it stops idle agents, biggest first; they continue their
+  conversation when you open them (Settings → Memory, also a timer for idle agents).
 - **Agents that work together.** Every agent has a clear id and resume id. Agents run
   `kimo agents`, `kimo send`, `kimo wait`, `kimo read` and `kimo new` to list, message, wait
   for and start other agents; the bundled `kimo-agents` skill teaches them how.

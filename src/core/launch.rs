@@ -203,6 +203,7 @@ mod tests {
             started_once: false,
             conversation: None,
             resume_on_start: false,
+            freed: None,
             extra: Map::new(),
         }
     }

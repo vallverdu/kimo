@@ -92,6 +92,12 @@ export class Kimo {
   reply(id) { return this.request('GET', `/sessions/${enc(id)}/reply`); }
   /** Recent terminal text of a session (escape codes removed). */
   screen(id, lines = 40) { return this.request('GET', `/sessions/${enc(id)}/screen?lines=${lines}`); }
+  /** What a session's memory is made of: [{pid, label, bytes, processes}], the agent first, then each MCP server or tool it started. */
+  sessionMemory(id) { return this.request('GET', `/sessions/${enc(id)}/memory`); }
+  /** Memory report: {total_bytes, available_bytes, agents_bytes, pressure: ok|low|critical, heavy, idle, freed}. */
+  memory() { return this.request('GET', '/memory'); }
+  /** Stop every idle agent now (they continue their conversation later); returns {stopped}. */
+  freeMemory() { return this.request('POST', '/memory/free'); }
   /** Message an agent as another agent (`from`: the sender's session id), like `kimo send`. */
   message(id, text, from) { return this.request('POST', `/sessions/${enc(id)}/message`, { text, from }); }
   /** Type raw text into the terminal. */

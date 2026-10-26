@@ -54,6 +54,10 @@ enum Msg {
     Note(String),
     /// The latest release (`/update`).
     Release(Value),
+    /// Memory report (`/memory`).
+    Memory(Value),
+    /// What a session's memory is made of: (session id, parts).
+    Parts(String, Value),
     /// The new kimo is installed and the server restarted on it: restart the window too.
     Restart,
     /// An update step failed.
@@ -236,6 +240,14 @@ pub struct KimoApp {
     terminal_rect: Option<egui::Rect>,
     /// The latest release as this machine's kimo reports it (`/update`).
     release: Value,
+    /// Memory report: pressure, biggest agents, agents kimo stopped to free memory.
+    memory: Value,
+    /// The memory card was closed at this pressure ("low", "critical").
+    memory_dismissed: Option<String>,
+    /// Newest "stopped to free memory" already announced (unix ms).
+    seen_freed: Option<u64>,
+    /// Memory breakdown shown under the toolbar: (session id, parts).
+    parts: Option<(String, Value)>,
     last_release: Instant,
     /// The version whose update card was closed.
     dismissed: Option<String>,
@@ -417,6 +429,10 @@ impl KimoApp {
             confirm: None,
             terminal_rect: None,
             release: Value::Null,
+            memory: Value::Null,
+            memory_dismissed: None,
+            seen_freed: None,
+            parts: None,
             // The first check a few seconds after start, then every 6 hours.
             last_release: Instant::now() - Duration::from_secs(6 * 3600 - 5),
             dismissed: None,
@@ -502,6 +518,20 @@ impl KimoApp {
 
     fn open_session(&mut self, id: &str) {
         self.view = View::Terminals;
+        // Agents kimo stopped to free memory continue as soon as they are opened.
+        if self
+            .sessions()
+            .iter()
+            .any(|x| s(x, "id") == id && x["freed"].is_object() && s(x, "status") == "stopped")
+        {
+            let id = id.to_string();
+            self.action("Continuing", move |c| {
+                c.post(
+                    &format!("/sessions/{id}/action"),
+                    json!({ "action": "start" }),
+                )
+            });
+        }
         let host = self.host().id.clone();
         if let Some(i) = self
             .terminals
@@ -620,6 +650,42 @@ impl KimoApp {
                 }
                 Msg::Note(t) => self.toast(t, false),
                 Msg::Release(v) => self.release = v,
+                Msg::Memory(v) => {
+                    // Announce agents kimo stopped to free memory since the last report.
+                    let freed = v["freed"].as_array().cloned().unwrap_or_default();
+                    let newest = freed
+                        .iter()
+                        .filter_map(|f| f["at"].as_u64())
+                        .max()
+                        .unwrap_or(0);
+                    if let Some(seen) = self.seen_freed {
+                        // Stops you asked for are announced by their own toast.
+                        for f in freed.iter().filter(|f| {
+                            f["at"].as_u64().unwrap_or(0) > seen && s(f, "reason") != "asked"
+                        }) {
+                            let why = if s(f, "reason") == "idle" {
+                                "idle for a while"
+                            } else {
+                                "memory was low"
+                            };
+                            self.toasts.push((
+                                format!(
+                                    "Stopped {} to free {} ({why}). It continues when you open it.",
+                                    s(f, "name"),
+                                    mb(f["bytes"].as_u64().unwrap_or(0))
+                                ),
+                                false,
+                                Instant::now(),
+                            ));
+                        }
+                    }
+                    self.seen_freed = Some(newest.max(self.seen_freed.unwrap_or(0)));
+                    if v["pressure"] == "ok" {
+                        self.memory_dismissed = None;
+                    }
+                    self.memory = v;
+                }
+                Msg::Parts(id, v) => self.parts = Some((id, v)),
                 Msg::Restart => restart_window(),
                 Msg::UpdateFailed(e) => {
                     self.updating = Updating::Idle;
@@ -658,6 +724,7 @@ impl KimoApp {
         if self.last_status.elapsed() > Duration::from_secs(3) {
             self.last_status = Instant::now();
             self.job(|c| Ok(Msg::Status(c.get("/status")?)));
+            self.job(|c| Ok(Msg::Memory(c.get("/memory")?)));
         }
         if self.last_hosts.elapsed() > Duration::from_secs(15) {
             self.last_hosts = Instant::now();
@@ -883,13 +950,16 @@ impl KimoApp {
             ui.separator();
             if let Some(agents) = st["agents_rss_bytes"].as_u64() {
                 ui.label(RichText::new(format!("agents {}", mb(agents))).size(11.0));
-                ui.label(
-                    RichText::new(format!(
-                        "free {}",
-                        mb(st["mem_available_bytes"].as_u64().unwrap_or(0))
-                    ))
-                    .size(11.0),
-                );
+                let free = RichText::new(format!(
+                    "free {}",
+                    mb(st["mem_available_bytes"].as_u64().unwrap_or(0))
+                ))
+                .size(11.0);
+                ui.label(match s(st, "memory_pressure") {
+                    "critical" => free.color(theme::bad()),
+                    "low" => free.color(theme::warn()),
+                    _ => free,
+                });
                 ui.label(
                     RichText::new(format!(
                         "kimo {}",
@@ -1393,7 +1463,19 @@ impl KimoApp {
             }
             let usage = &info["usage"];
             if status == "running" || status == "paused" {
-                ui.label(RichText::new(format!("{} · {}% cpu", mb(usage["rss_bytes"].as_u64().unwrap_or(0)), usage["cpu_percent"])).size(11.0).color(theme::muted()));
+                let heavy = self.memory["heavy"].as_array().is_some_and(|h| h.iter().any(|h| h == id.as_str()));
+                let text = RichText::new(format!("{} · {}% cpu", mb(usage["rss_bytes"].as_u64().unwrap_or(0)), usage["cpu_percent"])).size(11.0);
+                let r = ui
+                    .add(egui::Button::new(if heavy { text.color(theme::warn()) } else { text.color(theme::muted()) }).frame(false))
+                    .on_hover_text(if heavy { "uses a lot of memory: click to see what" } else { "click to see what uses the memory" });
+                if r.clicked() {
+                    if self.parts.as_ref().is_some_and(|(p, _)| *p == id) {
+                        self.parts = None;
+                    } else {
+                        let sid = id.clone();
+                        self.job(move |c| Ok(Msg::Parts(sid.clone(), c.get(&format!("/sessions/{sid}/memory"))?)));
+                    }
+                }
             }
             ui.separator();
             let act = |app: &Self, action: &'static str, done: &'static str| {
@@ -1463,6 +1545,27 @@ impl KimoApp {
                 });
             }
         });
+        // What the agent's memory is made of (the memory figure in the toolbar toggles it).
+        if let Some((_, parts)) = self.parts.as_ref().filter(|(p, _)| *p == id) {
+            let parts = parts.as_array().cloned().unwrap_or_default();
+            let mut close = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("memory:").size(11.0).color(theme::muted()));
+                for (i, p) in parts.iter().enumerate() {
+                    let label = if i == 0 { format!("{} itself", s(p, "label")) } else { s(p, "label").to_string() };
+                    let n = p["processes"].as_u64().unwrap_or(1);
+                    ui.label(RichText::new(format!("{label} {}", mb(p["bytes"].as_u64().unwrap_or(0)))).size(11.0).color(theme::text()))
+                        .on_hover_text(format!("pid {}{}", p["pid"], if n > 1 { format!(", {n} processes") } else { String::new() }));
+                }
+                if parts.iter().any(|p| s(p, "label").to_ascii_lowercase().contains("mcp")) {
+                    ui.label(RichText::new("· each agent starts its own MCP servers: turn off the ones a project does not need").size(10.5).color(theme::muted()));
+                }
+                close = ui.add(egui::Button::new(RichText::new("×").color(theme::muted())).frame(false)).clicked();
+            });
+            if close {
+                self.parts = None;
+            }
+        }
 
         // Message box at the bottom, terminal above it.
         let font_size = self
@@ -1816,6 +1919,20 @@ impl KimoApp {
                 ui.label("font size");
                 ui.add(egui::DragValue::new(&mut settings.terminal.font_size).range(9.0..=22.0).speed(0.25).suffix(" px"));
             });
+            section(ui, "Memory");
+            let mem = &mut settings.memory;
+            ui.checkbox(&mut mem.free_when_low, "when memory is almost full, stop idle agents (biggest first)");
+            ui.horizontal(|ui| {
+                ui.label("stop agents idle for more than");
+                ui.add(egui::DragValue::new(&mut mem.stop_idle_after_minutes).range(0..=1440).speed(1.0).suffix(" min"));
+                ui.label(RichText::new(if mem.stop_idle_after_minutes == 0 { "(never)" } else { "" }).size(11.0).color(theme::muted()));
+            });
+            ui.horizontal(|ui| {
+                ui.label("show agents over");
+                ui.add(egui::DragValue::new(&mut mem.heavy_mb).range(200..=32768).speed(50.0).suffix(" MB"));
+                ui.label("as heavy");
+            });
+            ui.label(RichText::new("Only Claude and Codex agents waiting at their prompt are stopped, never working ones, ones asking you something or shells; they continue their conversation when you open them. Most of an agent's memory is often its MCP servers: click an agent's memory figure to see.").size(11.0).color(theme::muted()));
             section(ui, "Quick commands");
             ui.label(RichText::new("Saved prompts and commands, sent to the open terminal with one click (also on your phone).").size(11.0).color(theme::muted()));
             let mut drop = None;
@@ -2496,6 +2613,112 @@ impl KimoApp {
     }
 
     /// "Update available" card (bottom right), like Orca's.
+    /// Shown while memory is low: what uses it, and stopping idle agents in one click.
+    fn memory_card(&mut self, ctx: &egui::Context) {
+        let m = &self.memory;
+        let pressure = s(m, "pressure").to_string();
+        if !(pressure == "low" || pressure == "critical")
+            || self.memory_dismissed.as_deref() == Some(pressure.as_str())
+        {
+            return;
+        }
+        let sessions = self.sessions();
+        let mut running: Vec<&Value> = sessions
+            .iter()
+            .filter(|x| s(x, "status") == "running" || s(x, "status") == "paused")
+            .collect();
+        running.sort_by_key(|x| std::cmp::Reverse(x["usage"]["rss_bytes"].as_u64().unwrap_or(0)));
+        let idle: Vec<String> = m["idle"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let idle_bytes: u64 = sessions
+            .iter()
+            .filter(|x| idle.iter().any(|i| i == s(x, "id")))
+            .map(|x| x["usage"]["rss_bytes"].as_u64().unwrap_or(0))
+            .sum();
+        let auto = self
+            .settings
+            .as_ref()
+            .is_none_or(|st| st.memory.free_when_low);
+        let (mut close, mut free, mut open) = (false, false, None);
+        egui::Area::new(egui::Id::unique("memory-card"))
+            .anchor(Align2::LEFT_BOTTOM, [12.0, -40.0])
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(theme::surface())
+                    .stroke(egui::Stroke::new(1.0, if pressure == "critical" { theme::bad() } else { theme::line() }))
+                    .corner_radius(10)
+                    .inner_margin(egui::Margin::same(16))
+                    .shadow(ctx.global_style().visuals.popup_shadow)
+                    .show(ui, |ui| {
+                        ui.set_width(236.0);
+                        ui.horizontal(|ui| {
+                            let title = if pressure == "critical" { "Memory is almost full" } else { "Memory is low" };
+                            ui.label(RichText::new(title).size(15.0).strong().color(if pressure == "critical" { theme::bad() } else { theme::ink() }));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                close = ui.add(egui::Button::new(RichText::new("×").size(16.0).color(theme::muted())).frame(false)).on_hover_text("hide until it changes").clicked();
+                            });
+                        });
+                        ui.label(
+                            RichText::new(format!(
+                                "{} free of {}; agents use {}.",
+                                mb(m["available_bytes"].as_u64().unwrap_or(0)),
+                                mb(m["total_bytes"].as_u64().unwrap_or(0)),
+                                mb(m["agents_bytes"].as_u64().unwrap_or(0))
+                            ))
+                            .size(12.5)
+                            .color(theme::text()),
+                        );
+                        ui.add_space(6.0);
+                        for x in running.iter().take(4) {
+                            ui.horizontal(|ui| {
+                                if ui.add(egui::Button::new(RichText::new(s(x, "name")).color(theme::ink())).frame(false).truncate()).clicked() {
+                                    open = Some(s(x, "id").to_string());
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(mb(x["usage"]["rss_bytes"].as_u64().unwrap_or(0))).size(11.5).color(theme::muted()));
+                                    if idle.iter().any(|i| i == s(x, "id")) {
+                                        ui.label(RichText::new("idle").size(10.5).color(theme::muted()));
+                                    }
+                                });
+                            });
+                        }
+                        ui.add_space(8.0);
+                        if idle.is_empty() {
+                            ui.label(RichText::new("No Claude or Codex agent is idle right now. Stop one you do not need (pause keeps its memory).").size(11.5).color(theme::muted()));
+                        } else {
+                            let label = format!("Stop {} idle agent{} (frees {})", idle.len(), if idle.len() == 1 { "" } else { "s" }, mb(idle_bytes));
+                            free = primary(ui, &label).clicked();
+                            ui.label(RichText::new("They continue their conversation when you open them.").size(11.0).color(theme::muted()));
+                        }
+                        if auto {
+                            ui.label(RichText::new("When memory is almost full, kimo stops idle agents by itself (Settings → Memory).").size(10.5).color(theme::muted()));
+                        }
+                    });
+            });
+        if close {
+            self.memory_dismissed = Some(pressure);
+        }
+        if free {
+            self.job(|c| {
+                let r = c.post("/memory/free", json!({}))?;
+                let n = r["stopped"].as_array().map_or(0, |a| a.len());
+                Ok(Msg::Toast(format!(
+                    "Stopped {n} idle agent{}: memory freed",
+                    if n == 1 { "" } else { "s" }
+                )))
+            });
+            self.last_status = Instant::now() - Duration::from_secs(60);
+        }
+        if let Some(id) = open {
+            self.open_session(&id);
+        }
+    }
+
     fn update_card(&mut self, ctx: &egui::Context) {
         let r = &self.release;
         let Some(latest) = r["latest"].as_str().map(String::from) else {
@@ -3016,7 +3239,20 @@ fn activity_tag(ui: &mut Ui, session: &Value) {
         "working" => {
             ui.label(RichText::new("working").size(10.5).color(theme::teal()));
         }
-        _ => {}
+        _ => {
+            let freed = &session["freed"];
+            if freed.is_object() && s(session, "status") == "stopped" {
+                let why = match s(freed, "reason") {
+                    "idle" => "because it was idle for a while",
+                    "asked" => "when you asked",
+                    _ => "because memory was low",
+                };
+                ui.label(RichText::new("asleep").size(10.5).color(theme::muted())).on_hover_text(format!(
+                    "kimo stopped it to free {} {why}; it continues its conversation when you open it",
+                    mb(freed["bytes"].as_u64().unwrap_or(0))
+                ));
+            }
+        }
     }
 }
 
@@ -3113,6 +3349,7 @@ impl eframe::App for KimoApp {
         self.worktree_dialog(&ctx);
         self.confirm_dialog(&ctx);
         self.update_card(&ctx);
+        self.memory_card(&ctx);
         self.handle_drops(ui);
         self.toasts(&ctx);
     }

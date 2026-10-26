@@ -47,11 +47,12 @@ function renderStats() {
     [s ? mb(s.kimo_rss_bytes) : '–', 'kimo itself'],
   ];
   $('stats').innerHTML = tiles.map(([v, l]) => `<div class="ui-stat"><strong>${esc(v)}</strong><span>${esc(l)}</span></div>`).join('');
-  const low = s && s.mem_total_bytes && s.mem_available_bytes / s.mem_total_bytes < 0.15;
+  const m = state.memory, low = m && m.pressure !== 'ok';
+  const idleBytes = m ? list.filter(x => m.idle.includes(x.id)).reduce((n, x) => n + x.usage.rss_bytes, 0) : 0;
   const waiting = list.filter(x => x.activity === 'waiting');
   $('alerts').innerHTML = [
     waiting.length ? `<div class="ui-alert"><span>${waiting.length} agent${waiting.length === 1 ? ' needs' : 's need'} you: ${waiting.map(x => esc(x.name)).join(', ')}</span><button class="ui-button k-small" data-open-waiting="${esc(waiting[0].id)}">open</button></div>` : '',
-    low ? `<div class="ui-alert"><span>Memory is low (${mb(s.mem_available_bytes)} free). Stop idle agents: they continue where they left off.</span></div>` : '',
+    low ? `<div class="ui-alert"><span>${m.pressure === 'critical' ? 'Memory is almost full' : 'Memory is low'}: ${mb(m.available_bytes)} free of ${mb(m.total_bytes)}, agents use ${mb(m.agents_bytes)}. ${m.idle.length ? 'Idle agents continue their conversation when opened again.' : 'No agent is idle: stop or pause one you do not need.'}</span>${m.idle.length ? `<button class="ui-button k-small" data-do="free-memory">stop ${m.idle.length} idle (${mb(idleBytes)})</button>` : ''}</div>` : '',
     updateAlert(),
   ].join('');
 }
@@ -97,6 +98,24 @@ function applyTheme(theme) {
   if (meta) meta.content = getComputedStyle(root).getPropertyValue('--color-background').trim() || '#ffffff';
 }
 
+// Memory breakdowns opened in the list (session id → parts).
+const parts = {};
+
+// The memory report; announces agents kimo stopped to free memory since the last one.
+async function loadMemory() {
+  const m = await api.memory().catch(() => null);
+  if (!m) return;
+  const newest = Math.max(0, ...m.freed.map(f => f.at));
+  if (state.seenFreed != null) {
+    for (const f of m.freed.filter(f => f.at > state.seenFreed && f.reason !== 'asked')) {
+      toast(`Stopped ${f.name} to free ${mb(f.bytes)} (${f.reason === 'idle' ? 'idle for a while' : 'memory was low'}). It continues when you open it.`);
+    }
+  }
+  state.seenFreed = Math.max(newest, state.seenFreed ?? 0);
+  state.memory = m;
+  renderStats();
+}
+
 function sessionRow(s) {
   const agent = s.kind !== 'shell';
   const live = s.status === 'running' || s.status === 'paused';
@@ -113,8 +132,10 @@ function sessionRow(s) {
     <button class="k-name" data-do="open">${esc(s.name)}</button>
     <span class="ui-badge ${s.status}">${s.status}${s.status === 'exited' && s.exit_code != null ? ` ${s.exit_code}` : ''}</span>
     ${s.activity === 'waiting' ? '<span class="k-act waiting">needs you</span>' : s.activity === 'working' ? '<span class="k-act">working</span>' : ''}
+    ${s.freed && !live ? `<span class="k-act asleep" title="kimo stopped it to free ${mb(s.freed.bytes)} (${{ idle: 'idle for a while', asked: 'you asked' }[s.freed.reason] || 'memory was low'}); it continues when you open it">asleep</span>` : ''}
     <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account))}</span>` : ''}<code title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</code><span title="kimo id: kimo send / read / wait">id <code>${esc(s.id)}</code></span>${s.conversation ? `<span title="the agent's own conversation id">resume <code>${esc(s.conversation.slice(0, 8))}…</code></span>` : ''}
-      ${live ? `<span><span class="k-num">${mb(ram)}</span> ram</span><span><span class="k-num">${s.usage.cpu_percent}%</span> cpu</span><span><span class="k-num">${s.usage.processes}</span> procs</span>` : ''}</div>
+      ${live ? `<span><button class="k-ram${state.memory?.heavy.includes(s.id) ? ' heavy' : ''}" data-do="memory" title="what uses the memory"><span class="k-num">${mb(ram)}</span> ram</button></span><span><span class="k-num">${s.usage.cpu_percent}%</span> cpu</span><span><span class="k-num">${s.usage.processes}</span> procs</span>` : ''}</div>
+    ${parts[s.id] ? `<div class="k-parts">${parts[s.id].map((p, i) => `<span>${esc(i ? p.label : `${p.label} itself`)} <span class="k-num">${mb(p.bytes)}</span></span>`).join('')}</div>` : ''}
     ${live ? `<div class="k-bar" title="share of machine memory"><span style="width:${Math.min(100, ram / total * 100).toFixed(1)}%"></span></div>` : ''}
     <div class="k-actions">${buttons.join('')}</div>
   </li>`;
@@ -176,6 +197,7 @@ async function refresh() {
       api.usage().catch(() => []),
     ]);
     render();
+    loadMemory();
     return true;
   } catch (e) {
     if (e.status === 401) { if (!$('sheet-token').open) $('sheet-token').showModal(); }
@@ -232,6 +254,9 @@ addEventListener('hashchange', () => show(location.hash.slice(1)));
 
 $('alerts').addEventListener('click', e => {
   if (e.target.closest('[data-do=update]')) return installUpdate();
+  if (e.target.closest('[data-do=free-memory]')) {
+    return run(api.freeMemory(), r => `Stopped ${r.stopped.length} idle agent${r.stopped.length === 1 ? '' : 's'}: memory freed`).then(loadMemory);
+  }
   const id = e.target.closest('[data-open-waiting]')?.dataset.openWaiting;
   const s = id && state.sessions.find(x => x.id === id);
   if (s) terminal.open(s);
@@ -244,6 +269,10 @@ $('sessions').addEventListener('click', e => {
   const s = state.sessions.find(x => x.id === id);
   const action = btn.dataset.do;
   if (action === 'open') return terminal.open(s);
+  if (action === 'memory') {
+    if (parts[id]) { delete parts[id]; return renderSessions(); }
+    return api.sessionMemory(id).then(p => { parts[id] = p; renderSessions(); }).catch(err => toast(err.message, true));
+  }
   if (action === 'delete') {
     if (confirm(`Delete session "${s.name}"? The conversation stays in the agent's history.`)) run(api.deleteSession(id), 'Deleted');
     return;
@@ -408,5 +437,6 @@ if (pairCode) {
 setInterval(async () => {
   if (document.visibilityState !== 'visible' || !unsubscribe) return;
   try { state.status = await api.status(); renderStats(); } catch { /* the event stream reports problems */ }
+  loadMemory();
 }, 5000);
 if ('serviceWorker' in navigator && isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
