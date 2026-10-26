@@ -155,14 +155,27 @@ async fn serve(cfg: Config) -> Result<()> {
         .name("kimo-updates".into())
         .spawn(move || kimo::services::update::watch(watcher))?;
 
-    let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, cfg.port))
-        .await
-        .with_context(|| {
-            format!(
-                "cannot listen on port {}: is another program using it? (--port to pick another)",
-                cfg.port
-            )
-        })?;
+    // Right after an update the port can take a moment to be free again: kimo waits for it
+    // (giving up would end the terminals it just took over).
+    let restarted = std::env::var_os("KIMO_RESTARTED").is_some();
+    let mut tries = if restarted { 100 } else { 1 };
+    let listener = loop {
+        tries -= 1;
+        match tokio::net::TcpListener::bind(SocketAddr::new(ip, cfg.port)).await {
+            Ok(l) => break l,
+            Err(e) if tries > 0 && e.kind() == std::io::ErrorKind::AddrInUse => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "cannot listen on port {}: is another program using it? (--port to pick another)",
+                        cfg.port
+                    )
+                })
+            }
+        }
+    };
     println!("kimo is running on port {}", cfg.port);
     // The addresses come from helper commands (ip, ifconfig, tailscale): list them without
     // holding up the server, which answers from now on.
@@ -220,7 +233,9 @@ async fn serve(cfg: Config) -> Result<()> {
         // The same process (pid, service manager, log) runs the newly installed binary.
         let exe = kimo::services::update::exe()?;
         let err = std::os::unix::process::CommandExt::exec(
-            std::process::Command::new(&exe).args(std::env::args_os().skip(1)),
+            std::process::Command::new(&exe)
+                .args(std::env::args_os().skip(1))
+                .env("KIMO_RESTARTED", "1"),
         );
         return Err(anyhow!("cannot restart {}: {err}", exe.display()));
     }

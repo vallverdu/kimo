@@ -3,12 +3,13 @@
 Changes since the last release collect under *Unreleased*; a release renames it to its
 version, and that section becomes the GitHub release notes.
 
-## Unreleased
+## 0.1.14
 
 - Updating no longer interrupts agents: the new kimo takes over the running terminals (the
   same processes, their screens, paused ones still paused), so Claude Code and Codex keep
   working through an update. A terminal that cannot be taken over starts again, continuing
-  its conversation, as before.
+  its conversation, as before. Right after an update kimo waits for its port to be free
+  again instead of giving up.
 - A right panel in the window (the button at the top right, ⌘⇧E), like Orca's: the
   project's **Files** (a tree with git's change letters, find by name or content), its
   **Changes** (staged and not, stage/unstage, commit, push, create a pull request with
