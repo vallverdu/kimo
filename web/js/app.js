@@ -88,7 +88,7 @@ function renderStats() {
 }
 
 // A new kimo version: install it from here, or restart onto one installed already (running
-// agents restart and continue).
+// agents keep running).
 function updateAlert() {
   const r = state.release;
   if (!r?.available && !r?.restart) return '';
@@ -97,11 +97,11 @@ function updateAlert() {
     ? '<button class="ui-button k-small" data-do="auto-update">update by itself from now on</button>' : '';
   const busy = state.updating ? `<span>${esc(state.updating)}</span>` : '';
   if (r.restart && !r.available) {
-    return `<div class="ui-alert info"><span>kimo ${esc(r.installed)} is installed: restart kimo to use it. Running agents restart and continue their conversations.</span>
+    return `<div class="ui-alert info"><span>kimo ${esc(r.installed)} is installed: restart kimo to use it. Running agents keep running.</span>
       ${busy || `<button class="ui-button k-small" data-do="restart-kimo">restart</button>${auto}`}</div>`;
   }
   if (r.manual) return `<div class="ui-alert info"><span>kimo ${esc(r.latest)} is ready.${notes} ${esc(r.manual)}.</span></div>`;
-  return `<div class="ui-alert info"><span>kimo ${esc(r.latest)} is ready. Running agents restart and continue their conversations.${notes}</span>
+  return `<div class="ui-alert info"><span>kimo ${esc(r.latest)} is ready. Running agents keep running.${notes}</span>
     ${busy || `<button class="ui-button k-small" data-do="update">update</button>${auto}`}</div>`;
 }
 

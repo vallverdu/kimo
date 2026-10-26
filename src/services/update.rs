@@ -218,7 +218,7 @@ pub fn watch(manager: std::sync::Arc<Manager>) {
             if settings.notify && !settings.auto && told.trim() != latest {
                 crate::services::notify::system(
                     &format!("kimo {latest} is ready"),
-                    "Open kimo and click Update: running agents continue their conversations.",
+                    "Open kimo and click Update: running agents keep running.",
                 );
                 let _ = std::fs::write(&seen_file, latest);
             }
@@ -233,7 +233,7 @@ pub fn watch(manager: std::sync::Arc<Manager>) {
                 Ok(version) => {
                     crate::services::notify::system(
                         &format!("kimo updated to {version}"),
-                        "Running agents restarted and continue their conversations.",
+                        "Running agents kept running.",
                     );
                     return;
                 }

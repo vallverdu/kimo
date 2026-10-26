@@ -4012,11 +4012,9 @@ impl KimoApp {
                         ui.add_space(4.0);
                         ui.label(RichText::new(&pending.text).size(13.5).color(theme::text()));
                         ui.label(
-                            RichText::new(
-                                "Running agents restart and continue their conversations.",
-                            )
-                            .size(11.5)
-                            .color(theme::muted()),
+                            RichText::new("Running agents keep running through the update.")
+                                .size(11.5)
+                                .color(theme::muted()),
                         );
                         if let Some(url) = &url {
                             if ui

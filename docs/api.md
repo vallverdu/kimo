@@ -133,7 +133,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 |---|---|---|
 | GET | `/update?force=` | the latest release on GitHub (kimo checks every hour in the background): `{current, latest, available, installed, restart, url, notes, manual, error}`; `restart` means a newer kimo (`installed`) is on disk already, put there by an update or the install script, and restarting runs it; `available` is a newer release still to download; `manual` says why kimo cannot install it itself (built from source, a folder you cannot write) |
 | POST | `/update` | download the release for this machine, check its SHA-256 and put it in place of kimo's binary → `{installed}` |
-| POST | `/update/restart` | restart kimo on the installed version (same process); sessions running now start again, continuing their conversations, once it is back |
+| POST | `/update/restart` | restart kimo on the installed version (same process): running terminals and agents are handed to the new kimo and keep running (paused ones stay paused); one that cannot be handed over starts again, continuing its conversation |
 
 ## App keys
 

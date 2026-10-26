@@ -22,6 +22,9 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, watch};
 
+#[path = "handoff.rs"]
+mod handoff;
+
 pub struct ManagerConfig {
     pub data_dir: PathBuf,
     pub user_home: PathBuf,
@@ -695,8 +698,22 @@ impl Manager {
             .process_id()
             .map(|p| p as i32)
             .ok_or_else(|| anyhow!("no process id"))?;
-        let mut reader = pair.master.try_clone_reader()?;
-        let mut writer = pair.master.take_writer()?;
+        self.wire(id, live, pair.master, child, pid)
+    }
+
+    /// A terminal's two I/O threads: its output to the scrollback and to viewers (and an exit
+    /// notice when it ends), and input to it. For a new terminal or one handed over by the
+    /// kimo this one replaced.
+    fn wire(
+        &self,
+        id: &str,
+        live: &Live,
+        master: Box<dyn MasterPty + Send>,
+        child: Box<dyn Child + Send + Sync>,
+        pid: i32,
+    ) -> Result<Runtime> {
+        let mut reader = master.try_clone_reader()?;
+        let mut writer = master.take_writer()?;
 
         let last_output = live.last_output.clone();
         let (scrollback, output, exits, generation, sid) = (
@@ -741,7 +758,7 @@ impl Manager {
             })?;
         Ok(Runtime {
             pid,
-            master: pair.master,
+            master,
             input,
             child,
         })

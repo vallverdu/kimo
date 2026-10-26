@@ -592,6 +592,66 @@ async fn sessions_running_at_an_update_restart_start_again() {
 }
 
 #[tokio::test]
+async fn an_update_keeps_running_agents_running() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    let m = manager(tmp.path());
+    let new = |name: &str, command: Option<Vec<String>>| NewSession {
+        model: None,
+        effort: None,
+        name: name.into(),
+        kind: SessionKind::Shell,
+        cwd: tmp.path().display().to_string(),
+        account: None,
+        args: vec![],
+        command,
+    };
+    let cat = m
+        .create(new("cat", Some(vec!["cat".into()])), true)
+        .unwrap();
+    let paused = m
+        .create(new("paused", Some(vec!["sleep".into(), "60".into()])), true)
+        .unwrap();
+    m.act(&paused.spec.id, Action::Pause).await.unwrap();
+    m.write(&cat.spec.id, b"before\n".to_vec());
+    wait_for(&m, &cat.spec.id, "before").await;
+    let pid = m.session(&cat.spec.id).unwrap().pid;
+
+    // The update: the terminals are handed over instead of stopped.
+    m.request_restart().unwrap();
+    assert_eq!(m.hand_over().unwrap(), 2);
+    drop(m);
+
+    // The new kimo adopts them: same processes, still running (or paused), screen kept,
+    // input and output working; nothing to start again.
+    let m = manager(tmp.path());
+    assert_eq!(m.adopt_handed_over(), 2);
+    assert_eq!(m.resume_after_restart(), 0);
+    let s = m.session(&cat.spec.id).unwrap();
+    assert_eq!((s.pid, s.status), (pid, SessionStatus::Running));
+    assert_eq!(
+        m.session(&paused.spec.id).unwrap().status,
+        SessionStatus::Paused
+    );
+    wait_for(&m, &cat.spec.id, "before").await;
+    // (In one test process the first kimo's reader threads still run and may take some of
+    // the output; after a real exec they are gone. Typing until the new kimo sees it.)
+    let mut seen = false;
+    for _ in 0..40 {
+        m.write(&cat.spec.id, b"after\n".to_vec());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if String::from_utf8_lossy(&m.attach(&cat.spec.id).unwrap().replay).contains("after") {
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "input and output work after the handover");
+    // Stopping still ends them.
+    m.shutdown().await;
+    assert!(m.session(&cat.spec.id).unwrap().pid.is_none());
+}
+
+#[tokio::test]
 async fn agents_stopped_to_free_memory_say_so_and_continue() {
     let tmp = tempfile::tempdir().unwrap();
     let work = tmp.path().join("work");

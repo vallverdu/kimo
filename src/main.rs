@@ -182,6 +182,11 @@ async fn serve(cfg: Config) -> Result<()> {
             bound: ip,
         },
     );
+    // After an update: the terminals the kimo before handed over keep running here.
+    let kept = manager.adopt_handed_over();
+    if kept > 0 {
+        println!("  {kept} sessions kept running through the update");
+    }
     // Terminals belong to projects: folders of older loose sessions become projects.
     manager.adopt_loose_sessions();
     let resumed = manager.resume_after_restart();
@@ -198,7 +203,19 @@ async fn serve(cfg: Config) -> Result<()> {
             restart = true;
         }
     }
-    manager.shutdown().await;
+    if restart {
+        // The terminals stay open for the new kimo (agents keep running); if that cannot be
+        // prepared, they stop and start again, continuing, as before.
+        match manager.hand_over() {
+            Ok(n) => tracing::info!("handing {n} running sessions over to the new kimo"),
+            Err(e) => {
+                tracing::warn!("cannot hand the sessions over ({e:#}): restarting them");
+                manager.shutdown().await;
+            }
+        }
+    } else {
+        manager.shutdown().await;
+    }
     if restart {
         // The same process (pid, service manager, log) runs the newly installed binary.
         let exe = kimo::services::update::exe()?;
