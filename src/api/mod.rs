@@ -134,6 +134,8 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/usage", get(usage))
         .route("/usage/daily", get(daily_usage))
         .route("/update", get(check_update).post(install_update))
+        .route("/ports", get(ports))
+        .route("/awake", get(awake).post(set_awake))
         .route("/update/restart", post(restart))
         .route(
             "/skills",
@@ -286,6 +288,7 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         "sessions": sessions.len(),
         "agents_rss_bytes": sessions.iter().map(|s| s.usage.rss_bytes).sum::<u64>(),
         "memory_pressure": crate::core::memory::pressure(mem_total, mem_available),
+        "awake": crate::services::awake::status(app.manager.settings().keep_awake),
     }))
 }
 
@@ -815,6 +818,39 @@ async fn remove_worktree(
     ))
 }
 
+/// Listening TCP ports, each with the session that opened it (if one did).
+async fn ports(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let list =
+        tokio::task::spawn_blocking(move || crate::services::ports::list(&manager.sessions()))
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(list)))
+}
+
+async fn awake(State(app): State<App>) -> Json<serde_json::Value> {
+    Json(json!(crate::services::awake::status(
+        app.manager.settings().keep_awake
+    )))
+}
+
+#[derive(Deserialize)]
+struct AwakeBody {
+    mode: crate::core::awake::KeepAwake,
+}
+
+/// Keep the computer awake: `off`, `agents` (while an agent works) or `on`.
+async fn set_awake(
+    State(app): State<App>,
+    Json(body): Json<AwakeBody>,
+) -> ApiResult<serde_json::Value> {
+    let mut settings = app.manager.settings();
+    settings.keep_awake = body.mode;
+    app.manager.set_settings(settings)?;
+    crate::services::awake::tick(body.mode, false);
+    Ok(Json(json!(crate::services::awake::status(body.mode))))
+}
+
 /// The latest kimo release (`?force=true` asks GitHub now instead of the 6-hour cache).
 async fn check_update(Query(q): Query<HashMap<String, String>>) -> ApiResult<serde_json::Value> {
     let force = q.get("force").is_some_and(|v| v == "true" || v == "1");
@@ -1221,21 +1257,35 @@ async fn pump(
     }
 }
 
-async fn static_file(uri: Uri) -> Response {
+/// kimo's web files. Browsers check with kimo before using a cached copy (a `304` when
+/// unchanged), so a phone runs the new web app as soon as kimo is updated.
+async fn static_file(uri: Uri, headers: axum::http::HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
     match Web::get(path) {
         Some(file) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            let cache = if path == "index.html" || path == "sw.js" {
-                "no-cache"
-            } else {
-                "public, max-age=3600"
-            };
+            let hash = file.metadata.sha256_hash();
+            let etag = format!(
+                "\"{}\"",
+                hash[..12]
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            );
+            let cached = headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.split(',').any(|t| t.trim() == etag));
+            if cached {
+                return (StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response();
+            }
+            let cache = "no-cache";
             let mut res = (
                 [
                     (header::CONTENT_TYPE, mime.as_ref().to_string()),
                     (header::CACHE_CONTROL, cache.to_string()),
+                    (header::ETAG, etag),
                 ],
                 file.data,
             )

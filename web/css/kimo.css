@@ -200,3 +200,20 @@
 .k-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .k-install-first { color: var(--color-ink); }
 #view-usage .k-hint { margin-bottom: 2.4rem; }
+
+/* The machine at a glance: chips under the figures, details in a sheet. */
+.k-machine { margin: -1.6rem 0 2.4rem; }
+.k-machine-body { max-height: 60vh; overflow-y: auto; }
+.k-machine-body h4 { font-size: 1.3rem; margin: 1.6rem 0 .4rem; color: var(--color-ink); }
+.k-machine-list { list-style: none; margin: 0 0 1.2rem; padding: 0; }
+.k-machine-list > li { margin: 0; padding: .8rem 0; border-bottom: 1px solid var(--color-line); display: flex; justify-content: space-between; align-items: baseline; gap: 1.2rem; font-size: 1.3rem; }
+.k-machine-list > li > span:last-child { white-space: nowrap; text-align: right; }
+.k-machine-list small { display: block; color: var(--color-muted); font-size: 1.1rem; }
+
+.k-machine-list .k-machine-group { border-bottom-color: var(--color-ink); padding-top: 1.4rem; }
+.k-machine-choices { display: grid; gap: .6rem; margin-bottom: 1.2rem; }
+.k-machine-choices button { display: block; text-align: left; margin: 0; padding: 1rem 1.2rem; height: auto; border: 1px solid var(--color-line); background: var(--color-background); color: var(--color-ink); font: inherit; line-height: 1.4; letter-spacing: 0; text-transform: none; cursor: pointer; }
+.k-machine-choices button.active { border-color: var(--color-ink); box-shadow: inset 3px 0 0 var(--color-ink); }
+.k-machine-choices small { display: block; color: var(--color-muted); font-size: 1.1rem; }
+.k-machine-list .k-name { background: none; border: 0; padding: 0; margin: 0; height: auto; color: var(--color-ink); font: inherit; font-size: 1.4rem; letter-spacing: 0; text-transform: none; text-align: left; cursor: pointer; }
+.k-machine-list .k-name:hover { text-decoration: underline; }

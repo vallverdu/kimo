@@ -1194,3 +1194,79 @@ async fn typed_pairing_codes_and_other_kimos_are_for_the_owner() {
         .unwrap();
     assert_eq!(denied.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn ports_and_keeping_awake_are_for_the_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), Some("admin-secret"));
+    let ports = app
+        .clone()
+        .oneshot(local(req("GET", "/api/ports", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(ports.status(), StatusCode::OK);
+    assert!(json(ports).await.is_array());
+
+    // While agents work: nothing works here, so nothing is held awake.
+    let set = json(
+        app.clone()
+            .oneshot(local(req(
+                "POST",
+                "/api/awake",
+                None,
+                None,
+                Some(r#"{"mode":"agents"}"#),
+            )))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (set["mode"].as_str(), set["active"].as_bool()),
+        (Some("agents"), Some(false))
+    );
+    let status = json(
+        app.clone()
+            .oneshot(local(req("GET", "/api/status", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status["awake"]["mode"], "agents");
+    let settings = json(
+        app.clone()
+            .oneshot(local(req("GET", "/api/settings", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(settings["keep_awake"], "agents");
+
+    let key = json(
+        app.clone()
+            .oneshot(req(
+                "POST",
+                "/api/clients",
+                None,
+                Some("admin-secret"),
+                Some(r#"{"name":"tool","scope":"control"}"#),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (method, path, body) in [
+        ("GET", "/api/ports", None),
+        ("POST", "/api/awake", Some(r#"{"mode":"on"}"#)),
+    ] {
+        let denied = app
+            .clone()
+            .oneshot(remote(req(method, path, None, Some(&key), body)))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+}

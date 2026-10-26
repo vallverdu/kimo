@@ -252,6 +252,9 @@ pub struct Settings {
     pub claude_limits: bool,
     #[serde(default)]
     pub updates: UpdateSettings,
+    /// Keep the computer from sleeping: off, while agents work, or always.
+    #[serde(default)]
+    pub keep_awake: crate::core::awake::KeepAwake,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

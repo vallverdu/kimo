@@ -133,6 +133,12 @@ async fn serve(cfg: Config) -> Result<()> {
             let m = sampler.clone();
             let memory = tokio::task::spawn_blocking(move || {
                 m.sample();
+                // Keep the computer awake as the settings say (while agents work, always).
+                let working = m
+                    .sessions()
+                    .iter()
+                    .any(|s| s.activity == Some(kimo::core::activity::Activity::Working));
+                kimo::services::awake::tick(m.settings().keep_awake, working);
                 kimo::services::stats::system_memory()
             })
             .await;
@@ -206,7 +212,11 @@ async fn serve(cfg: Config) -> Result<()> {
 async fn local_call(port: u16, method: &str, path: &str) -> Result<serde_json::Value> {
     let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
         .await
-        .with_context(|| format!("kimo is not running on port {port}"))?;
+        .with_context(|| {
+            format!(
+                "kimo is not running on port {port}: start it with `kimo serve` (or as a service: see contrib/kimo.service)"
+            )
+        })?;
     let request = format!("{method} {path} HTTP/1.1\r\nHost: localhost:{port}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await?;
     let mut response = Vec::new();

@@ -16,7 +16,7 @@ as `?token=<key>` where headers are not possible (websockets, EventSource).
 | An app | an app key (`/clients`), only from its listed origins | `control`: sessions, projects, messages, terminals, account switching · `read`: GET only, no terminals, no folder listing |
 
 Owner only: `/clients`, `/devices`, `/pairing`, `/network`, `/qr`, `/settings`, `/peers`,
-`/hosts`, `/update`, installing or removing skills, adding, signing in or deleting accounts.
+`/hosts`, `/update`, `/ports`, `/awake`, installing or removing skills, adding, signing in or deleting accounts.
 
 Requests from another web page (an `Origin` that is not kimo itself) need a key that lists
 that origin; kimo answers CORS preflights for listed origins.
@@ -89,7 +89,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | POST | `/skills` | install `{source, skill?, agents, project?, replace?}` from `owner/repo/folder`, a git URL or a folder |
 | DELETE | `/skills?path=` | remove (moved to `~/.kimo/skill-backups`) |
 | POST | `/skills/kimo` | install the bundled `kimo-agents` skill `{agents?}` |
-| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]`, `theme: system \| light \| dark` (window and web client), `updates.{notify, auto}` (a system notification once per new version; installing and restarting by itself when no agent is working) |
+| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]`, `theme: system \| light \| dark` (window and web client), `updates.{notify, auto}` (a system notification once per new version; installing and restarting by itself when no agent is working), `keep_awake: off \| agents \| on` |
 | GET | `/agents` | agent CLIs found on the machine, with versions |
 
 ## Devices, network, other kimos
@@ -108,6 +108,14 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | GET | `/peers/keys` | paired kimos with their keys (for the owner's own apps) |
 | POST | `/peers/accept` | used by another kimo during pairing |
 | any | `/hosts/{host}/…` | the same API on a paired kimo (`host`: its id or name from `/peers`), through this one with this kimo's key there: calls, `/events` and terminal websockets. A phone paired with one kimo uses all of them |
+
+## The machine
+
+| Method | Path | |
+|---|---|---|
+| GET | `/ports` | listening TCP ports: `[{port, addresses, pid, process, session, session_name, kimo}]`; `session` is the kimo session whose processes listen there (a dev server an agent started), `kimo` marks kimo itself; ports of the system and other users come without a process |
+| GET | `/awake` | keeping the computer awake: `{mode: off \| agents \| on, active, supported}` (`caffeinate` on macOS, `systemd-inhibit` on Linux); also in `/status` as `awake` |
+| POST | `/awake` | `{mode}`: `agents` keeps it awake while an agent works and two minutes after; saved as `keep_awake` in the settings |
 
 ## Updates
 
@@ -156,6 +164,7 @@ kimo.hosts();                                           // paired kimos (owner o
 kimo.useHost(id); kimo.forHost(id);                     // talk to one of them through this kimo
 kimo.settings(); kimo.saveSettings(s);                   // owner only
 kimo.release(force); kimo.installUpdate(); kimo.restartKimo();   // owner only
+kimo.ports(); kimo.awake(); kimo.setAwake('agents');          // owner only
 quietFor(session);                  // seconds since its last output
 ```
 

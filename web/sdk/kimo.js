@@ -173,6 +173,14 @@ export class Kimo {
   /** Restart kimo on the installed version; running sessions continue once it is back. */
   restartKimo() { return this.request('POST', '/update/restart'); }
 
+  // Owner only: the machine
+  /** Listening TCP ports: [{port, addresses, pid, process, session, session_name, kimo}]. */
+  ports() { return this.request('GET', '/ports'); }
+  /** Keeping the computer awake: {mode: 'off'|'agents'|'on', active, supported}. */
+  awake() { return this.request('GET', '/awake'); }
+  /** @param {'off'|'agents'|'on'} mode `agents`: while an agent is working. */
+  setAwake(mode) { return this.request('POST', '/awake', { mode }); }
+
   // Owner only: devices and network
   network() { return this.request('GET', '/network'); }
   /** Serve kimo over HTTPS on the tailnet (tailscale serve); returns {url}. */

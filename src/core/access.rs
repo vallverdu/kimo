@@ -47,6 +47,8 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
         "/clients", "/network", "/pairing", "/devices", "/qr", "/settings", "/peers", "/update",
         // Paired kimos reached through this one get this kimo's own key there.
         "/hosts",
+        // What else runs on the machine, and its sleep.
+        "/ports", "/awake",
     ]
         .iter()
         .any(|p| path.starts_with(p))

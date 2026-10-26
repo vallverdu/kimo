@@ -55,6 +55,8 @@ enum Msg {
     Note(String),
     /// The latest release (`/update`).
     Release(Value),
+    /// Listening ports (`/ports`) of the shown kimo.
+    Ports(Value),
     /// Memory report (`/memory`).
     Memory(Value),
     /// What a session's memory is made of: (session id, parts).
@@ -279,6 +281,12 @@ pub struct KimoApp {
     updating: Updating,
     /// This machine's kimo server version, as it last answered.
     server_version: Option<String>,
+    /// Listening ports of the shown kimo, for the bottom bar.
+    ports: Vec<Value>,
+    last_ports: Instant,
+    last_usage: Instant,
+    /// CPU of each project over the last minutes (bottom bar, resources).
+    cpu_history: std::collections::HashMap<String, std::collections::VecDeque<f32>>,
     /// The update the Dock icon already bounced for.
     attention_for: Option<String>,
     /// The server version this window already tried to restart onto.
@@ -490,6 +498,10 @@ impl KimoApp {
             dismissed: None,
             updating: Updating::Idle,
             server_version: None,
+            ports: Vec::new(),
+            last_ports: Instant::now() - Duration::from_secs(60),
+            last_usage: Instant::now() - Duration::from_secs(600),
+            cpu_history: Default::default(),
             attention_for: None,
             followed: None,
         };
@@ -569,6 +581,10 @@ impl KimoApp {
         self.network = Value::Null;
         self.skills.clear();
         self.usage.clear();
+        self.ports.clear();
+        self.cpu_history.clear();
+        self.last_ports = Instant::now() - Duration::from_secs(60);
+        self.last_usage = Instant::now() - Duration::from_secs(600);
         self.settings = None;
         self.job(|c| Ok(Msg::Settings(Box::new(c.get("/settings")?))));
         self.refresh_view();
@@ -783,6 +799,7 @@ impl KimoApp {
                     self.ask_attention();
                 }
                 Msg::LocalVersion(v) => self.follow_server(v),
+                Msg::Ports(v) => self.ports = v.as_array().cloned().unwrap_or_default(),
                 Msg::ServerRestarted(v) => {
                     self.updating = Updating::Idle;
                     self.toast(format!("kimo {v} is running"), false);
@@ -867,6 +884,16 @@ impl KimoApp {
             self.last_status = Instant::now();
             self.job(|c| Ok(Msg::Status(c.get("/status")?)));
             self.job(|c| Ok(Msg::Memory(c.get("/memory")?)));
+            self.record_cpu();
+        }
+        // The bottom bar: ports and plan limits (kimos before 0.1.8 have no /ports).
+        if self.last_ports.elapsed() > Duration::from_secs(10) {
+            self.last_ports = Instant::now();
+            self.job(|c| Ok(Msg::Ports(c.get("/ports").unwrap_or(Value::Null))));
+        }
+        if self.last_usage.elapsed() > Duration::from_secs(120) {
+            self.last_usage = Instant::now();
+            self.job(|c| Ok(Msg::Usage(c.get("/usage").unwrap_or(Value::Null))));
         }
         if self.last_hosts.elapsed() > Duration::from_secs(15) {
             self.last_hosts = Instant::now();
@@ -990,16 +1017,16 @@ impl KimoApp {
             } else {
                 "Ctrl+B"
             };
-            if panel_button(ui, self.sidebar_open)
-                .on_hover_text(format!(
-                    "{} the projects panel ({shortcut})",
-                    if self.sidebar_open { "hide" } else { "show" }
-                ))
-                .clicked()
-            {
-                self.toggle_sidebar();
+            // With the projects panel open, its button is in the panel (next to + kimo).
+            if !self.sidebar_open {
+                if panel_button(ui, false)
+                    .on_hover_text(format!("show the projects panel ({shortcut})"))
+                    .clicked()
+                {
+                    self.toggle_sidebar();
+                }
+                ui.add_space(4.0);
             }
-            ui.add_space(4.0);
             ui.add(
                 egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), [30.0, 30.0]))
                     .tint(theme::ink()),
@@ -1095,56 +1122,285 @@ impl KimoApp {
         });
     }
 
-    fn status_bar(&self, ui: &mut Ui) {
-        let sessions = self.sessions();
-        let count = |st: &str| sessions.iter().filter(|x| s(x, "status") == st).count();
-        let st = &self.status;
-        ui.horizontal(|ui| {
-            for (color, n, label) in [
-                (theme::good(), count("running"), "running"),
-                (theme::warn(), count("paused"), "paused"),
-            ] {
-                dot(ui, color);
-                ui.label(RichText::new(format!("{n} {label}")).size(11.0));
+    /// Each project's CPU now, kept for the resources sparklines (a few minutes).
+    fn record_cpu(&mut self) {
+        let mut now: std::collections::HashMap<String, f32> = Default::default();
+        for x in self.sessions() {
+            let name = self.project_name_of(&x);
+            *now.entry(name).or_default() +=
+                x["usage"]["cpu_percent"].as_f64().unwrap_or(0.0) as f32;
+        }
+        self.cpu_history.retain(|k, _| now.contains_key(k));
+        for (name, cpu) in now {
+            let h = self.cpu_history.entry(name).or_default();
+            h.push_back(cpu);
+            while h.len() > 60 {
+                h.pop_front();
             }
-            ui.label(
-                RichText::new(format!(
-                    "{} stopped",
-                    sessions.len() - count("running") - count("paused")
-                ))
-                .size(11.0)
-                .color(theme::muted()),
-            );
-            ui.separator();
-            if let Some(agents) = st["agents_rss_bytes"].as_u64() {
-                ui.label(RichText::new(format!("agents {}", mb(agents))).size(11.0));
-                let free = RichText::new(format!(
-                    "free {}",
-                    mb(st["mem_available_bytes"].as_u64().unwrap_or(0))
-                ))
-                .size(11.0);
-                ui.label(match s(st, "memory_pressure") {
+        }
+    }
+
+    /// The project a session works in, by name ("Not in a project" otherwise).
+    fn project_name_of(&self, session: &Value) -> String {
+        self.project_of(session)
+            .and_then(|id| self.projects.iter().find(|p| s(p, "id") == id))
+            .map(|p| s(p, "name").to_string())
+            .unwrap_or_else(|| "Not in a project".into())
+    }
+
+    /// The bottom bar: plan use of the active subscriptions on the left; keeping the
+    /// computer awake, resources, ports and the kimos on the right. Each opens a panel.
+    fn status_bar(&mut self, ui: &mut Ui) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let accounts = self.accounts();
+        let mut go_view = None;
+        let mut open = None;
+        let mut host = None;
+        let mut awake_to = None;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            // Plan use per provider: its active subscription's limit closest to running out.
+            let mut chips = Vec::new();
+            for provider in ["claude", "codex"] {
+                let active = accounts
+                    .iter()
+                    .find(|a| s(a, "provider") == provider && a["active"] == true)
+                    .or_else(|| accounts.iter().find(|a| s(a, "provider") == provider && a["system"] == true));
+                if let Some(l) = active.and_then(|a| usage_of(&self.usage, a)).and_then(worst_limit) {
+                    let used = l["used_percent"].as_f64().unwrap_or(0.0);
+                    let label = if provider == "claude" { "Claude" } else { "Codex" };
+                    chips.push(format!("{label} {used:.0}% {}", until(l["resets_at"].as_u64().unwrap_or(0), now)));
+                }
+            }
+            let text = if chips.is_empty() { "Used".to_string() } else { format!("Used   {}", chips.join("   ")) };
+            let r = bar_button(ui, &text).on_hover_text("plan use of the active subscriptions");
+            egui::Popup::menu(&r).align(egui::RectAlign::TOP_START).width(320.0).show(|ui| {
+                ui.label(RichText::new("Usage").strong().color(theme::ink()));
+                for provider in ["claude", "codex"] {
+                    let list: Vec<&Value> = accounts.iter().filter(|a| s(a, "provider") == provider).collect();
+                    if list.is_empty() {
+                        continue;
+                    }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(if provider == "claude" { "CLAUDE" } else { "CODEX" }).size(10.5).color(theme::muted()));
+                    for a in list {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(s(a, "name")).color(theme::ink()));
+                            if a["active"] == true {
+                                ui.label(RichText::new("active").size(10.5).color(theme::teal()));
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                match usage_of(&self.usage, a).and_then(worst_limit) {
+                                    Some(l) => ui.label(RichText::new(format!(
+                                        "{:.0}% · {}",
+                                        l["used_percent"].as_f64().unwrap_or(0.0),
+                                        until(l["resets_at"].as_u64().unwrap_or(0), now)
+                                    )).size(12.0)),
+                                    None => ui.label(RichText::new("no limits known").size(11.0).color(theme::muted())),
+                                };
+                            });
+                        });
+                    }
+                }
+                ui.separator();
+                if ui.button("Usage details and history").clicked() {
+                    go_view = Some(View::Usage);
+                }
+                if ui.button("Manage subscriptions…").clicked() {
+                    go_view = Some(View::Subscriptions);
+                }
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The kimos: this machine and the paired ones.
+                let r = bar_button(ui, &format!("{} kimo{}", self.hosts.len(), if self.hosts.len() == 1 { "" } else { "s" }))
+                    .on_hover_text("the kimos this window shows");
+                egui::Popup::menu(&r).align(egui::RectAlign::TOP_END).width(280.0).show(|ui| {
+                    ui.label(RichText::new("KIMOS").size(10.5).color(theme::muted()));
+                    for (i, h) in self.hosts.iter().enumerate() {
+                        let online = h.loaded();
+                        let shown = if i == self.current { "  · shown" } else { "" };
+                        let what = if i == 0 { "this machine" } else { "paired kimo" };
+                        let text = format!("{} {}\n{what} · {}{shown}", if online { "●" } else { "○" }, h.name, if online { "online" } else { "offline" });
+                        if ui.button(RichText::new(text).color(if online { theme::ink() } else { theme::muted() })).clicked() {
+                            host = Some(i);
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Pair another kimo…").clicked() {
+                        host = Some(0);
+                        go_view = Some(View::Devices);
+                    }
+                });
+
+                // Listening ports: those of agents and terminals first, the others folded.
+                let mine: Vec<&Value> = self.ports.iter().filter(|p| !p["session"].is_null()).collect();
+                let others: Vec<&Value> = self.ports.iter().filter(|p| p["session"].is_null()).collect();
+                let r = bar_button(ui, &format!("{} port{}", mine.len(), if mine.len() == 1 { "" } else { "s" }))
+                    .on_hover_text(format!("{} from agents and terminals, {} others", mine.len(), others.len()));
+                egui::Popup::menu(&r)
+                    .align(egui::RectAlign::TOP_END)
+                    .width(340.0)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Ports").strong().color(theme::ink()));
+                            ui.label(RichText::new(format!("{} from agents · {} others", mine.len(), others.len())).size(11.0).color(theme::muted()));
+                        });
+                        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                            let mut names: Vec<&str> = mine.iter().map(|p| s(p, "session_name")).collect();
+                            names.dedup();
+                            for name in names {
+                                ui.add_space(4.0);
+                                ui.label(RichText::new(name).color(theme::ink()));
+                                for p in mine.iter().filter(|p| s(p, "session_name") == name) {
+                                    if port_row(ui, p) && self.current == 0 {
+                                        open = Some(format!("http://localhost:{}", p["port"]));
+                                    }
+                                }
+                            }
+                            if mine.is_empty() {
+                                ui.label(RichText::new("No agent or terminal listens on a port.").size(11.5).color(theme::muted()));
+                            }
+                            ui.add_space(4.0);
+                            egui::CollapsingHeader::new(RichText::new(format!("OTHER PORTS  {}", others.len())).size(10.5).color(theme::muted()))
+                                .id_salt("other-ports")
+                                .show(ui, |ui| {
+                                    for p in &others {
+                                        port_row(ui, p);
+                                    }
+                                });
+                        });
+                    });
+
+                // Resources: CPU and memory per project, with a minute-long CPU line.
+                let sessions = self.sessions();
+                let running = sessions.iter().filter(|x| matches!(s(x, "status"), "running" | "paused")).count();
+                let st = &self.status;
+                let agents = st["agents_rss_bytes"].as_u64().unwrap_or(0);
+                let free = RichText::new(format!("{} · {running} running", mb(agents))).size(11.5);
+                let free = match s(st, "memory_pressure") {
                     "critical" => free.color(theme::bad()),
                     "low" => free.color(theme::warn()),
-                    _ => free,
+                    _ => free.color(theme::text()),
+                };
+                let r = ui
+                    .add(egui::Button::new(free).frame(false))
+                    .on_hover_text("memory and CPU per project");
+                egui::Popup::menu(&r).align(egui::RectAlign::TOP_END).width(380.0).show(|ui| {
+                    let cpu: f64 = sessions.iter().map(|x| x["usage"]["cpu_percent"].as_f64().unwrap_or(0.0)).sum();
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Resources").strong().color(theme::ink()));
+                        ui.label(RichText::new(format!(
+                            "{cpu:.1}% CPU · agents {} · free {} of {} · kimo {}",
+                            mb(agents),
+                            mb(st["mem_available_bytes"].as_u64().unwrap_or(0)),
+                            mb(st["mem_total_bytes"].as_u64().unwrap_or(0)),
+                            mb(st["kimo_rss_bytes"].as_u64().unwrap_or(0))
+                        )).size(11.0).color(theme::muted()));
+                    });
+                    let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
+                    for x in &sessions {
+                        let name = self.project_name_of(x);
+                        match groups.iter_mut().find(|(n, _)| *n == name) {
+                            Some((_, list)) => list.push(x),
+                            None => groups.push((name, vec![x])),
+                        }
+                    }
+                    egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
+                        egui::Grid::new("resources").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+                            for (name, list) in &groups {
+                                let gcpu: f64 = list.iter().map(|x| x["usage"]["cpu_percent"].as_f64().unwrap_or(0.0)).sum();
+                                let grss: u64 = list.iter().map(|x| x["usage"]["rss_bytes"].as_u64().unwrap_or(0)).sum();
+                                ui.label(RichText::new(name.to_uppercase()).size(11.0).strong().color(theme::ink()));
+                                sparkline(ui, self.cpu_history.get(name));
+                                ui.label(RichText::new(format!("{gcpu:.1}%")).size(11.5));
+                                ui.label(RichText::new(mb(grss)).size(11.5));
+                                ui.end_row();
+                                for x in list {
+                                    let color = match s(x, "status") {
+                                        "running" => theme::good(),
+                                        "paused" => theme::warn(),
+                                        _ => theme::muted(),
+                                    };
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(10.0);
+                                        dot(ui, color);
+                                        if ui.add(egui::Button::new(RichText::new(s(x, "name")).size(12.0).color(theme::ink())).frame(false)).clicked() {
+                                            open = Some(format!("session:{}", s(x, "id")));
+                                        }
+                                    });
+                                    ui.label("");
+                                    ui.label(RichText::new(format!("{:.1}%", x["usage"]["cpu_percent"].as_f64().unwrap_or(0.0))).size(11.5).color(theme::text()));
+                                    ui.label(RichText::new(mb(x["usage"]["rss_bytes"].as_u64().unwrap_or(0))).size(11.5).color(theme::text()));
+                                    ui.end_row();
+                                }
+                            }
+                        });
+                        if groups.is_empty() {
+                            ui.label(RichText::new("No terminals yet.").size(11.5).color(theme::muted()));
+                        }
+                    });
+                    ui.label(RichText::new("Pause saves CPU and keeps memory; stop frees memory and the agent continues its conversation when started again.").size(10.5).color(theme::muted()));
                 });
-                ui.label(
-                    RichText::new(format!(
-                        "kimo {}",
-                        mb(st["kimo_rss_bytes"].as_u64().unwrap_or(0))
-                    ))
-                    .size(11.0)
-                    .color(theme::muted()),
-                );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{} · {}", self.host().name, self.client().base()))
-                        .size(11.0)
-                        .color(theme::muted()),
-                );
+
+                // Keeping the computer awake.
+                let awake = &st["awake"];
+                if awake["supported"] == true {
+                    let mode = s(awake, "mode").to_string();
+                    let label = match mode.as_str() {
+                        "on" => "awake: on",
+                        "agents" => "awake: agents",
+                        _ => "awake: off",
+                    };
+                    let active = awake["active"] == true;
+                    let r = bar_button(ui, &format!("{} {label}", if active { "●" } else { "○" }))
+                        .on_hover_text(if active { "kept awake now" } else { "the computer may sleep" });
+                    egui::Popup::menu(&r).align(egui::RectAlign::TOP_END).width(300.0).show(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Keep computer awake").strong().color(theme::ink()));
+                            ui.label(RichText::new(if active { "active" } else { "inactive" }).size(11.0).color(theme::muted()));
+                        });
+                        for (value, title, about) in [
+                            ("on", "On", "Keep this computer awake all the time"),
+                            ("agents", "While agents work", "Stay awake while an agent is working, and two minutes after"),
+                            ("off", "Off", "The computer sleeps as usual"),
+                        ] {
+                            let mark = if mode == value { "●" } else { "  " };
+                            let text = format!("{mark} {title}\n     {about}");
+                            if ui.button(RichText::new(text).color(theme::ink())).clicked() && mode != value {
+                                awake_to = Some(value);
+                            }
+                        }
+                    });
+                }
             });
         });
+        if let Some(v) = go_view {
+            if let Some(i) = host {
+                self.switch_host(i);
+            }
+            self.view = v;
+            self.refresh_view();
+        } else if let Some(i) = host {
+            self.switch_host(i);
+        }
+        if let Some(target) = open {
+            match target.strip_prefix("session:") {
+                Some(id) => self.open_session(id),
+                None => open_url(&target),
+            }
+        }
+        if let Some(mode) = awake_to {
+            self.job(move |c| {
+                c.post("/awake", json!({ "mode": mode }))?;
+                Ok(Msg::Note(format!("Keep awake: {mode}")))
+            });
+            self.last_status = Instant::now() - Duration::from_secs(60);
+        }
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
@@ -1152,6 +1408,7 @@ impl KimoApp {
         // agents and terminals, as if they were here).
         let mut chosen = None;
         let mut connect = false;
+        let mut fold = false;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (i, h) in self.hosts.iter().enumerate() {
@@ -1174,7 +1431,14 @@ impl KimoApp {
                 .add(egui::Button::new(RichText::new("+ kimo").size(12.0).color(theme::muted())).frame(false))
                 .on_hover_text("connect the kimo of another machine (a Linux box, another Mac): its projects and agents show here")
                 .clicked();
+            let shortcut = if cfg!(target_os = "macos") { "⌘B" } else { "Ctrl+B" };
+            fold = panel_button(ui, true)
+                .on_hover_text(format!("hide the projects panel ({shortcut})"))
+                .clicked();
         });
+        if fold {
+            self.toggle_sidebar();
+        }
         if let Some(i) = chosen {
             self.switch_host(i);
         }
@@ -3820,6 +4084,90 @@ fn badge(ui: &mut Ui, text: &str) {
 }
 
 /// Plan limits of a subscription: a bar per window, when it resets and where the pace leads.
+/// A bottom-bar button: small text, no frame.
+fn bar_button(ui: &mut Ui, text: &str) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new(text).size(11.5).color(theme::text())).frame(false))
+}
+
+/// The usage entry of an account (`system`: this computer's own login of the provider).
+fn usage_of<'a>(usage: &'a [Value], account: &Value) -> Option<&'a Value> {
+    usage.iter().find(|u| {
+        s(u, "provider") == s(account, "provider")
+            && if account["system"] == true {
+                u["account"].is_null()
+            } else {
+                s(u, "account") == s(account, "id")
+            }
+    })
+}
+
+/// The plan limit closest to running out.
+fn worst_limit(usage: &Value) -> Option<&Value> {
+    usage["limits"]["limits"].as_array()?.iter().max_by(|a, b| {
+        let p = |l: &Value| l["used_percent"].as_f64().unwrap_or(0.0);
+        p(a).total_cmp(&p(b))
+    })
+}
+
+/// One listening port; true when clicked (to open it in the browser).
+fn port_row(ui: &mut Ui, p: &Value) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        clicked = ui
+            .add(
+                egui::Button::new(
+                    RichText::new(p["port"].to_string())
+                        .strong()
+                        .color(theme::ink()),
+                )
+                .frame(false),
+            )
+            .on_hover_text("open in the browser")
+            .clicked();
+        let addresses: Vec<&str> = p["addresses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| a.as_str())
+            .collect();
+        ui.label(
+            RichText::new(p["process"].as_str().unwrap_or("unknown process"))
+                .size(11.5)
+                .color(theme::text()),
+        );
+        ui.label(
+            RichText::new(addresses.join(" "))
+                .size(10.5)
+                .color(theme::muted()),
+        );
+    });
+    clicked
+}
+
+/// A small line of recent CPU use.
+fn sparkline(ui: &mut Ui, history: Option<&std::collections::VecDeque<f32>>) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(70.0, 14.0), egui::Sense::hover());
+    let Some(h) = history.filter(|h| h.len() > 1) else {
+        return;
+    };
+    let top = h.iter().cloned().fold(1.0f32, f32::max);
+    let n = h.len() as f32 - 1.0;
+    let points: Vec<egui::Pos2> = h
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            egui::pos2(
+                rect.left() + rect.width() * i as f32 / n,
+                rect.bottom() - rect.height() * v / top,
+            )
+        })
+        .collect();
+    ui.painter().add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.0, theme::muted()),
+    ));
+}
+
 fn limit_rows(ui: &mut Ui, usage: Option<&Value>, now: u64) {
     let Some(u) = usage else {
         return;
@@ -4408,6 +4756,9 @@ mod tests {
         )
         .to_string();
         app.open_session(&other_id);
+        // The memory card lists agents too; it shows when the machine running the test is
+        // low on memory.
+        app.memory_dismissed = Some(s(&app.memory, "pressure").to_string());
         let shown = run(&mut app, 5);
         // Each name shows in the sidebar; a tab adds a second one.
         let count = |name: &str| shown.iter().filter(|t| *t == name).count();
@@ -4420,6 +4771,12 @@ mod tests {
 
         // The view buttons, the panel toggle and every view.
         assert!(shown.iter().any(|t| t == "Subscriptions"));
+        // The bottom bar: plan use, keeping awake, resources, ports and the kimos.
+        assert!(shown.iter().any(|t| t.starts_with("Used")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.ends_with("awake: off")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.ends_with("3 running")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.ends_with(" port") || t.ends_with(" ports")), "{shown:?}");
+        assert!(shown.iter().any(|t| t == "1 kimo"), "{shown:?}");
         app.toggle_sidebar();
         let hidden = run(&mut app, 3);
         assert!(!hidden.iter().any(|t| t == "Projects" || t == "PROJECTS"));

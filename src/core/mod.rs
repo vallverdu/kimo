@@ -2,6 +2,7 @@
 
 pub mod access;
 pub mod activity;
+pub mod awake;
 pub mod daily;
 pub mod git;
 pub mod history;
@@ -11,6 +12,7 @@ pub mod lifecycle;
 pub mod memory;
 pub mod models;
 pub mod network;
+pub mod ports;
 pub mod pricing;
 pub mod procfs;
 pub mod replies;

@@ -34,6 +34,7 @@
 			<h1 class="ui-page-title">Agents</h1>
 			<p class="ui-lead">Every terminal on this machine: pause to free CPU, stop to free memory, start to continue.</p>
 			<div class="ui-stats" id="stats"></div>
+			<ul class="k-chips k-machine" id="machine" aria-label="This machine"></ul>
 			<div id="install"></div>
 			<div id="alerts"></div>
 			<h3 class="ui-section-title">Sessions</h3>
@@ -150,6 +151,11 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 		</form>
 	</section>
 
+	<dialog class="ui-sheet" id="sheet-machine"><form method="dialog">
+		<h3>This machine</h3>
+		<div class="k-machine-body"></div>
+		<button class="ui-button ghost k-small" value="cancel">close</button>
+	</form></dialog>
 	<dialog class="ui-sheet" id="sheet-session"><form method="dialog">
 		<h3>New session</h3>
 		<div class="ui-kinds">

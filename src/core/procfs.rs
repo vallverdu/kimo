@@ -84,6 +84,18 @@ impl ProcTable {
         Self { by_pid, children }
     }
 
+    /// The first of `roots` that `pid` is or descends from.
+    pub fn root_among(&self, pid: i32, roots: &[i32]) -> Option<i32> {
+        let mut at = pid;
+        for _ in 0..64 {
+            if roots.contains(&at) {
+                return Some(at);
+            }
+            at = self.by_pid.get(&at)?.ppid;
+        }
+        None
+    }
+
     pub fn tree_usage(&self, root: i32) -> TreeUsage {
         let mut usage = TreeUsage::default();
         let mut stack = vec![root];
@@ -171,6 +183,10 @@ mod tests {
             }
         );
         assert_eq!(t.tree_usage(77).processes, 0);
+        // A dev server two levels under an agent belongs to it.
+        assert_eq!(t.root_among(12, &[20, 10]), Some(10));
+        assert_eq!(t.root_among(20, &[10]), None);
+        assert_eq!(t.root_among(99, &[10]), None);
     }
 
     #[test]

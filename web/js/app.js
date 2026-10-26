@@ -6,8 +6,14 @@ import { $, esc, mb, shortPath, toast } from './ui.js';
 import { initProjects } from './projects.js';
 import { initDevices } from './devices.js';
 import { initUsage } from './usage.js';
+import { initMachine } from './machine.js';
 
-const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, usage: [], view: 'agents' };
+const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, usage: [], hosts: [], view: 'agents' };
+const machine = initMachine({
+  api, state,
+  openSession(id) { const s = state.sessions.find(x => x.id === id); if (s) terminal.open(s); },
+  switchHost(id) { $('host').value = id || ''; $('host').dispatchEvent(new Event('change')); },
+});
 
 const kTokens = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
 /** "3 d 4 h", "2 h 10 min", "5 min" until a unix-seconds time. */
@@ -78,6 +84,7 @@ function renderStats() {
     low ? `<div class="ui-alert"><span>${m.pressure === 'critical' ? 'Memory is almost full' : 'Memory is low'}: ${mb(m.available_bytes)} free of ${mb(m.total_bytes)}, agents use ${mb(m.agents_bytes)}. ${m.idle.length ? 'Idle agents continue their conversation when opened again.' : 'No agent is idle: stop or pause one you do not need.'}</span>${m.idle.length ? `<button class="ui-button k-small" data-do="free-memory">stop ${m.idle.length} idle (${mb(idleBytes)})</button>` : ''}</div>` : '',
     updateAlert(),
   ].join('');
+  machine.render();
 }
 
 // A new kimo version: install it from here, or restart onto one installed already (running
@@ -252,8 +259,9 @@ async function refresh() {
     loadMemory();
     return true;
   } catch (e) {
+    // A kimo this one cannot reach with its key, or no longer paired: back to this one.
+    if (api.host && (e.status === 401 || e.status === 404)) { useHost(null); return refresh(); }
     if (e.status === 401) {
-      if (api.host) { useHost(null); return refresh(); }
       if (!$('sheet-token').open) {
         $('sheet-token').querySelector('[name=name]').value = deviceName();
         $('sheet-token').showModal();
@@ -564,6 +572,7 @@ $('host').addEventListener('change', e => {
   terminal.close?.();
   useHost(e.target.value || null);
   connect();
+  machine.reset();
 });
 
 // ----- start -----

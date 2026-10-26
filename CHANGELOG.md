@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.8
+
+- The window's bottom bar: *Used* with the plan use of each provider's active subscription
+  (percent and time to reset; all subscriptions in its panel), *awake* (keep the computer
+  awake: on, while agents work, off), resources (memory and CPU per project and terminal,
+  with a CPU line per project), ports (listening ports by the terminal or agent that opened
+  them; the others folded) and the kimos (online state, switch, pair another).
+- Phone app: the same as chips under the agents' figures, each with a sheet.
+- The projects panel's fold button sits next to *+ kimo* (at the top left while hidden).
+- Keep awake: `caffeinate` on macOS, `systemd-inhibit` on Linux, ended with kimo.
+- API and SDK: `GET /api/ports` (`ports()`), `GET`/`POST /api/awake` (`awake()`,
+  `setAwake(mode)`), `awake` in `/api/status`, `keep_awake` in the settings.
+- Web files are revalidated on every load (ETags), so a phone runs the new app right after
+  an update instead of up to an hour later.
+- A phone that remembered a kimo no longer paired falls back to this one instead of an
+  empty page.
+- `kimo pair` without a running server says how to start it; `contrib/kimo.service` runs
+  the kimo the install script puts in `~/.local/bin`.
+
 ## 0.1.7
 
 - Updates: kimo checks for new versions every hour and says so once with a system
