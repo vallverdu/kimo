@@ -221,3 +221,15 @@
 /* Two short fields side by side (model and effort of a new agent). */
 .k-field-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 9rem); gap: 1.2rem; }
 .k-field-row[hidden] { display: none; }
+
+/* A project's files and changes on the phone. */
+.k-review-body { max-height: 65vh; overflow: auto; }
+.k-review-text { white-space: pre; overflow-x: auto; font-size: 1.2rem; line-height: 1.5; margin: .8rem 0; }
+.k-review-text .k-add { color: var(--color-good); }
+.k-review-text .k-del { color: var(--color-bad); }
+.k-review-text .k-hunk { color: var(--color-teal); }
+.k-dim { opacity: .55; font-style: italic; }
+.k-letter { font-size: 1.1rem; }
+.k-letter-M, .k-letter-R, .k-letter-C { color: var(--color-warn); }
+.k-letter-A, .k-letter-U { color: var(--color-good); }
+.k-letter-D { color: var(--color-bad); }

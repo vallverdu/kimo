@@ -1,5 +1,6 @@
 //! HTTP + WebSocket API and the embedded PWA. The API is also the surface for custom tools.
 
+mod files;
 mod hosts;
 
 use crate::core::access::{self, Caller};
@@ -128,6 +129,17 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
             "/projects/{id}/worktrees",
             post(add_worktree).delete(remove_worktree),
         )
+        .route("/projects/{id}/files", get(files::list))
+        .route("/projects/{id}/find", get(files::find))
+        .route("/projects/{id}/file", get(files::read).put(files::write))
+        .route("/projects/{id}/git", get(files::status))
+        .route("/projects/{id}/git/diff", get(files::diff))
+        .route("/projects/{id}/git/log", get(files::log))
+        .route("/projects/{id}/git/stage", post(files::stage))
+        .route("/projects/{id}/git/unstage", post(files::unstage))
+        .route("/projects/{id}/git/commit", post(files::commit))
+        .route("/projects/{id}/git/push", post(files::push))
+        .route("/projects/{id}/git/pr", post(files::pull_request))
         .route("/conversations", get(list_conversations))
         .route("/conversations/continue", post(continue_conversation))
         .route("/fs", get(browse).post(make_folder))

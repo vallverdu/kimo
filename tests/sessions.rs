@@ -190,6 +190,10 @@ async fn pause_switch_account_stop_and_continue() {
     // Usage per subscription: the message before the move counts for A, the one after for B
     // (the fake agent writes it a second after starting).
     tokio::time::sleep(Duration::from_millis(1400)).await;
+    // Plan limits ask Claude and Codex themselves: not from tests.
+    let mut settings = m.settings();
+    settings.claude_limits = false;
+    m.set_settings(settings).unwrap();
     let usage = m.usage();
     let of = |id: &str| {
         usage

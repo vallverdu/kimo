@@ -5,6 +5,18 @@ version, and that section becomes the GitHub release notes.
 
 ## Unreleased
 
+- A right panel in the window (the button at the top right, ⌘⇧E), like Orca's: the
+  project's **Files** (a tree with git's change letters, find by name or content), its
+  **Changes** (staged and not, stage/unstage, commit, push, create a pull request with
+  GitHub's `gh`, recent commits) and its **Agents** (running ones and earlier conversations
+  to continue). Files open as tabs next to the terminals, to edit and save (⌘S); a copy
+  changed on disk meanwhile (an agent) is not overwritten. Each file's changes show as a diff.
+- On the phone, each project has *files* (browse and read) and *changes* (with the diffs).
+- API and SDK: `/api/projects/{id}/files`, `/find`, `/file` (read and save), `/git`,
+  `/git/diff`, `/git/log`, `/git/stage`, `/git/unstage`, `/git/commit`, `/git/push`,
+  `/git/pr` (owner only, inside the project's folders); `files()`, `findFiles()`,
+  `readFile()`, `writeFile()`, `gitStatus()`, `gitDiff()`, `gitLog()`, `gitStage()`,
+  `gitUnstage()`, `gitCommit()`, `gitPush()`, `pullRequest()`.
 - Plan limits are on by default and shown like Orca: every limit of the active subscriptions
   in the bottom bar ("Claude 4% 4 h 29 min · 41% 3 d 7 h · 15% Fable"), and each account's
   limits with bars in its panel. Codex's come live from Codex itself (`codex app-server`),

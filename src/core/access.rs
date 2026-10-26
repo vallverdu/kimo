@@ -108,6 +108,13 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
     ]
         .iter()
         .any(|p| path.starts_with(p))
+        // A project's files and repository: the owner's (reading code and keys in it,
+        // committing, pushing).
+        || (path.starts_with("/projects/")
+            && path
+                .split('/')
+                .nth(3)
+                .is_some_and(|part| ["files", "find", "file", "git"].contains(&part)))
         // Installing or removing skills changes what every agent runs.
         || (path.starts_with("/skills") && method != "GET")
         || (path == "/accounts" && method != "GET")
@@ -142,6 +149,27 @@ pub fn normalize_code(code: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn files_and_git_are_the_owner_s() {
+        let app = Caller::Client {
+            scope: Scope::Control,
+            origins: vec![],
+        };
+        for path in [
+            "/projects/p/files",
+            "/projects/p/file",
+            "/projects/p/find",
+            "/projects/p/git/commit",
+            "/projects/p/git",
+        ] {
+            assert!(!permits(&app, "GET", path), "{path}");
+            assert!(permits(&Caller::Admin, "GET", path), "{path}");
+        }
+        // A project whose name starts like a route is still the app's to rename.
+        assert!(permits(&app, "PATCH", "/projects/github-tools"));
+        assert!(permits(&app, "GET", "/projects"));
+    }
+
     #[test]
     fn own_names_only() {
         let ips: Vec<std::net::IpAddr> = vec!["192.168.1.150".parse().unwrap()];

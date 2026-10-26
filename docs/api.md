@@ -61,6 +61,16 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | POST | `/projects` | `{mode: new \| existing \| clone, name?, path?, git?, url?, resume? = true}` → `{project, session, continued, reopened}`: `session` is the clone terminal; `continued` are the folder's latest Claude and Codex conversations, continued as sessions (the first one started; sessions already attached to them are reused). Adding a folder that already is a project opens it: `reopened: true` |
 | PATCH | `/projects/{id}` | `{name?, color?}`: rename, or set the sidebar colour (`#rrggbb`, `""` for none) |
 | DELETE | `/projects/{id}` | forget it and end its terminals and agents → `{sessions_removed}`; files stay, conversations stay in the agents' history |
+| GET | `/projects/{id}/files?dir=&root=` | a folder's entries `[{name, path, dir, size, ignored}]`, folders first (`.git` hidden; `ignored` by git). Owner only, like every files and git call; `root` picks one of the project's worktree folders; paths are relative and never leave the project (symlinks included) |
+| GET | `/projects/{id}/find?q=&contents=&root=` | files whose path contains `q`, or with `contents=1` lines containing it (git grep): `[{path, line?, text?}]`, 200 at most |
+| GET, PUT | `/projects/{id}/file?path=` | read `{path, text, binary, size, modified}` (`text` null when binary or over 2 MB); save `{path, text, modified?, root?}` → the saved file; `modified` from the read refuses a newer copy on disk (409) |
+| GET | `/projects/{id}/git?root=` | `{repo, branch, upstream, ahead, behind, changes[{path, from?, letter: M\|A\|D\|R\|C\|U\|!, staged, unstaged}]}` |
+| GET | `/projects/{id}/git/diff?path=&staged=` | `{diff}` (unified; a new file whole; 1 MB at most) |
+| GET | `/projects/{id}/git/log?limit=` | recent commits `[{hash, subject, author, at}]` |
+| POST | `/projects/{id}/git/stage`, `/git/unstage` | `{paths?, root?}` (no paths: everything) |
+| POST | `/projects/{id}/git/commit` | `{message, root?}` → the commit |
+| POST | `/projects/{id}/git/push` | `{root?}`: push the branch (its upstream set the first time) |
+| POST | `/projects/{id}/git/pr` | `{title, body?, root?}` → `{url}`: a pull request with GitHub's `gh` |
 | POST | `/projects/{id}/worktrees` | `{name, agent?: claude \| codex \| shell}` → `{worktree, session}`: `git worktree add` of branch `name` (made git-safe; an existing branch is checked out) in `~/.kimo/worktrees/<repository>/<branch>`, with an agent started in it |
 | DELETE | `/projects/{id}/worktrees?path=` | `git worktree remove` (refused with uncommitted changes, or while agents run there; the branch stays); its stopped sessions are removed → `{sessions_removed}` |
 | GET | `/fs?path=` | subfolders, for folder pickers |

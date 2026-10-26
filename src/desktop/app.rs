@@ -6,6 +6,9 @@ use super::theme::{self, dot, primary, section};
 use crate::client::Client;
 use crate::core::models::{Permissions, QuickCommand, Settings, Theme};
 use crate::core::update::is_newer;
+
+#[path = "details.rs"]
+mod details;
 use anyhow::Result;
 use eframe::egui;
 use eframe::egui::{Align2, Color32, RichText, Ui};
@@ -59,6 +62,8 @@ enum Msg {
     Ports(Value),
     /// Type text into a session's open terminal: (session id, text).
     Type(String, String),
+    /// Files, git and agents for the right panel, and opened files.
+    Details(details::Loaded),
     /// Memory report (`/memory`).
     Memory(Value),
     /// What a session's memory is made of: (session id, parts).
@@ -132,10 +137,26 @@ struct WorktreeForm {
 /// An action that waits for a yes.
 #[allow(clippy::enum_variant_names)]
 enum Confirm {
-    RemoveSession { id: String, name: String },
-    RemoveProject { id: String, name: String },
-    RemoveWorktree { project: String, path: String },
-    RemoveAccount { id: String, name: String },
+    /// Close a file with unsaved changes.
+    CloseFile {
+        index: usize,
+    },
+    RemoveSession {
+        id: String,
+        name: String,
+    },
+    RemoveProject {
+        id: String,
+        name: String,
+    },
+    RemoveWorktree {
+        project: String,
+        path: String,
+    },
+    RemoveAccount {
+        id: String,
+        name: String,
+    },
 }
 
 /// What a session's right-click menu asked for.
@@ -293,6 +314,11 @@ pub struct KimoApp {
     server_version: Option<String>,
     /// The app icon's style (Settings → Appearance), kept with the window's preferences.
     dark_icon: bool,
+    /// The right panel: the shown project's files, changes and agents.
+    details: details::Details,
+    /// Files open in tabs, and the one shown (instead of a terminal).
+    editors: Vec<details::Editor>,
+    editor_active: Option<usize>,
     /// Listening ports of the shown kimo, for the bottom bar.
     ports: Vec<Value>,
     last_ports: Instant,
@@ -492,6 +518,12 @@ impl KimoApp {
             collapsed: serde_json::from_value(saved["collapsed"].clone()).unwrap_or_default(),
             sidebar_open: saved["sidebar"].as_bool().unwrap_or(true),
             dark_icon: saved["icon"] == "dark",
+            details: details::Details {
+                open: saved["details"].as_bool().unwrap_or(false),
+                ..Default::default()
+            },
+            editors: Vec::new(),
+            editor_active: None,
             sidebar_rect: None,
             project: None,
             last_tab: Default::default(),
@@ -528,10 +560,29 @@ impl KimoApp {
             "collapsed": self.collapsed,
             "sidebar": self.sidebar_open,
             "icon": if self.dark_icon { "dark" } else { "light" },
+            "details": self.details.open,
         });
         if let Err(e) = std::fs::write(&self.prefs, prefs.to_string()) {
             tracing::warn!("cannot save {}: {e}", self.prefs.display());
         }
+    }
+
+    fn close_editor(&mut self, j: usize) {
+        if j >= self.editors.len() {
+            return;
+        }
+        self.editors.remove(j);
+        self.editor_active = match self.editor_active {
+            Some(a) if a == j => None,
+            Some(a) if a > j => Some(a - 1),
+            other => other,
+        };
+    }
+
+    fn toggle_details(&mut self) {
+        self.details.open = !self.details.open;
+        self.details.scope = None;
+        self.save_prefs();
     }
 
     fn toggle_sidebar(&mut self) {
@@ -623,6 +674,7 @@ impl KimoApp {
 
     fn open_session(&mut self, id: &str) {
         self.view = View::Terminals;
+        self.editor_active = None;
         // Agents kimo stopped to free memory continue as soon as they are opened.
         if self
             .sessions()
@@ -817,6 +869,7 @@ impl KimoApp {
                 }
                 Msg::LocalVersion(v) => self.follow_server(v),
                 Msg::Ports(v) => self.ports = v.as_array().cloned().unwrap_or_default(),
+                Msg::Details(loaded) => self.on_loaded(loaded),
                 Msg::Type(id, text) => {
                     if let Some(t) = self.terminals.iter().find(|t| t.session_id == id) {
                         t.send(&text);
@@ -908,6 +961,7 @@ impl KimoApp {
             self.job(|c| Ok(Msg::Memory(c.get("/memory")?)));
             self.record_cpu();
         }
+        self.details_poll();
         // The bottom bar: ports and plan limits (kimos before 0.1.8 have no /ports).
         if self.last_ports.elapsed() > Duration::from_secs(10) {
             self.last_ports = Instant::now();
@@ -1142,6 +1196,23 @@ impl KimoApp {
                 .into_iter()
                 .filter(|x| s(x, "activity") == "waiting")
                 .collect();
+            let mut details = false;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let shortcut = if cfg!(target_os = "macos") {
+                    "⌘⇧E"
+                } else {
+                    "Ctrl+Shift+E"
+                };
+                details = details_button(ui, self.details.open)
+                    .on_hover_text(format!(
+                        "{} files, changes and agents of the project ({shortcut})",
+                        if self.details.open { "hide" } else { "show" }
+                    ))
+                    .clicked();
+            });
+            if details {
+                self.toggle_details();
+            }
             if !waiting.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let text = format!(
@@ -1948,6 +2019,8 @@ impl KimoApp {
 
         // Tabs, then "+".
         let mut close = None;
+        let mut open_editor: Option<usize> = None;
+        let mut close_editor: Option<usize> = None;
         let mut tab_act: Option<SessionAct> = None;
         let mut start: Option<&'static str> = None;
         ui.horizontal_wrapped(|ui| {
@@ -2001,6 +2074,7 @@ impl KimoApp {
                                 .on_hover_text("right-click to stop or remove");
                             if r.clicked() {
                                 self.active = i;
+                                self.editor_active = None;
                             }
                             if let Some(x) = &info {
                                 session_menu(&r, x, &mut tab_act);
@@ -2014,6 +2088,57 @@ impl KimoApp {
                                 .clicked()
                             {
                                 close = Some(i);
+                            }
+                        });
+                    });
+            }
+            // Files open in this project, as tabs after its terminals.
+            for (j, e) in self.editors.iter().enumerate() {
+                if e.scope.host != host_id || Some(&e.scope.project) != self.project.as_ref() {
+                    continue;
+                }
+                let selected = self.editor_active == Some(j);
+                egui::Frame::new()
+                    .fill(if selected {
+                        theme::surface()
+                    } else {
+                        theme::background()
+                    })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if selected {
+                            theme::ink()
+                        } else {
+                            theme::line()
+                        },
+                    ))
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(8, 3))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let name = e.path.rsplit('/').next().unwrap_or(&e.path);
+                            let text = format!("≡ {name}{}", if e.dirty() { " ●" } else { "" });
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(text).italics().color(theme::ink()),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text(&e.path)
+                                .clicked()
+                            {
+                                open_editor = Some(j);
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("×").color(theme::muted()))
+                                        .frame(false),
+                                )
+                                .on_hover_text("close the file")
+                                .clicked()
+                            {
+                                close_editor = Some(j);
                             }
                         });
                     });
@@ -2070,6 +2195,26 @@ impl KimoApp {
         }
         if let Some(act) = tab_act {
             self.session_act(act);
+        }
+        if let Some(j) = open_editor {
+            self.editor_active = Some(j);
+        }
+        if let Some(j) = close_editor {
+            if self.editors[j].dirty() {
+                self.confirm = Some(Confirm::CloseFile { index: j });
+            } else {
+                self.close_editor(j);
+            }
+        }
+        // An open file of this project is shown instead of a terminal.
+        if let Some(j) = self.editor_active.filter(|&j| {
+            self.editors.get(j).is_some_and(|e| {
+                e.scope.host == host_id && Some(&e.scope.project) == self.project.as_ref()
+            })
+        }) {
+            ui.add_space(4.0);
+            self.editor_view(ui, j);
+            return;
         }
         if let Some(i) = close {
             self.terminals.remove(i);
@@ -3545,6 +3690,13 @@ impl KimoApp {
             return;
         };
         let (title, text) = match confirm {
+            Confirm::CloseFile { index } => (
+                "Close without saving?".to_string(),
+                format!(
+                    "{} has changes that are not saved; they are lost when it closes.",
+                    self.editors.get(*index).map_or("The file", |e| e.path.as_str())
+                ),
+            ),
             Confirm::RemoveSession { name, .. } => (
                 format!("Remove {name}?"),
                 "kimo ends it and takes it off the list. A Claude or Codex conversation stays in the agent's history: continue it later from the project's earlier conversations.".to_string(),
@@ -3562,6 +3714,11 @@ impl KimoApp {
                 "kimo deletes its sign-in on this computer. Conversations stay; you can add it again and sign in.".to_string(),
             ),
         };
+        let yes_label = if matches!(confirm, Confirm::CloseFile { .. }) {
+            "close without saving"
+        } else {
+            "remove"
+        };
         let (mut yes, mut no) = (false, false);
         egui::Window::new(title)
             .collapsible(false)
@@ -3573,13 +3730,14 @@ impl KimoApp {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     yes = ui
-                        .button(RichText::new("remove").color(theme::bad()))
+                        .button(RichText::new(yes_label).color(theme::bad()))
                         .clicked();
                     no = ui.button("cancel").clicked();
                 });
             });
         if yes {
             match self.confirm.take() {
+                Some(Confirm::CloseFile { index }) => self.close_editor(index),
                 Some(Confirm::RemoveSession { id, .. }) => {
                     self.terminals.retain(|t| t.session_id != id);
                     self.active = self.active.min(self.terminals.len().saturating_sub(1));
@@ -4276,6 +4434,34 @@ fn panel_button(ui: &mut Ui, open: bool) -> egui::Response {
     response
 }
 
+/// The right panel's button: a frame with its right part filled when the panel is open.
+fn details_button(ui: &mut Ui, open: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let color = if response.hovered() {
+        theme::ink()
+    } else {
+        theme::text()
+    };
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 6.0, theme::surface());
+    }
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 14.0));
+    ui.painter().rect_stroke(
+        r,
+        2.5,
+        egui::Stroke::new(1.5, color),
+        egui::StrokeKind::Inside,
+    );
+    let bar = egui::Rect::from_min_max(egui::pos2(r.max.x - 6.0, r.min.y), r.max);
+    if open {
+        ui.painter().rect_filled(bar, 2.0, color);
+    } else {
+        ui.painter()
+            .vline(bar.min.x, r.y_range(), egui::Stroke::new(1.5, color));
+    }
+    response
+}
+
 /// A menu behind a frameless button (the "···" of projects and worktrees).
 fn flat_menu(ui: &mut Ui, label: RichText, add: impl FnOnce(&mut Ui)) {
     egui::containers::menu::MenuButton::from_button(egui::Button::new(label).frame(false))
@@ -4856,6 +5042,27 @@ impl eframe::App for KimoApp {
                 .show(ui, |ui| self.sidebar(ui));
             self.sidebar_rect = Some(shown.response.rect);
         }
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::E,
+            )
+        }) {
+            self.toggle_details();
+        }
+        if self.details.open {
+            let widest = (ctx.content_rect().width() * 0.45).clamp(280.0, 640.0);
+            egui::Panel::right("details")
+                .resizable(true)
+                .default_size(320.0)
+                .size_range(260.0..=widest)
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::surface())
+                        .inner_margin(egui::Margin::same(12)),
+                )
+                .show(ui, |ui| self.details_ui(ui));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -4912,6 +5119,7 @@ mod tests {
         let (app_dir, other) = (home.join("app"), home.join("other"));
         std::fs::create_dir_all(&app_dir).unwrap();
         std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(app_dir.join("notes.txt"), "first line\n").unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
         let port = rt.block_on(async {
             let manager =
@@ -4925,6 +5133,10 @@ mod tests {
                     host_name: "test".into(),
                 })
                 .unwrap();
+            // Plan limits ask Claude and Codex themselves: not from tests.
+            let mut settings = manager.settings();
+            settings.claude_limits = false;
+            manager.set_settings(settings).unwrap();
             let router = crate::api::router(
                 manager,
                 crate::api::Options {
@@ -5096,6 +5308,46 @@ mod tests {
                 assert!(shown.iter().any(|t| t == "app icon"), "{shown:?}");
             }
         }
+        // The right panel: the project's files; a file opens in a tab, is edited and saved.
+        app.view = View::Terminals;
+        app.open_session(s(&one, "id"));
+        app.details.open = true;
+        let start = Instant::now();
+        let mut shown = vec![];
+        while start.elapsed() < Duration::from_secs(10) {
+            shown = run(&mut app, 3);
+            if shown.iter().any(|t| t.ends_with("notes.txt")) {
+                break;
+            }
+        }
+        assert!(
+            shown.iter().any(|t| t == "Files") && shown.iter().any(|t| t == "Agents"),
+            "{shown:?}"
+        );
+        assert!(shown.iter().any(|t| t.ends_with("notes.txt")), "{shown:?}");
+        let scope = app.details.scope.clone().unwrap();
+        app.open_file(scope, "notes.txt", false);
+        let start = Instant::now();
+        while app.editors[0].loading && start.elapsed() < Duration::from_secs(10) {
+            run(&mut app, 2);
+        }
+        assert_eq!(app.editors[0].text, "first line\n");
+        let shown = run(&mut app, 3);
+        assert!(shown.iter().any(|t| t.contains("notes.txt")), "{shown:?}");
+        app.editors[0].text.push_str("second line\n");
+        assert!(app.editors[0].dirty());
+        app.save_editor(0);
+        let start = Instant::now();
+        while app.editors[0].dirty() && start.elapsed() < Duration::from_secs(10) {
+            run(&mut app, 2);
+        }
+        assert_eq!(
+            std::fs::read_to_string(app_dir.join("notes.txt")).unwrap(),
+            "first line\nsecond line\n"
+        );
+        app.details.open = false;
+        app.editor_active = None;
+
         // Updates: a new release, a newer kimo installed, a server behind this window.
         app.last_hosts = Instant::now();
         app.release = json!({

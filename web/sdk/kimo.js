@@ -75,6 +75,27 @@ export class Kimo {
   deleteProject(id) { return this.request('DELETE', `/projects/${enc(id)}`); }
   /** Rename a project or change its colour: `{name?, color?: '#rrggbb' | ''}`. */
   updateProject(id, changes) { return this.request('PATCH', `/projects/${enc(id)}`, changes); }
+
+  // A project's files and git (owner only). `root`: one of its worktree folders, else its own.
+  /** A folder's entries: [{name, path, dir, size, ignored}], folders first. */
+  files(project, dir = '', root) { return this.request('GET', `/projects/${enc(project)}/files${qs({ dir, root })}`); }
+  /** Files whose path contains `q`, or (`contents`) lines containing it: [{path, line?, text?}]. */
+  findFiles(project, q, { contents = false, root } = {}) { return this.request('GET', `/projects/${enc(project)}/find${qs({ q, contents: contents ? 1 : '', root })}`); }
+  /** {path, text (null when binary or too large), binary, size, modified}. */
+  readFile(project, path, root) { return this.request('GET', `/projects/${enc(project)}/file${qs({ path, root })}`); }
+  /** Save a file; `modified` (from readFile) refuses a newer copy on disk with a 409. */
+  writeFile(project, path, text, { modified, root } = {}) { return this.request('PUT', `/projects/${enc(project)}/file`, { path, text, modified, root }); }
+  /** {repo, branch, upstream, ahead, behind, changes: [{path, from?, letter, staged, unstaged}]}. */
+  gitStatus(project, root) { return this.request('GET', `/projects/${enc(project)}/git${qs({ root })}`); }
+  gitDiff(project, path, { staged = false, root } = {}) { return this.request('GET', `/projects/${enc(project)}/git/diff${qs({ path, staged: staged ? 1 : '', root })}`); }
+  gitLog(project, { limit = 30, root } = {}) { return this.request('GET', `/projects/${enc(project)}/git/log${qs({ limit, root })}`); }
+  /** Stage paths (none: everything). */
+  gitStage(project, paths = [], root) { return this.request('POST', `/projects/${enc(project)}/git/stage`, { paths, root }); }
+  gitUnstage(project, paths = [], root) { return this.request('POST', `/projects/${enc(project)}/git/unstage`, { paths, root }); }
+  gitCommit(project, message, root) { return this.request('POST', `/projects/${enc(project)}/git/commit`, { message, root }); }
+  gitPush(project, root) { return this.request('POST', `/projects/${enc(project)}/git/push`, { root }); }
+  /** Open a pull request with GitHub's gh; returns {url}. */
+  pullRequest(project, title, body = '', root) { return this.request('POST', `/projects/${enc(project)}/git/pr`, { title, body, root }); }
   /**
    * A git worktree of the project (a branch in its own folder) with an optional agent in it:
    * `{name, agent?: 'claude'|'codex'|'shell'}`; returns {worktree, session}. Projects list
@@ -257,3 +278,8 @@ export function quietFor(session, now = Date.now()) {
 }
 
 const enc = encodeURIComponent;
+/** `?a=1&b=2` from the values that are set. */
+const qs = params => {
+  const parts = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${k}=${enc(v)}`);
+  return parts.length ? `?${parts.join('&')}` : '';
+};

@@ -42,7 +42,10 @@ static PLAN: std::sync::Mutex<Option<PlanCache>> = std::sync::Mutex::new(None);
 /// `config_dir`: `CLAUDE_CONFIG_DIR` of a kimo account, `None` for this computer's login.
 fn claude_token(config_dir: Option<&Path>, user_home: &Path) -> Option<String> {
     use crate::core::launch::{claude_access_token, claude_keychain_service};
-    if cfg!(target_os = "macos") {
+    // This computer's login is in the Keychain of the person running kimo: only read it when
+    // kimo runs with their home (never from tests or sandboxes with another home).
+    let own_home = std::env::var_os("HOME").is_some_and(|h| Path::new(&h) == user_home);
+    if cfg!(target_os = "macos") && (config_dir.is_some() || own_home) {
         let service = claude_keychain_service(config_dir.map(|d| d.to_str().unwrap_or_default()));
         let out = crate::services::network::run_for(
             std::process::Command::new("security").args([

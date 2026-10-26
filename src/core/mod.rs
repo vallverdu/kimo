@@ -4,6 +4,7 @@ pub mod access;
 pub mod activity;
 pub mod awake;
 pub mod daily;
+pub mod files;
 pub mod git;
 pub mod history;
 pub mod hostname;

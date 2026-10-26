@@ -141,7 +141,7 @@ fn branch(path: &Path) -> Option<String> {
 /// The folder itself and the other worktrees of its repository, from the files git keeps in
 /// `.git/worktrees` (no git process: this runs on every project listing).
 /// A project's folders: its own and its git worktrees'.
-fn folders_of(project: &Project) -> Vec<String> {
+pub(crate) fn folders_of(project: &Project) -> Vec<String> {
     let mut folders = vec![project.path.clone()];
     folders.extend(
         worktrees(Path::new(&project.path))

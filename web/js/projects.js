@@ -1,7 +1,9 @@
 // Projects view: folders agents work in, one-tap agents per project, and the folder picker.
 import { $, esc, shortPath, toast } from './ui.js';
+import { initReview } from './review.js';
 
 export function initProjects({ api, state, run, terminal }) {
+  const review = initReview({ api });
   const sheet = $('sheet-project'), form = sheet.querySelector('form'), folderSheet = $('sheet-folder');
 
   const under = (path, s) => s.cwd === path || s.cwd.startsWith(`${path}/`);
@@ -26,6 +28,8 @@ export function initProjects({ api, state, run, terminal }) {
         <div class="k-meta"><code title="${esc(p.path)}">${esc(shortPath(p.path))}</code>${p.branch ? `<span>git · ${esc(p.branch)}</span>` : '<span>no git</span>'}${p.exists ? '' : '<span class="k-warn">folder missing</span>'}</div>
         ${chips(mainSessions)}
         ${actions(main.path, `
+          <button class="ui-button ghost k-small" data-do="files" title="browse and read its files">files</button>
+          ${p.branch ? '<button class="ui-button ghost k-small" data-do="changes" title="what changed, with the diffs">changes</button>' : ''}
           <button class="ui-button ghost k-small" data-do="history" title="earlier Claude and Codex conversations here">history</button>
           ${p.branch ? '<button class="ui-button ghost k-small" data-do="worktree" title="a branch in its own folder, for an agent">+ worktree</button>' : ''}
           <button class="ui-button k-small k-danger" data-do="forget">forget</button>`)}
@@ -53,6 +57,8 @@ export function initProjects({ api, state, run, terminal }) {
       if (s) terminal.open(s);
       return;
     }
+    if (e.target.closest('[data-do=files]')) return review.open(p, 'files');
+    if (e.target.closest('[data-do=changes]')) return review.open(p, 'changes');
     if (e.target.closest('[data-do=history]')) return showHistory(p);
     if (e.target.closest('[data-do=worktree]')) {
       const name = prompt(`New worktree of ${p.name}: branch name (an existing branch is checked out)`);

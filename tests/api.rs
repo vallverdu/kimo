@@ -1483,3 +1483,180 @@ async fn agents_start_with_their_own_model_and_effort() {
         .iter()
         .any(|m| m == "opus"));
 }
+
+#[tokio::test]
+async fn project_files_and_git_through_the_api() {
+    // CI machines have no git identity: commits here are made as "kimo test".
+    for (k, v) in [
+        ("GIT_AUTHOR_NAME", "kimo test"),
+        ("GIT_AUTHOR_EMAIL", "test@kimo.invalid"),
+        ("GIT_COMMITTER_NAME", "kimo test"),
+        ("GIT_COMMITTER_EMAIL", "test@kimo.invalid"),
+    ] {
+        std::env::set_var(k, v);
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let site = tmp.path().join("home/site");
+    std::fs::create_dir_all(site.join("src")).unwrap();
+    std::fs::write(site.join("README.md"), "hello\n").unwrap();
+    std::fs::write(site.join("src/app.js"), "let answer = 42;\n").unwrap();
+    std::fs::write(tmp.path().join("secret.txt"), "outside").unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("secret.txt"), site.join("link.txt")).unwrap();
+    for args in [vec!["init", "-q"], vec!["add", "-A"]] {
+        assert!(std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&site)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let call = |method: &str, path: &str, body: Option<String>| {
+        local(req(method, path, None, None, body.as_deref()))
+    };
+    let get = |path: String| {
+        let app = app.clone();
+        async move { json(app.oneshot(call("GET", &path, None)).await.unwrap()).await }
+    };
+    let created = json(
+        app.clone()
+            .oneshot(call(
+                "POST",
+                "/api/projects",
+                Some(format!(
+                    r#"{{"mode":"existing","path":"{}","resume":false}}"#,
+                    site.display()
+                )),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let id = created["project"]["id"].as_str().unwrap().to_string();
+
+    // Folders first, then files; .git hidden.
+    let list = get(format!("/api/projects/{id}/files")).await;
+    let names: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["name"].as_str())
+        .collect();
+    assert_eq!(names, ["src", "link.txt", "README.md"], "{list}");
+    let found = get(format!("/api/projects/{id}/find?q=app")).await;
+    assert_eq!(found[0]["path"], "src/app.js");
+    let hits = get(format!("/api/projects/{id}/find?q=ANSWER&contents=1")).await;
+    assert_eq!(
+        (hits[0]["path"].as_str(), hits[0]["line"].as_u64()),
+        (Some("src/app.js"), Some(1))
+    );
+
+    // Read, save, and refuse to overwrite a newer copy.
+    let file = get(format!("/api/projects/{id}/file?path=src/app.js")).await;
+    assert_eq!(file["text"], "let answer = 42;\n");
+    let modified = file["modified"].as_u64().unwrap();
+    let save = |text: &str, modified: u64| {
+        call(
+            "PUT",
+            &format!("/api/projects/{id}/file"),
+            Some(
+                serde_json::json!({ "path": "src/app.js", "text": text, "modified": modified })
+                    .to_string(),
+            ),
+        )
+    };
+    let saved = app
+        .clone()
+        .oneshot(save("let answer = 43;\n", modified))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let saved = json(saved).await;
+    assert_eq!(
+        std::fs::read_to_string(site.join("src/app.js")).unwrap(),
+        "let answer = 43;\n"
+    );
+    let stale = app
+        .clone()
+        .oneshot(save("old view", modified - 5000))
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    assert!(saved["modified"].as_u64().unwrap() >= modified);
+
+    // Nothing outside the project, by path or through a symlink.
+    for path in ["../secret.txt", "/etc/hosts", "link.txt"] {
+        let r = app
+            .clone()
+            .oneshot(call(
+                "GET",
+                &format!("/api/projects/{id}/file?path={path}"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+    let escape = app
+        .clone()
+        .oneshot(call(
+            "PUT",
+            &format!("/api/projects/{id}/file"),
+            Some(serde_json::json!({ "path": "../evil.txt", "text": "x" }).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(escape.status(), StatusCode::BAD_REQUEST);
+    assert!(!tmp.path().join("home/evil.txt").exists());
+
+    // git: changes, a diff, commit, log.
+    let state = get(format!("/api/projects/{id}/git")).await;
+    assert_eq!(state["repo"], true);
+    let app_js = state["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["path"] == "src/app.js")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (
+            app_js["letter"].as_str(),
+            app_js["staged"].as_bool(),
+            app_js["unstaged"].as_bool()
+        ),
+        (Some("A"), Some(true), Some(true))
+    );
+    let diff = get(format!("/api/projects/{id}/git/diff?path=src/app.js")).await;
+    assert!(
+        diff["diff"].as_str().unwrap().contains("+let answer = 43;"),
+        "{diff}"
+    );
+    let staged = app
+        .clone()
+        .oneshot(call(
+            "POST",
+            &format!("/api/projects/{id}/git/stage"),
+            Some("{}".into()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(staged.status(), StatusCode::OK);
+    let commit = app
+        .clone()
+        .oneshot(call(
+            "POST",
+            &format!("/api/projects/{id}/git/commit"),
+            Some(r#"{"message":"first"}"#.into()),
+        ))
+        .await
+        .unwrap();
+    let commit_status = commit.status();
+    let commit = json(commit).await;
+    assert_eq!(commit_status, StatusCode::OK, "{commit}");
+    assert_eq!(commit["subject"], "first");
+    let log = get(format!("/api/projects/{id}/git/log")).await;
+    assert_eq!(log[0]["subject"], "first");
+    let clean = get(format!("/api/projects/{id}/git")).await;
+    assert_eq!(clean["changes"].as_array().unwrap().len(), 0, "{clean}");
+}
