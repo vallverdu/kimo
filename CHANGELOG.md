@@ -1,5 +1,13 @@
 # Changelog
 
+Changes since the last release collect under *Unreleased*; a release renames it to its
+version, and that section becomes the GitHub release notes.
+
+## Unreleased
+
+- Each release's GitHub page carries its notes from this changelog (the in-app update card
+  links to them).
+
 ## 0.1.13
 
 - No *Terminals* button in the window's top bar: terminals open from their project or

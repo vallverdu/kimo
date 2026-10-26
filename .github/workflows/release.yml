@@ -47,8 +47,15 @@ jobs:
           cp -r contrib "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+      - name: Release notes (this version's section of CHANGELOG.md)
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v head="## $version" '$0 == head { found = 1; next } /^## / { if (found) exit } found' CHANGELOG.md > dist/NOTES.md
+          [ -s dist/NOTES.md ] || { echo "CHANGELOG.md has no section '## $version'" >&2; exit 1; }
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: dist/NOTES.md
           files: |
             dist/*.tar.gz
             dist/*.sha256
