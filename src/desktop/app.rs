@@ -4775,7 +4775,12 @@ mod tests {
         assert!(shown.iter().any(|t| t.starts_with("Used")), "{shown:?}");
         assert!(shown.iter().any(|t| t.ends_with("awake: off")), "{shown:?}");
         assert!(shown.iter().any(|t| t.ends_with("3 running")), "{shown:?}");
-        assert!(shown.iter().any(|t| t.ends_with(" port") || t.ends_with(" ports")), "{shown:?}");
+        assert!(
+            shown
+                .iter()
+                .any(|t| t.ends_with(" port") || t.ends_with(" ports")),
+            "{shown:?}"
+        );
         assert!(shown.iter().any(|t| t == "1 kimo"), "{shown:?}");
         app.toggle_sidebar();
         let hidden = run(&mut app, 3);
