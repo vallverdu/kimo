@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+- Devices: choosing another address (Tailscale, ZeroTier, local network) redraws the QR code
+  at once, with the same one-time code. Each address says what the phone needs to get through
+  (for ZeroTier: the app joined to the same network and the phone authorized).
+- macOS: kimo warns when the firewall blocks incoming connections for it (phones cannot
+  connect) and says where to allow it; `GET /api/network` reports it as `firewall`.
+
 ## 0.1.3
 
 - Phone: send photos to an agent. The camera button takes a photo, the image button picks

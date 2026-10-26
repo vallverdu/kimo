@@ -94,7 +94,8 @@ struct SkillForm {
 }
 
 struct Pairing {
-    url: String,
+    /// The one-time code (the QR code is redrawn for another address without a new one).
+    code: String,
     until: Instant,
 }
 
@@ -602,9 +603,9 @@ impl KimoApp {
                         form.listing = Some(listing);
                     }
                 }
-                Msg::Pairing(url, secs) => {
+                Msg::Pairing(code, secs) => {
                     self.pairing = Some(Pairing {
-                        url,
+                        code,
                         until: Instant::now() + Duration::from_secs(secs),
                     })
                 }
@@ -2017,30 +2018,42 @@ impl KimoApp {
             let addresses: Vec<Value> = self.network["addresses"].as_array().cloned().unwrap_or_default();
             let remote: Vec<&Value> = addresses.iter().filter(|a| a["kind"] != "localhost").collect();
             ui.horizontal(|ui| {
+                // Choosing another address redraws the QR code at once (same one-time code).
                 egui::ComboBox::from_id_salt("pair-address").selected_text(&self.pair_address).width(320.0).show_ui(ui, |ui| {
                     for a in &remote {
                         ui.selectable_value(&mut self.pair_address, s(a, "url").to_string(), format!("{} · {}", s(a, "label"), s(a, "url")));
                     }
                 });
-                if primary(ui, "show QR code").clicked() && !self.pair_address.is_empty() {
-                    let base = self.pair_address.clone();
+                if self.pairing.is_none() && primary(ui, "show QR code").clicked() && !self.pair_address.is_empty() {
                     self.job(move |c| {
                         let p = c.post("/pairing", json!({}))?;
-                        Ok(Msg::Pairing(format!("{base}/#pair={}", s(&p, "code")), p["expires_in"].as_u64().unwrap_or(600)))
+                        Ok(Msg::Pairing(s(&p, "code").to_string(), p["expires_in"].as_u64().unwrap_or(600)))
                     });
                 }
+                if self.pairing.is_some() && ui.button("hide").clicked() {
+                    self.pairing = None;
+                }
             });
+            if let Some(warning) = self.network["firewall"].as_str() {
+                ui.add_space(6.0);
+                ui.label(RichText::new(warning).size(11.5).color(theme::bad()));
+            }
+            if let Some(tip) = remote.iter().find(|a| s(a, "url") == self.pair_address).and_then(|a| reach_tip(s(a, "kind"))) {
+                ui.add_space(4.0);
+                ui.label(RichText::new(tip).size(11.0).color(theme::muted()));
+            }
             if let Some(p) = &self.pairing {
                 let left = p.until.saturating_duration_since(Instant::now()).as_secs();
                 if left == 0 {
                     self.pairing = None;
                 } else {
                     ui.add_space(8.0);
+                    let url = format!("{}/#pair={}", self.pair_address, p.code);
                     ui.horizontal(|ui| {
-                        qr(ui, &p.url, 220.0);
+                        qr(ui, &url, 220.0);
                         ui.vertical(|ui| {
                             ui.label("Scan with the phone camera, or open:");
-                            ui.label(RichText::new(&p.url).size(11.0).color(theme::teal()));
+                            ui.label(RichText::new(&url).size(11.0).color(theme::teal()));
                             ui.label(RichText::new(format!("valid for {}:{:02}, once", left / 60, left % 60)).size(11.0).color(theme::muted()));
                         });
                     });
@@ -3004,6 +3017,16 @@ fn activity_tag(ui: &mut Ui, session: &Value) {
             ui.label(RichText::new("working").size(10.5).color(theme::teal()));
         }
         _ => {}
+    }
+}
+
+/// What the phone needs to reach kimo over this kind of address.
+fn reach_tip(kind: &str) -> Option<&'static str> {
+    match kind {
+        "zerotier" => Some("ZeroTier: the phone needs the ZeroTier One app joined to the same network (network id from my.zerotier.com), the phone authorized there (Auth ✓), and the app's switch on. Test first: open the address in the phone's browser."),
+        "tailscale" => Some("Tailscale: the phone needs the Tailscale app signed in to the same tailnet and connected."),
+        "lan" => Some("Local network: the phone must be on the same Wi-Fi (not guest Wi-Fi or mobile data)."),
+        _ => None,
     }
 }
 

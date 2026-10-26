@@ -2,7 +2,21 @@
 import { $, esc, toast } from './ui.js';
 
 export function initDevices({ api, state, run }) {
-  let timer = null;
+  let timer = null, code = null;
+
+  // What the phone needs to reach kimo over each kind of address.
+  const tips = {
+    zerotier: 'ZeroTier: the phone needs the ZeroTier One app joined to the same network (network id from my.zerotier.com), the phone authorized there (Auth ✓), and the app\'s switch on. Test first: open the address in the phone\'s browser.',
+    tailscale: 'Tailscale: the phone needs the Tailscale app signed in to the same tailnet and connected.',
+    lan: 'Local network: the phone must be on the same Wi-Fi (not guest Wi-Fi or mobile data).',
+  };
+
+  function showTip() {
+    const a = state.network?.addresses.find(a => a.url === $('pair-address').value);
+    const tip = a && tips[a.kind];
+    $('pair-tip').hidden = !tip;
+    $('pair-tip').textContent = tip || '';
+  }
 
   async function load() {
     try {
@@ -21,6 +35,9 @@ export function initDevices({ api, state, run }) {
       : '<option value="">only this machine: start kimo with --bind all</option>';
     $('address-list').innerHTML = net.addresses.map(a => `<li>
       <span>${esc(a.label)}</span><span><a href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.url)}</a>${a.https ? ' <span class="ui-badge running">https</span>' : ''}</span></li>`).join('');
+    $('pair-firewall').hidden = !net.firewall;
+    $('pair-firewall').textContent = net.firewall || '';
+    showTip();
     const ts = net.tailscale;
     $('https-panel').hidden = !ts || !!ts.https_url;
     if (ts && !ts.https_url) $('https-host').textContent = ts.dns_name || 'your tailnet';
@@ -33,19 +50,27 @@ export function initDevices({ api, state, run }) {
 
   function hideQr() {
     clearInterval(timer);
+    code = null;
     $('pair-box').hidden = true;
     $('pair-show').hidden = false;
+  }
+
+  // The QR code for the chosen address (another address keeps the same one-time code).
+  async function drawQr() {
+    const url = `${$('pair-address').value}/#pair=${code}`;
+    $('pair-qr').innerHTML = await api.qr(url);
+    $('pair-link').textContent = url;
+    $('pair-link').href = url;
   }
 
   async function showQr() {
     const base = $('pair-address').value;
     if (!base) return toast('kimo is only reachable from this machine', true);
     try {
-      const { code, expires_in } = await api.startPairing();
-      const url = `${base}/#pair=${code}`;
-      $('pair-qr').innerHTML = await api.qr(url);
-      $('pair-link').textContent = url;
-      $('pair-link').href = url;
+      const started = await api.startPairing();
+      code = started.code;
+      const expires_in = started.expires_in;
+      await drawQr();
       $('pair-box').hidden = false;
       $('pair-show').hidden = true;
       const before = state.devices.length, until = Date.now() + expires_in * 1000;
@@ -68,7 +93,10 @@ export function initDevices({ api, state, run }) {
 
   $('pair-show').addEventListener('click', showQr);
   $('pair-cancel').addEventListener('click', hideQr);
-  $('pair-address').addEventListener('change', () => { if (!$('pair-box').hidden) showQr(); });
+  $('pair-address').addEventListener('change', () => {
+    showTip();
+    if (code) drawQr().catch(e => toast(e.message, true));
+  });
   $('https-enable').addEventListener('click', async e => {
     e.target.disabled = true;
     const r = await run(api.enableHttps(), r => `HTTPS ready: ${r.url}`);

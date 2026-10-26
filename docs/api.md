@@ -97,7 +97,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | POST | `/pairing` | a one-time pairing code (10 minutes) |
 | POST | `/pair` | `{code, name}` → a device key (no key needed: the code is the proof) |
 | GET, DELETE | `/devices`, `/devices/{id}` | paired devices; unpair |
-| GET | `/network` | addresses kimo is reachable on; Tailscale name and HTTPS address |
+| GET | `/network` | addresses kimo is reachable on; Tailscale name and HTTPS address; `firewall`: why phones may be blocked (macOS firewall), when that is the case |
 | POST | `/network/https` | serve kimo over HTTPS on the tailnet (a free port; other services untouched) |
 | GET | `/qr?text=` | a QR code as SVG |
 | GET | `/peers` | paired kimos with `online` and `sessions` |

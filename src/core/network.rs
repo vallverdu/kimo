@@ -207,6 +207,37 @@ pub fn pick_address(candidates: &[(NetKind, String)], remote_url: &str) -> Optio
         .map(|(_, u)| u.clone())
 }
 
+/// What the macOS application firewall does to incoming connections for kimo, from the output
+/// of `socketfilterfw --getglobalstate`, `--getblockall` and `--getappblocked <exe>`.
+/// `None` when nothing stops other devices from reaching kimo.
+pub fn firewall_warning(global: &str, block_all: &str, app: &str, exe: &str) -> Option<String> {
+    let global = global.to_ascii_lowercase();
+    let enabled =
+        global.contains("enabled") || global.contains("state = 1") || global.contains("state = 2");
+    if !enabled || global.contains("disabled") {
+        return None;
+    }
+    let allow = format!(
+        "System Settings → Network → Firewall → Options: allow incoming connections for {exe}"
+    );
+    let block_all = block_all.to_ascii_lowercase();
+    if block_all.contains("enabled") && !block_all.contains("disabled") {
+        return Some("The macOS firewall blocks all incoming connections, so phones cannot reach kimo: turn off \"Block all incoming connections\" in System Settings → Network → Firewall → Options.".into());
+    }
+    let app = app.to_ascii_lowercase();
+    if app.contains("blocked") {
+        Some(format!(
+            "The macOS firewall blocks kimo, so phones cannot reach it. {allow}."
+        ))
+    } else if app.contains("permitted") {
+        None
+    } else {
+        Some(format!(
+            "The macOS firewall is on and kimo is not in its list: phones may be blocked. {allow}."
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +368,39 @@ bridge100: flags=8863<UP> mtu 1500\n\tinet 192.168.64.1 netmask 0xffffff00\n";
             parse_zerotier_ip("1: lo    inet 127.0.0.1/8 scope host lo"),
             None
         );
+    }
+
+    #[test]
+    fn macos_firewall_warnings() {
+        let exe = "/usr/local/bin/kimo";
+        let off = "Firewall is disabled. (State = 0)";
+        let on = "Firewall is enabled. (State = 1)";
+        let allowed =
+            "The application /usr/local/bin/kimo is permitted to receive incoming connections";
+        let blocked =
+            "The application /usr/local/bin/kimo is blocked from receiving incoming connections";
+        assert_eq!(firewall_warning(off, "", blocked, exe), None);
+        assert_eq!(
+            firewall_warning(
+                on,
+                "Firewall has block all state set to disabled.",
+                allowed,
+                exe
+            ),
+            None
+        );
+        let all = firewall_warning(
+            on,
+            "Firewall has block all state set to enabled.",
+            allowed,
+            exe,
+        )
+        .unwrap();
+        assert!(all.contains("Block all incoming"), "{all}");
+        let app = firewall_warning(on, "Block all DISABLED!", blocked, exe).unwrap();
+        assert!(app.contains("blocks kimo") && app.contains(exe), "{app}");
+        let unknown =
+            firewall_warning(on, "", "The application is not part of the firewall", exe).unwrap();
+        assert!(unknown.contains("not in its list"), "{unknown}");
     }
 }

@@ -1,8 +1,8 @@
 //! Resolving a bind target to an address (asks tailscale / ip when needed).
 
 use crate::core::network::{
-    parse_ifconfig, parse_interfaces, parse_tailscale_dns, parse_tailscale_ip, tailscale_https_url,
-    tailscale_used_ports, BindTarget, Interface, NetKind,
+    firewall_warning, parse_ifconfig, parse_interfaces, parse_tailscale_dns, parse_tailscale_ip,
+    tailscale_https_url, tailscale_used_ports, BindTarget, Interface, NetKind,
 };
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
@@ -132,6 +132,9 @@ pub struct NetworkInfo {
     /// Best first: Tailscale HTTPS, Tailscale, ZeroTier, LAN, this machine.
     pub addresses: Vec<Address>,
     pub tailscale: Option<TailscaleInfo>,
+    /// Why other devices may not get through (the macOS firewall), in plain words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firewall: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,9 +198,29 @@ pub fn info(bound: IpAddr, port: u16) -> NetworkInfo {
     addresses.sort_by_key(rank);
     NetworkInfo {
         port,
+        firewall: (!bound.is_loopback()).then(firewall).flatten(),
         addresses,
         tailscale,
     }
+}
+
+/// The macOS application firewall's verdict on this kimo (it can silently drop every phone).
+fn firewall() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    const FW: &str = "/usr/libexec/ApplicationFirewall/socketfilterfw";
+    let exe = crate::services::update::exe()
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
+    let ask = |args: &[&str]| output(FW, args).unwrap_or_default();
+    firewall_warning(
+        &ask(&["--getglobalstate"]),
+        &ask(&["--getblockall"]),
+        &ask(&["--getappblocked", &exe]),
+        &exe,
+    )
 }
 
 /// Serve kimo over HTTPS on the tailnet with `tailscale serve`, on a free HTTPS port
