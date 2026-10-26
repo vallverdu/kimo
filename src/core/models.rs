@@ -230,7 +230,7 @@ pub struct QuickCommand {
 }
 
 /// kimo's settings, edited from the app (and any owner client).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
     pub agents: AgentsSettings,
@@ -243,8 +243,51 @@ pub struct Settings {
     pub theme: Theme,
     #[serde(default)]
     pub memory: MemorySettings,
+    /// The subscription new agents use, per provider (`None` = this computer's own login).
+    #[serde(default)]
+    pub active_accounts: ActiveAccounts,
+    /// Read Claude's plan limits (5-hour and weekly use) from Claude's API. On macOS this asks
+    /// once to read Claude's login from the Keychain, so it waits for a yes there.
+    #[serde(default = "claude_limits_default")]
+    pub claude_limits: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl Default for Settings {
+    /// The same defaults as a state file without settings.
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("every settings field has a default")
+    }
+}
+
+fn claude_limits_default() -> bool {
+    !cfg!(target_os = "macos")
+}
+
+/// The subscription new agents start on, per provider.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ActiveAccounts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<String>,
+}
+
+impl ActiveAccounts {
+    pub fn get(&self, provider: Provider) -> Option<&String> {
+        match provider {
+            Provider::Claude => self.claude.as_ref(),
+            Provider::Codex => self.codex.as_ref(),
+        }
+    }
+
+    pub fn set(&mut self, provider: Provider, account: Option<String>) {
+        match provider {
+            Provider::Claude => self.claude = account,
+            Provider::Codex => self.codex = account,
+        }
+    }
 }
 
 /// Why and when kimo stopped an agent to free memory.

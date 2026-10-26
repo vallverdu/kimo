@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.6
+
+- Mac app: kimo puts `kimo.app` in Applications (Dock, Launchpad, Spotlight) and keeps it and
+  `~/.local/bin/kimo` at the same version; opened from the Dock it takes your login shell's
+  PATH, so agents are found. `kimo install-app` does it by hand.
+- Terminals per project: the tabs show the terminals of the selected project only, and *+*
+  starts another terminal, Claude or Codex in it (⌘T: a terminal).
+- The projects panel hides with the button at the top left (⌘B), for the terminal alone.
+- Dropping: folders on the projects panel become projects; files dropped anywhere else go to
+  the open terminal as paths.
+- The views (Terminals, Usage, Subscriptions…) are buttons; the machines (this one and the
+  paired kimos) are at the top of the projects panel.
+- Subscriptions: grouped by provider, one *active* per provider where new agents start;
+  *Use* asks once and can move the running agents too (they continue their conversations).
+  No more "default login" rows: this computer's own login shows with its email. Plan limits
+  with their pace: when each 5-hour and weekly limit runs out at the current rate (Codex from
+  its logs, Claude from Claude's usage API once turned on).
+- Usage: what the tokens cost at API prices, per model, day, project and subscription.
+- Sign-in terminals ("login Work max") no longer stay in the sidebar once signed in.
+- Devices: the QR code shows as soon as an address is chosen, with a short code
+  (`K7M2-9QXP`) to type in the installed phone app.
+- Phone app: installable (iPhone: Add to Home Screen, then type the code; Android: install
+  over HTTPS), and it switches between every kimo paired with the one it uses (terminals
+  too), through `/api/hosts/{host}/…`.
+- API and SDK: `POST /api/accounts/active` (`setActiveAccount`), `/api/hosts/{host}/…`
+  (`hosts()`, `useHost()`, `forHost()`), costs and `models` in `/api/usage/daily`, `pace` and
+  Claude limits in `/api/usage`.
+
 ## 0.1.5
 
 - Memory: when memory runs low, the window and the phone say so, list the biggest agents and

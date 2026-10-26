@@ -16,7 +16,10 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| "kimo=info".into()),
         )
         .init();
-    let cfg = Config::parse();
+    // Older macOS passes a process serial number to apps opened from Finder: not ours.
+    let cfg = Config::parse_from(
+        std::env::args_os().filter(|a| !a.to_string_lossy().starts_with("-psn_")),
+    );
     // macOS always has a screen session for GUI apps; Linux needs X11 or Wayland.
     let has_display = cfg!(target_os = "macos")
         || std::env::var_os("DISPLAY").is_some()
@@ -29,8 +32,21 @@ fn main() -> Result<()> {
         } else {
             Command::Serve
         });
+    // Opened from the Dock: agents need the PATH of a login shell.
+    if matches!(command, Command::App | Command::Serve) {
+        kimo::services::macapp::fix_path();
+    }
     match command {
         Command::App => app(&cfg),
+        Command::InstallApp => {
+            let exe = std::env::current_exe()?.canonicalize()?;
+            let app = kimo::services::macapp::install(&exe, &user_home())?;
+            println!(
+                "kimo is in {}: open it from the Dock, Launchpad or Spotlight",
+                app.display()
+            );
+            Ok(())
+        }
         Command::Serve => runtime()?.block_on(serve(cfg)),
         Command::Pair => runtime()?.block_on(pair(cfg.port)),
         Command::Agents { json } => kimo::cli::agents(&kimo::cli::client(cfg.port), json),

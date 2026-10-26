@@ -66,6 +66,38 @@ pub fn claude_login(config_json: &str) -> Option<String> {
     )
 }
 
+/// The Keychain entry where Claude Code keeps a login on macOS: plain for the default config
+/// folder, suffixed with a hash of `CLAUDE_CONFIG_DIR` for other folders (kimo's accounts).
+pub fn claude_keychain_service(config_dir: Option<&str>) -> String {
+    match config_dir {
+        None => "Claude Code-credentials".into(),
+        Some(dir) => format!(
+            "Claude Code-credentials-{}",
+            &super::sha256::hex(dir.as_bytes())[..8]
+        ),
+    }
+}
+
+/// The OAuth access token in Claude Code's stored credentials (Keychain entry or
+/// `.credentials.json`).
+pub fn claude_access_token(credentials_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(credentials_json.trim()).ok()?;
+    v["claudeAiOauth"]["accessToken"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+}
+
+/// Whether a session is the terminal that signs an account in (`claude auth login`).
+pub fn is_login(spec: &SessionSpec) -> bool {
+    spec.account.is_some()
+        && spec.command.as_ref().is_some_and(|c| {
+            [Provider::Claude, Provider::Codex]
+                .iter()
+                .any(|p| *c == login_command(*p))
+        })
+}
+
 /// Command that signs an account in (run in a kimo terminal with the account's env).
 pub fn login_command(provider: Provider) -> Vec<String> {
     match provider {
@@ -392,5 +424,30 @@ mod tests {
             None,
         )
         .is_err());
+    }
+
+    #[test]
+    fn claude_logins_in_the_keychain() {
+        assert_eq!(claude_keychain_service(None), "Claude Code-credentials");
+        let s = claude_keychain_service(Some("/k/accounts/work"));
+        assert!(
+            s.starts_with("Claude Code-credentials-") && s.len() == 32,
+            "{s}"
+        );
+        assert_eq!(
+            claude_access_token(r#"{"claudeAiOauth":{"accessToken":"t1","refreshToken":"r"}}"#),
+            Some("t1".into())
+        );
+        assert_eq!(claude_access_token("{}"), None);
+    }
+
+    #[test]
+    fn login_sessions() {
+        let mut s = spec(SessionKind::Claude, Some("work"));
+        assert!(!is_login(&s));
+        s.command = Some(login_command(Provider::Claude));
+        assert!(is_login(&s));
+        s.account = None;
+        assert!(!is_login(&s));
     }
 }

@@ -10,29 +10,52 @@ import { initUsage } from './usage.js';
 const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, usage: [], view: 'agents' };
 
 const kTokens = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+/** "3 d 4 h", "2 h 10 min", "5 min" until a unix-seconds time. */
+function until(at) {
+  const left = Math.max(0, at - Date.now() / 1000), d = Math.floor(left / 86400), h = Math.floor(left % 86400 / 3600), m = Math.floor(left % 3600 / 60);
+  return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`;
+}
+const clock = at => new Date(at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+/** One plan limit: use, reset and where the pace leads. */
+export function limitText(l) {
+  const parts = [`${l.name} ${Math.round(l.used_percent)}%`];
+  if (l.resets_at) parts.push(`resets in ${until(l.resets_at)}`);
+  if (l.used_percent >= 100) parts.push('used up');
+  else if (l.pace?.runs_out_at) parts.push(`at this pace runs out in ${until(l.pace.runs_out_at)} (${clock(l.pace.runs_out_at)})`);
+  else if (l.pace) parts.push(`at this pace about ${Math.round(l.pace.projected_percent)}% by then`);
+  return parts.join(' · ');
+}
 function usageText(u) {
   if (!u) return '';
   const limits = u.limits?.limits || [];
-  if (limits.length) {
-    return limits.map(l => {
-      const left = Math.max(0, l.resets_at - Date.now() / 1000), d = Math.floor(left / 86400), h = Math.floor(left % 86400 / 3600);
-      const window = l.window_minutes === 10080 ? 'weekly' : l.window_minutes === 300 ? '5-hour' : `${l.window_minutes / 60} h`;
-      return `${Math.round(l.used_percent)}% of ${window} limit, resets in ${d ? `${d} d ${h} h` : `${h} h`}`;
-    }).join(' · ');
-  }
+  if (limits.length) return limits.map(limitText).join('\n');
+  if (u.limits_note) return u.limits_note;
   return u.tokens_7d ? `${kTokens(u.tokens_5h)} tokens in 5 h · ${kTokens(u.tokens_7d)} in 7 days` : 'no usage through kimo in 7 days';
 }
 const VIEWS = ['agents', 'projects', 'usage', 'accounts', 'devices', 'apps'];
 
 // ----- rendering -----
 
-function accountName(id) {
-  return id ? (state.accounts.find(a => a.id === id)?.name ?? id) : 'default login';
+/** An account's name; no id = this computer's own login of the provider. */
+function accountName(id, provider) {
+  const a = id ? state.accounts.find(a => a.id === id) : state.accounts.find(a => a.system && a.provider === provider);
+  return a?.name ?? id ?? "this computer's login";
 }
 
-function accountOptions(provider, selected) {
-  const options = [{ id: '', name: `default ${provider} login` }, ...state.accounts.filter(a => a.provider === provider)];
-  return options.map(a => `<option value="${esc(a.id)}" ${a.id === (selected ?? '') ? 'selected' : ''}>${esc(a.name)}${a.signed_in === false ? ' (not signed in)' : ''}</option>`).join('');
+/**
+ * Account choices of a provider (`system` = this computer's own login). With `active`, the
+ * first choice is "the active subscription" (value ''), as for new agents.
+ */
+function accountOptions(provider, selected, { active = false } = {}) {
+  const list = state.accounts.filter(a => a.provider === provider);
+  if (!list.some(a => a.system)) list.unshift({ id: 'system', system: true, name: "this computer's login" });
+  const current = list.find(a => a.active) || list.find(a => a.system);
+  const options = [
+    ...(active ? [{ value: '', name: `active subscription (${current?.name ?? 'none'})` }] : []),
+    ...list.map(a => ({ value: a.system ? 'system' : a.id, name: a.name + (a.signed_in === false ? ' (not signed in)' : '') })),
+  ];
+  const chosen = selected ?? (active ? '' : 'system');
+  return options.map(o => `<option value="${esc(o.value)}" ${o.value === chosen ? 'selected' : ''}>${esc(o.name)}</option>`).join('');
 }
 
 function renderStats() {
@@ -133,7 +156,7 @@ function sessionRow(s) {
     <span class="ui-badge ${s.status}">${s.status}${s.status === 'exited' && s.exit_code != null ? ` ${s.exit_code}` : ''}</span>
     ${s.activity === 'waiting' ? '<span class="k-act waiting">needs you</span>' : s.activity === 'working' ? '<span class="k-act">working</span>' : ''}
     ${s.freed && !live ? `<span class="k-act asleep" title="kimo stopped it to free ${mb(s.freed.bytes)} (${{ idle: 'idle for a while', asked: 'you asked' }[s.freed.reason] || 'memory was low'}); it continues when you open it">asleep</span>` : ''}
-    <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account))}</span>` : ''}<code title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</code><span title="kimo id: kimo send / read / wait">id <code>${esc(s.id)}</code></span>${s.conversation ? `<span title="the agent's own conversation id">resume <code>${esc(s.conversation.slice(0, 8))}…</code></span>` : ''}
+    <div class="k-meta"><span>${esc(s.kind)}</span>${agent ? `<span>${esc(accountName(s.account, s.kind))}</span>` : ''}<code title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</code><span title="kimo id: kimo send / read / wait">id <code>${esc(s.id)}</code></span>${s.conversation ? `<span title="the agent's own conversation id">resume <code>${esc(s.conversation.slice(0, 8))}…</code></span>` : ''}
       ${live ? `<span><button class="k-ram${state.memory?.heavy.includes(s.id) ? ' heavy' : ''}" data-do="memory" title="what uses the memory"><span class="k-num">${mb(ram)}</span> ram</button></span><span><span class="k-num">${s.usage.cpu_percent}%</span> cpu</span><span><span class="k-num">${s.usage.processes}</span> procs</span>` : ''}</div>
     ${parts[s.id] ? `<div class="k-parts">${parts[s.id].map((p, i) => `<span>${esc(i ? p.label : `${p.label} itself`)} <span class="k-num">${mb(p.bytes)}</span></span>`).join('')}</div>` : ''}
     ${live ? `<div class="k-bar" title="share of machine memory"><span style="width:${Math.min(100, ram / total * 100).toFixed(1)}%"></span></div>` : ''}
@@ -151,22 +174,27 @@ function renderSessions() {
 }
 
 function renderAccounts() {
-  const defaults = ['claude', 'codex'].map(p => ({ id: 'default', provider: p, name: `default ${p} login`, signed_in: null, sessions: state.sessions.filter(s => s.kind === p && !s.account).length }));
-  const rows = [...defaults, ...state.accounts].map(a => {
-    const targets = [{ id: 'default', name: `default ${a.provider} login` }, ...state.accounts.filter(b => b.provider === a.provider)]
-      .filter(b => !(b.id === a.id && a.id !== 'default') && !(a.id === 'default' && b.id === 'default'));
-    const signed = a.signed_in === null ? '' : `<span class="ui-badge ${a.signed_in ? 'running' : 'paused'}" ${a.email ? `title="${esc(a.email)}"` : ''}>${a.signed_in ? 'signed in' : 'not signed in'}</span>`;
-    return `<li data-account="${esc(a.id)}" data-provider="${a.provider}">
-      <span class="k-name" style="cursor:default">${esc(a.name)}</span>${signed || '<span></span>'}
-      <div class="k-meta"><span>${a.provider}</span>${a.email ? `<span>${esc(a.email)}</span>` : ''}<span><span class="k-num">${a.sessions}</span> sessions</span>
-        <span class="k-usage">${esc(usageText(state.usage.find(u => (u.account ?? 'default') === a.id && u.provider === a.provider)))}</span></div>
-      <div class="k-actions">
-        ${a.id !== 'default' ? `<button class="ui-button ${a.signed_in ? 'ghost ' : ''}k-small" data-do="login">sign in</button>` : ''}
-        ${a.sessions && targets.length ? `<select data-do="move-target" aria-label="Move to">${targets.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select><button class="ui-button ghost k-small" data-do="move">move sessions</button>` : ''}
-        ${a.id !== 'default' && !a.sessions ? `<button class="ui-button k-small k-danger" data-do="delete-account">delete</button>` : ''}
-      </div></li>`;
-  });
-  $('account-list').innerHTML = rows.join('');
+  const providers = [['claude', 'Claude'], ['codex', 'Codex']];
+  $('account-list').innerHTML = providers.map(([provider, title]) => {
+    const list = state.accounts.filter(a => a.provider === provider);
+    const rows = list.map(a => {
+      const u = state.usage.find(u => (a.system ? u.account == null : u.account === a.id) && u.provider === provider);
+      const key = a.system ? 'system' : a.id;
+      return `<li data-account="${esc(key)}" data-provider="${provider}" data-name="${esc(a.name)}" class="${a.active ? 'k-active' : ''}">
+        <span class="k-name" style="cursor:default">${esc(a.name)}</span>
+        <span>${a.active ? '<span class="ui-badge running">active</span>' : ''}${a.signed_in === false ? ' <span class="ui-badge paused">not signed in</span>' : ''}</span>
+        <div class="k-meta">${a.system ? "<span>this computer's login</span>" : ''}${a.email && a.email !== a.name ? `<span>${esc(a.email)}</span>` : ''}<span><span class="k-num">${a.sessions}</span> agents</span></div>
+        <div class="k-usage k-pace">${esc(usageText(u)).replace(/\n/g, '<br>')}</div>
+        <div class="k-actions">
+          ${a.active ? '' : '<button class="ui-button k-small" data-do="use">use</button>'}
+          ${a.system ? '' : `<button class="ui-button ghost k-small" data-do="login">${a.signed_in ? 'sign in again' : 'sign in'}</button>`}
+          ${!a.system && !a.sessions ? '<button class="ui-button k-small k-danger" data-do="delete-account">remove</button>' : ''}
+        </div></li>`;
+    });
+    const limitsOff = provider === 'claude' && list.length && state.settings && !state.settings.claude_limits;
+    return `<h3 class="ui-section-title">${title}</h3><ul class="k-sessions">${rows.join('') || `<li class="ui-empty">Not signed in to ${title} on this computer. Tap + to add an account.</li>`}</ul>
+      ${limitsOff ? `<div class="ui-alert info"><span>See each Claude subscription's 5-hour and weekly use, and when it runs out at this pace.${navigator.platform.startsWith('Mac') ? '' : ' On a Mac, macOS asks once on the kimo machine to let kimo read Claude\'s login.'}</span><button class="ui-button k-small" data-do="claude-limits">show plan limits</button></div>` : ''}`;
+  }).join('');
 }
 
 function renderApps() {
@@ -200,7 +228,13 @@ async function refresh() {
     loadMemory();
     return true;
   } catch (e) {
-    if (e.status === 401) { if (!$('sheet-token').open) $('sheet-token').showModal(); }
+    if (e.status === 401) {
+      if (api.host) { useHost(null); return refresh(); }
+      if (!$('sheet-token').open) {
+        $('sheet-token').querySelector('[name=name]').value = deviceName();
+        $('sheet-token').showModal();
+      }
+    }
     else toast(e.message, true);
     return false;
   }
@@ -211,8 +245,9 @@ let unsubscribe = null;
 async function connect() {
   unsubscribe?.();
   if (!(await refresh())) return;
-  // Owner-only extras: the colour scheme and new versions (app keys get a 403, ignored).
-  api.settings().then(st => applyTheme(st.theme)).catch(() => {});
+  // Owner-only extras: the colour scheme, new versions, other kimos (app keys get a 403).
+  api.settings().then(st => { state.settings = st; applyTheme(st.theme); renderAccounts(); }).catch(() => {});
+  loadHosts();
   api.release().then(r => { state.release = r; render(); }).catch(() => {});
   unsubscribe = api.subscribe(({ sessions, accounts }) => {
     state.sessions = sessions;
@@ -285,7 +320,7 @@ $('sessions').addEventListener('change', e => {
   if (e.target.dataset.do !== 'account') return;
   const id = e.target.closest('li[data-id]').dataset.id;
   e.target.disabled = true;
-  run(api.setAccount(id, e.target.value || null), s => `Now on ${accountName(s.account)}`);
+  run(api.setAccount(id, e.target.value || null), s => `Now on ${accountName(s.account, s.kind)}`);
 });
 
 terminal.onToggle = s => s && run(api.act(s.id, s.status === 'paused' ? 'resume' : 'pause'));
@@ -294,19 +329,29 @@ terminal.onClose = refresh;
 // ----- account actions -----
 
 $('account-list').addEventListener('click', async e => {
+  if (e.target.closest('[data-do=claude-limits]')) {
+    const st = await api.settings().catch(() => null);
+    if (!st) return;
+    state.settings = await run(api.saveSettings({ ...st, claude_limits: true }), 'Claude plan limits on') || st;
+    state.usage = await api.usage().catch(() => state.usage);
+    return renderAccounts();
+  }
   const btn = e.target.closest('button[data-do]');
   const li = e.target.closest('li[data-account]');
   if (!btn || !li) return;
-  const id = li.dataset.account;
+  const { account: id, provider, name } = li.dataset;
   if (btn.dataset.do === 'login') {
     const s = await run(api.login(id));
     if (s) terminal.open(s);
-  } else if (btn.dataset.do === 'move') {
-    const to = li.querySelector('[data-do=move-target]').value;
+  } else if (btn.dataset.do === 'use') {
+    const title = provider === 'codex' ? 'Codex' : 'Claude';
+    if (!confirm(`Use ${name} for new ${title} agents?`)) return;
+    const others = state.accounts.filter(a => a.provider === provider && (a.system ? 'system' : a.id) !== id).reduce((n, a) => n + a.sessions, 0);
+    const move = others > 0 && confirm(`Also move the ${others} ${title} agent${others === 1 ? '' : 's'} on other subscriptions to ${name}? Running ones restart and continue their conversation.`);
     btn.disabled = true;
-    run(api.moveSessions(id, to === 'default' ? null : to), r => `Moved ${r.moved} session${r.moved === 1 ? '' : 's'}`);
+    run(api.setActiveAccount(provider, id, { move }), r => `${name} is the active subscription${r.moved ? ` · moved ${r.moved} agents` : ''}`);
   } else if (btn.dataset.do === 'delete-account') {
-    if (confirm('Delete this account and its stored credentials?')) run(api.deleteAccount(id), 'Account deleted');
+    if (confirm(`Remove ${name}? kimo deletes its sign-in on this computer; conversations stay.`)) run(api.deleteAccount(id), 'Subscription removed');
   }
 });
 
@@ -353,7 +398,7 @@ function syncKind() {
   const form = sessionSheet.querySelector('form');
   const kind = form.elements.kind.value;
   form.querySelector('[data-for=agent]').hidden = kind === 'shell';
-  form.elements.account.innerHTML = kind === 'shell' ? '' : accountOptions(kind);
+  form.elements.account.innerHTML = kind === 'shell' ? '' : accountOptions(kind, '', { active: true });
 }
 
 $('add').addEventListener('click', () => {
@@ -391,11 +436,29 @@ accountSheet.querySelector('form').addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target.elements;
   const acc = await run(api.createAccount(f.name.value, f.provider.value), 'Account added: sign in next');
-  if (acc) { accountSheet.close(); e.target.reset(); }
+  if (!acc) return;
+  accountSheet.close();
+  e.target.reset();
+  const login = await run(api.login(acc.id));
+  if (login) terminal.open(login);
 });
 
-$('sheet-token').querySelector('form').addEventListener('submit', e => {
-  setToken(e.target.elements.token.value.trim());
+// Not paired: type the code kimo shows (an installed app cannot scan its own QR code), or
+// paste a key.
+$('sheet-token').querySelector('form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const f = e.target.elements;
+  const code = f.code.value.trim(), key = f.token.value.trim();
+  if (!code && !key) return toast('Type the code kimo shows in Devices', true);
+  if (code) {
+    try {
+      const device = await api.pair(code, f.name.value.trim() || deviceName());
+      setToken(device.token);
+      toast(`Paired as ${device.name}`);
+    } catch (err) { return toast(err.message, true); }
+  } else {
+    setToken(key);
+  }
   $('sheet-token').close();
   connect();
 });
@@ -412,6 +475,9 @@ function deviceName() {
   return 'Linux computer';
 }
 
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
 const pairSheet = $('sheet-pair');
 pairSheet.querySelector('form').addEventListener('submit', async e => {
   e.preventDefault();
@@ -424,12 +490,71 @@ pairSheet.querySelector('form').addEventListener('submit', async e => {
   } catch (err) { toast(err.message, true); }
 });
 
+// ----- installing as an app -----
+
+let installPrompt = null;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; renderInstall(); });
+addEventListener('appinstalled', () => { installPrompt = null; renderInstall(); });
+const INSTALL_SEEN = 'kimo-install-hidden';
+function renderInstall() {
+  let hidden = false;
+  try { hidden = localStorage.getItem(INSTALL_SEEN) === '1'; } catch { /* ignore */ }
+  const touch = matchMedia('(pointer: coarse)').matches;
+  let text = '', button = '';
+  if (standalone || hidden || !touch) text = '';
+  else if (installPrompt) { text = 'Install kimo as an app on this phone.'; button = '<button class="ui-button k-small" data-do="install">install</button>'; }
+  else if (ios) text = 'Use kimo as an app: tap Share → Add to Home Screen. Then open it and type the pairing code kimo shows in Devices.';
+  else if (!isSecureContext) text = 'To install kimo as an app this phone needs its HTTPS address: on the kimo machine, Devices → enable HTTPS (Tailscale), then scan the QR code again.';
+  else text = 'Use kimo as an app: browser menu → Install app (or Add to Home screen).';
+  $('install').innerHTML = text ? `<div class="ui-alert info"><span>${esc(text)}</span>${button}<button class="ui-button ghost k-small" data-do="install-hide">hide</button></div>` : '';
+}
+$('install').addEventListener('click', async e => {
+  if (e.target.closest('[data-do=install]') && installPrompt) {
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    installPrompt = null;
+  }
+  if (e.target.closest('[data-do=install-hide]')) { try { localStorage.setItem(INSTALL_SEEN, '1'); } catch { /* ignore */ } }
+  renderInstall();
+});
+
+// ----- other kimos (paired with this one) -----
+
+const HOST = 'kimo-host';
+function useHost(id) {
+  api.useHost(id);
+  try { id ? localStorage.setItem(HOST, id) : localStorage.removeItem(HOST); } catch { /* ignore */ }
+  document.title = id ? `kimo · ${state.hosts.find(h => h.id === id)?.name ?? id}` : 'kimo · agents';
+}
+async function loadHosts() {
+  state.hosts = await api.hosts().catch(() => []);
+  const pick = $('host-pick');
+  pick.hidden = !state.hosts.length;
+  if (!state.hosts.length) return;
+  $('host').innerHTML = [`<option value="">this kimo${state.status?.host ? ` (${esc(state.status.host)})` : ''}</option>`,
+    ...state.hosts.map(h => `<option value="${esc(h.id)}" ${h.id === api.host ? 'selected' : ''}>${esc(h.name)}${h.online ? '' : ' (offline)'}</option>`)].join('');
+}
+$('host').addEventListener('change', e => {
+  terminal.close?.();
+  useHost(e.target.value || null);
+  connect();
+});
+
 // ----- start -----
+
+state.hosts = [];
+try { const saved = localStorage.getItem(HOST); if (saved) api.useHost(saved); } catch { /* ignore */ }
+renderInstall();
 
 show(location.hash.slice(1));
 document.querySelectorAll('[data-origin]').forEach(e => { e.textContent = location.origin; });
 if (pairCode) {
   pairSheet.querySelector('[name=name]').value = deviceName();
+  // On iPhone an installed app keeps its own storage: install first, then pair inside it.
+  if (ios && !standalone) {
+    $('pair-install').hidden = false;
+    $('pair-install').textContent = `To use kimo as an app: tap Share → Add to Home Screen, open kimo from there and type the code ${pairCode}. Or pair this browser:`;
+  }
   pairSheet.showModal();
 } else {
   connect();

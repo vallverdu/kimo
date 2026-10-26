@@ -23,11 +23,28 @@ fn run(cmd: &mut Command) -> Result<std::process::Output> {
 
 /// [`run`] with another time limit (git, downloads).
 pub(crate) fn run_for(cmd: &mut Command, limit: Duration) -> Result<std::process::Output> {
+    run_with_input(cmd, None, limit)
+}
+
+/// Like [`run_for`], with `input` written to the command's stdin (secrets stay out of `ps`).
+pub(crate) fn run_with_input(
+    cmd: &mut Command,
+    input: Option<&[u8]>,
+    limit: Duration,
+) -> Result<std::process::Output> {
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        use std::io::Write;
+        let _ = stdin.write_all(input);
+    }
     // Read both pipes on threads so a chatty command cannot fill them and stall.
     let mut out = child.stdout.take().expect("piped");
     let mut err = child.stderr.take().expect("piped");

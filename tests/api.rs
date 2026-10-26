@@ -1055,3 +1055,142 @@ fn kimo_serve_starts_and_answers() {
     let _ = child.wait();
     assert!(answered, "kimo serve did not answer /api/status");
 }
+
+#[tokio::test]
+async fn the_active_subscription_is_where_new_agents_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let call = |method: &'static str, uri: &'static str, body: Option<String>| {
+        let app = app.clone();
+        async move {
+            app.oneshot(local(req(method, uri, None, None, body.as_deref())))
+                .await
+                .unwrap()
+        }
+    };
+    let work = json(
+        call(
+            "POST",
+            "/api/accounts",
+            Some(r#"{"name":"Work","provider":"claude"}"#.into()),
+        )
+        .await,
+    )
+    .await;
+    let id = work["id"].as_str().unwrap().to_string();
+    let set = call(
+        "POST",
+        "/api/accounts/active",
+        Some(format!(r#"{{"provider":"claude","account":"{id}"}}"#)),
+    )
+    .await;
+    assert_eq!(set.status(), StatusCode::OK);
+    let accounts = json(call("GET", "/api/accounts", None).await).await;
+    assert_eq!(accounts[0]["active"], true, "{accounts}");
+    assert_eq!(accounts[0]["system"], false);
+
+    // No account named: the active one; "system": this computer's own login.
+    let cwd = tmp.path().join("home").display().to_string();
+    let new = |name: &str, account: &str| {
+        format!(r#"{{"name":"{name}","kind":"claude","cwd":"{cwd}","start":false{account}}}"#)
+    };
+    let a = json(call("POST", "/api/sessions", Some(new("a", ""))).await).await;
+    assert_eq!(a["account"], id.as_str());
+    let b = json(
+        call(
+            "POST",
+            "/api/sessions",
+            Some(new("b", r#","account":"system""#)),
+        )
+        .await,
+    )
+    .await;
+    assert!(b["account"].is_null(), "{b}");
+
+    // A Claude account is not a Codex subscription.
+    let wrong = call(
+        "POST",
+        "/api/accounts/active",
+        Some(format!(r#"{{"provider":"codex","account":"{id}"}}"#)),
+    )
+    .await;
+    assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+
+    // Back to this computer's login, moving the agents: both are on it now.
+    let moved = json(
+        call(
+            "POST",
+            "/api/accounts/active",
+            Some(r#"{"provider":"claude","account":null,"move":true}"#.into()),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(moved["moved"], 1);
+    let sessions = json(call("GET", "/api/sessions", None).await).await;
+    assert!(sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s["account"].is_null()));
+}
+
+#[tokio::test]
+async fn typed_pairing_codes_and_other_kimos_are_for_the_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), Some("admin-secret"));
+    let pairing = json(
+        app.clone()
+            .oneshot(local(req("POST", "/api/pairing", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    // Typed from the screen: small letters and a space instead of the dash still work.
+    let code = pairing["code"].as_str().unwrap();
+    assert_eq!(code.len(), 9, "{code}");
+    let typed = code.to_lowercase().replace('-', " ");
+    let body = format!(r#"{{"code":"{typed}","name":"iPhone"}}"#);
+    let paired = app
+        .clone()
+        .oneshot(remote(req("POST", "/api/pair", None, None, Some(&body))))
+        .await
+        .unwrap();
+    assert_eq!(paired.status(), StatusCode::OK);
+
+    // Paired kimos reached through this one: owner only, unknown ones are not found.
+    let missing = app
+        .clone()
+        .oneshot(local(req("GET", "/api/hosts/nuc/status", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let key = json(
+        app.clone()
+            .oneshot(req(
+                "POST",
+                "/api/clients",
+                None,
+                Some("admin-secret"),
+                Some(r#"{"name":"tool","scope":"control"}"#),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let denied = app
+        .clone()
+        .oneshot(remote(req(
+            "GET",
+            "/api/hosts/nuc/status",
+            None,
+            Some(&key),
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+}

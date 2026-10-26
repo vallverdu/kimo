@@ -47,7 +47,11 @@ mkdir -p "$BIN_DIR"
 install -m 755 "$tmp/$name/kimo" "$BIN_DIR/kimo"
 echo "installed $BIN_DIR/kimo"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "add $BIN_DIR to your PATH" ;; esac
-if [ "$VARIANT" = "kimo-server" ]; then
+# macOS: kimo.app in Applications (Dock, Launchpad, Spotlight).
+if [ "$(uname -s)" = "Darwin" ]; then
+  "$BIN_DIR/kimo" install-app || echo "kimo.app not set up: run kimo install-app later"
+  echo "next: open kimo from Launchpad or Spotlight (or run kimo)"
+elif [ "$VARIANT" = "kimo-server" ]; then
   echo "next: kimo serve   (then pair your phone: kimo pair)"
 else
   echo "next: kimo         (opens the window; kimo serve runs without it)"

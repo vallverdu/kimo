@@ -16,9 +16,10 @@ and gives you, and the agents themselves, the controls for that.
 
 ## What it does
 
-- **Projects and terminals.** Drop a folder on the window to make it a project (or create
-  one, or clone a repository). Start Claude Code, Codex or a shell in it with one click. Real
-  terminals, with tabs, selection and copy; drop files on a terminal to type their paths.
+- **Projects and terminals.** Drop a folder on the projects panel to make it a project (or
+  create one, or clone a repository). Each project has its own tabs: *+* starts another
+  terminal, Claude Code or Codex in it (⌘T for a terminal). Real terminals, with selection
+  and copy; drop files on the terminal to type their paths. ⌘B hides the projects panel.
 - **Worktrees.** *+* on a project creates a git worktree (a branch in its own folder) with an
   agent in it, so several agents work on the same repository without stepping on each other.
 - **Pick up where you left off.** When a folder becomes a project, kimo finds the Claude Code
@@ -26,12 +27,14 @@ and gives you, and the agents themselves, the controls for that.
   are back in your work at once. Every project has a *history* of its earlier conversations,
   each one a click away from continuing.
 - **Subscriptions without logging out.** Add as many Claude and Codex accounts as you have
-  and sign in once. Switch an agent to another account at any time and it **continues the
-  same conversation**; when one plan hits its limit, move all its agents with one click.
-  kimo shows **usage per account** (Claude tokens, Codex plan limits and reset times).
-- **Usage per day and per project.** A Usage tab shows the tokens of every Claude Code and
-  Codex conversation on the machine, inside kimo or not, per day, per project (or repository)
-  and per subscription, from the agents' own logs. Also on the phone and as `kimo usage`.
+  and sign in once. One per provider is *active*: new agents start on it, and switching
+  (one click and a yes) can move the running agents too, each **continuing the same
+  conversation**. kimo shows each plan's 5-hour and weekly use and **when it runs out at
+  the current pace**.
+- **Usage and cost.** A Usage tab shows the tokens of every Claude Code and Codex
+  conversation on the machine, inside kimo or not, per day, per project (or repository), per
+  subscription and per model, with **what it would cost at API prices**. Also on the phone
+  and as `kimo usage`.
 - **Pause, stop, continue.** Pause freezes an agent (no CPU); stop frees its memory; continue
   resumes its own conversation by id. Memory and CPU per agent, always visible, with a
   breakdown (the agent itself, each MCP server, builds). When memory runs low kimo warns you,
@@ -43,10 +46,14 @@ and gives you, and the agents themselves, the controls for that.
 - **Know who needs you.** Each agent is *working*, *needs you* (asking a question or an
   approval) or *idle*. The window and the phone show what needs you first.
 - **Several machines, one app.** Pair the kimo on your laptop with the ones on a GPU box, a
-  Raspberry Pi or a Mac mini. Their projects and terminals appear in the same window, and
-  agents message each other across machines as `gpu-lab/trainer-1a2b`.
-- **Your phone.** Pair it with a QR code and use the bundled phone client over your LAN,
-  Tailscale or ZeroTier.
+  Raspberry Pi or a Mac mini. Their projects and terminals appear in the same window (pick
+  the machine at the top of the projects panel), and agents message each other across
+  machines as `gpu-lab/trainer-1a2b`. The phone reaches every paired kimo through the one
+  it is paired with.
+- **Your phone.** Scan the QR code in Devices, or type its code in the installed app. kimo is
+  an installable app (PWA) over your LAN, Tailscale or ZeroTier.
+- **A Mac app.** kimo puts itself in Applications: open it from the Dock, Launchpad or
+  Spotlight.
 - **Your own apps.** Everything goes through a small HTTP API with live events. Give a web app
   its own key and it can create projects, start agents and orchestrate them with the JS SDK
   and an embeddable `<kimo-terminal>`.
@@ -117,8 +124,9 @@ session id, or the id Codex writes in its log). Both show in the window and in `
 
 Every kimo can pair with others (a one-time code; both sides learn about each other). Then:
 
-- the window's **host** menu shows each machine's projects, sessions, subscriptions, skills and
-  settings, and opens their terminals directly;
+- the machines at the top of the window's projects panel show each one's projects,
+  sessions, subscriptions, skills and settings, and open their terminals directly;
+- the phone (paired with any one of them) switches between them from its header;
 - `kimo agents` lists the agents of every machine as `host/id`, and `send`, `read`, `wait` and
   the API's session calls work on them;
 - kimos talk HTTP, so any network where they reach each other works: Tailscale, ZeroTier, your
@@ -129,8 +137,13 @@ Give each machine a clear name with `--name` or `KIMO_NAME` (default: its hostna
 ## Phone and web
 
 The phone client is a web app served by kimo itself: agents, projects, accounts, devices, and
-a terminal with a key bar and a message box. Pair a phone with the QR code in Devices; over
-HTTPS (`tailscale serve`, one click in Devices) it installs as an app.
+a terminal with a key bar and a message box. Devices shows a QR code and a short code as soon
+as you choose the address the phone uses (Tailscale, ZeroTier, Wi-Fi).
+
+To install it as an app: on an iPhone, open the address in Safari, Share → Add to Home
+Screen, then open kimo from the home screen and type the code (an installed app keeps its own
+storage, so it pairs by itself). Android installs apps over HTTPS only: enable HTTPS in
+Devices (`tailscale serve`, one click), scan the QR code and tap *install*.
 
 | | | | |
 |---|---|---|---|
@@ -163,6 +176,10 @@ HTTP API, SDK and CLI reference is in [docs/api.md](docs/api.md).
   `systemctl --user enable --now kimo` and `loginctl enable-linger $USER`.
 - **macOS (LaunchAgent):** `cp contrib/ai.kimo.plist ~/Library/LaunchAgents/`, then
   `launchctl load -w ~/Library/LaunchAgents/ai.kimo.plist`.
+- **macOS app:** the install script (and the window, on its first start) puts `kimo.app` in
+  Applications (or `~/Applications`), with the same binary; `kimo install-app` does it by
+  hand. Updates keep the app and `~/.local/bin/kimo` at the same version. Opened from the
+  Dock, kimo takes your login shell's PATH, so it finds `claude` and `codex`.
 - A desktop launcher for Linux is in `contrib/kimo.desktop`.
 
 ## Configuration
@@ -216,9 +233,12 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
   conversation when started again).
 - Agent state (*working*, *needs you*) comes from output timing and the prompt shapes of
   Claude Code, Codex and common CLIs; unusual prompts may show as idle.
-- Usage is counted in tokens from the agents' logs; plan percentages are shown for Codex, which
-  records them. Which subscription a conversation used is known only for agents run by kimo;
-  days are the local days of the machine the agents run on.
+- Usage is counted in tokens from the agents' logs; costs are API list prices per model, an
+  estimate of what the same work costs on the API (subscriptions are not billed per token).
+  Codex records its plan percentages; Claude's come from Claude's usage API once turned on in
+  Subscriptions (on macOS that asks once to let kimo read Claude's login in the Keychain).
+  Which subscription a conversation used is known only for agents run by kimo; days are the
+  local days of the machine the agents run on.
 - `codex login` completes in a browser on the machine itself; sign Codex accounts in there once.
 
 ## Development

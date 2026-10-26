@@ -45,6 +45,8 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
     // Managing logins and app keys stays with the owner.
     let admin_only = [
         "/clients", "/network", "/pairing", "/devices", "/qr", "/settings", "/peers", "/update",
+        // Paired kimos reached through this one get this kimo's own key there.
+        "/hosts",
     ]
         .iter()
         .any(|p| path.starts_with(p))
@@ -59,6 +61,25 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
         Scope::Control => true,
         Scope::Read => method == "GET" && !path.ends_with("/term") && !path.starts_with("/fs"),
     }
+}
+
+/// Letters of pairing codes: no O, I, L or 1 to misread when typed from a screen.
+const CODE_ALPHABET: &[u8; 32] = b"023456789ABCDEFGHJKMNPQRSTUVWXYZ";
+
+/// A pairing code people can type: `K7M2-9QXP` (40 random bits) from a random number.
+pub fn pairing_code(random: u128) -> String {
+    let chars: String = (0..8)
+        .map(|i| CODE_ALPHABET[((random >> (i * 5)) & 31) as usize] as char)
+        .collect();
+    format!("{}-{}", &chars[..4], &chars[4..])
+}
+
+/// A typed or scanned pairing code as stored: capitals, no spaces or dashes.
+pub fn normalize_code(code: &str) -> String {
+    code.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
 }
 
 #[cfg(test)]
@@ -144,5 +165,16 @@ mod tests {
         assert!(!permits(&read, "GET", "/fs"));
         assert!(permits(&control, "POST", "/projects"));
         assert!(permits(&Caller::Admin, "POST", "/clients"));
+    }
+
+    #[test]
+    fn pairing_codes() {
+        let c = pairing_code(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        assert_eq!(c.len(), 9);
+        assert_eq!(&c[4..5], "-");
+        assert!(normalize_code(&c)
+            .chars()
+            .all(|c| CODE_ALPHABET.contains(&(c as u8))));
+        assert_eq!(normalize_code(" k7m2-9qxp "), "K7M29QXP");
     }
 }

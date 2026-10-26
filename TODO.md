@@ -2,6 +2,10 @@
 
 ## Native app (Rust)
 
+- [x] Tabs per project with a + menu (terminal, Claude, Codex); the projects panel hides (⌘B); drops on the panel add projects, anywhere else type paths.
+- [x] kimo.app in Applications (Dock, Launchpad), kept at the newest version with ~/.local/bin/kimo; the login shell's PATH when opened from the Dock.
+- [ ] Show the window's views in its own menu bar (macOS) and remember the window size.
+
 - [x] `kimo` opens a native window (egui) that is a client of the local server (started in the background when needed).
 - [x] Terminals in the window on alacritty_terminal: colours, keys, Tab, Ctrl+C, paste, scrollback, resize, terminal replies.
 - [x] Projects sidebar with drag-and-drop of folders, + claude / + codex / + shell per project.
@@ -17,7 +21,7 @@
 - [ ] Signed release builds for macOS (notarized app bundle) so updates and first runs need no Gatekeeper prompt.
 - [x] Symbol fallback fonts (DejaVu Sans Mono, Noto Sans Symbols 2) so agent icons and box drawing render.
 - [ ] Emoji font, and the few symbols still missing (⎿).
-- [ ] Split panes (several terminals side by side) and keyboard shortcuts to switch tabs.
+- [ ] Split panes (several terminals side by side) and keyboard shortcuts to switch tabs (⌘T opens one in the project).
 - [ ] Native folder dialog for "+ project" (xdg portal) besides the server folder picker.
 - [x] App icon (the kimo logo) and a .desktop launcher (`contrib/kimo.desktop`).
 - [ ] `kimo install` (service + launcher + icon in one command).
@@ -48,11 +52,15 @@
 
 ## Account & Subscription Management
 
+- [x] One active subscription per provider (new agents start on it; switching can move the agents), this computer's own login named by its email.
+- [x] Cost per model at API prices in Usage (window, phone, API).
+
 - [x] Enable definition and management of multiple Claude and Codex accounts. (one config home per account, signed-in status)
 - [x] Implement a mechanism for seamless switching between subscriptions. (per-session account select, restarts and continues)
 - [x] Allow users to easily change subscriptions without agent logout. (Accounts → move sessions, shared conversations via links)
 - [x] Usage per subscription: runs per account; Claude tokens (5 h / 7 days) from transcripts; Codex plan limits and reset times from its logs.
-- [ ] Claude plan percentages, if Anthropic exposes them in a supported way.
+- [x] Claude plan percentages (Claude's usage API, as Claude Code's /usage shows them), with the pace of every plan limit.
+- [ ] Refresh an expired Claude token for the plan limits instead of waiting for Claude to run on that login.
 - [ ] Handle subscription limits: detect "limit reached" (output / Codex `rate_limit_reached_type`) and offer or perform the move to another account automatically.
 - [ ] Phone-friendly Codex sign-in (device code flow or token import).
 
@@ -70,6 +78,8 @@
 - [x] Optimize the Rust codebase for minimal resource footprint. (3.5 MB binary, ~5 MB RSS, two small threads per running session)
 
 ## Mobile-First Design & Integration
+
+- [x] Installable app: typed pairing codes for an installed app (iPhone keeps its own storage), install prompt on Android over HTTPS, a switch between paired kimos.
 
 - [x] Design the ADE with a mobile-first approach. (phone layout, bottom tabs, key bar, compose box)
 - [x] Explore PWA (Progressive Web App) integration for accessibility. (manifest, service worker on HTTPS via `tailscale serve`)
@@ -117,7 +127,7 @@
 - [x] `kimo agents | send | read | wait | new | whoami`; signed messages; last answer from the agent's own transcript.
 - [x] Bundled `kimo-agents` skill (one-click install) that teaches agents to use them.
 - [x] Pair kimos with each other (`kimo peer add`, Devices → Other kimos); agents of every machine as `host/id`; messages, reads and actions routed across machines.
-- [ ] Remote terminals in the phone client (proxy the terminal websocket through the local kimo).
+- [x] Remote terminals in the phone client (`/api/hosts/{host}/…` proxies calls, events and terminals through the local kimo).
 - [ ] HTTPS between kimos (TLS in the client) and SSH as a built-in transport.
 - [ ] Group chat / shared channel for a team of agents on a task.
 

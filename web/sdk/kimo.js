@@ -17,16 +17,29 @@ export class KimoError extends Error {
 }
 
 export class Kimo {
-  /** @param {{url?: string, token?: string}} options url defaults to the kimo serving this file. */
-  constructor({ url, token } = {}) {
+  /**
+   * @param {{url?: string, token?: string, host?: string}} options url defaults to the kimo
+   * serving this file; `host` reaches a kimo paired with it (`hosts()`) through it.
+   */
+  constructor({ url, token, host } = {}) {
     this.url = (url || new URL('..', import.meta.url).href).replace(/\/+$/, '');
     this.token = token || '';
+    this.host = host || null;
   }
 
-  async request(method, path, body) {
+  /** API path prefix: this kimo, or a paired one through it. */
+  get base() { return this.host ? `/api/hosts/${enc(this.host)}` : '/api'; }
+
+  /** Talk to a paired kimo (an id or name from `hosts()`), or `null` for this one. */
+  useHost(host) { this.host = host || null; }
+
+  /** A client for a paired kimo, sharing this one's address and key. */
+  forHost(host) { return new Kimo({ url: this.url, token: this.token, host }); }
+
+  async request(method, path, body, { local = false } = {}) {
     let res;
     try {
-      res = await fetch(`${this.url}/api${path}`, {
+      res = await fetch(`${this.url}${local ? '/api' : this.base}${path}`, {
         method,
         headers: {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -44,6 +57,11 @@ export class Kimo {
 
   // Machine
   status() { return this.request('GET', '/status'); }
+  /**
+   * The kimos paired with this one (`[{id, name, url, online, sessions}]`): pass an id to
+   * `useHost()` or `forHost()` to use one of them through this kimo. Owner only.
+   */
+  hosts() { return this.request('GET', '/peers', undefined, { local: true }); }
 
   // Projects
   projects() { return this.request('GET', '/projects'); }
@@ -129,6 +147,13 @@ export class Kimo {
   moveSessions(from, to) { return this.request('POST', `/accounts/${enc(from)}/move`, { to }); }
 
   // Owner only (kimo's own token): logins and app keys
+  /**
+   * Make an account the one new agents of `provider` start on (`null` or 'system': this
+   * computer's own login); `move: true` also moves that provider's agents to it now.
+   */
+  setActiveAccount(provider, account, { move = false } = {}) {
+    return this.request('POST', '/accounts/active', { provider, account, move });
+  }
   createAccount(name, provider) { return this.request('POST', '/accounts', { name, provider }); }
   deleteAccount(id) { return this.request('DELETE', `/accounts/${enc(id)}`); }
   /** Start a sign-in terminal for an account; returns the session. */
@@ -155,12 +180,12 @@ export class Kimo {
   /** One-time code (10 minutes) for a pairing link `<address>/#pair=<code>`. */
   startPairing() { return this.request('POST', '/pairing'); }
   /** Trade a pairing code for this device's key (no key needed); returns the device with its token. */
-  pair(code, name) { return this.request('POST', '/pair', { code, name }); }
+  pair(code, name) { return this.request('POST', '/pair', { code, name }, { local: true }); }
   devices() { return this.request('GET', '/devices'); }
   deleteDevice(id) { return this.request('DELETE', `/devices/${enc(id)}`); }
   /** QR code of `text` as SVG markup. */
   async qr(text) {
-    const res = await fetch(this.urlWithToken(`/api/qr`) + `${this.token ? '&' : '?'}text=${enc(text)}`);
+    const res = await fetch(this.urlWithToken(`${this.base}/qr`) + `${this.token ? '&' : '?'}text=${enc(text)}`);
     if (!res.ok) throw new KimoError(`QR failed: HTTP ${res.status}`, res.status);
     return res.text();
   }
@@ -171,7 +196,7 @@ export class Kimo {
    * Reconnects by itself. Returns a function that stops the subscription.
    */
   subscribe(onUpdate, onError) {
-    const source = new EventSource(this.urlWithToken('/api/events'));
+    const source = new EventSource(this.urlWithToken(`${this.base}/events`));
     source.addEventListener('update', e => onUpdate(JSON.parse(e.data)));
     if (onError) source.onerror = onError;
     return () => source.close();
@@ -200,7 +225,7 @@ export class Kimo {
 
   /** WebSocket URL of a session's terminal (binary frames both ways; text `{"type":"resize",cols,rows}`). */
   terminalUrl(id) {
-    return this.urlWithToken(`/api/sessions/${enc(id)}/term`).replace(/^http/, 'ws');
+    return this.urlWithToken(`${this.base}/sessions/${enc(id)}/term`).replace(/^http/, 'ws');
   }
 
   urlWithToken(path) {

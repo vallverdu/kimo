@@ -1,5 +1,7 @@
 //! HTTP + WebSocket API and the embedded PWA. The API is also the surface for custom tools.
 
+mod hosts;
+
 use crate::core::access::{self, Caller};
 use crate::core::lifecycle::Action;
 use crate::core::models::{Provider, Scope};
@@ -102,6 +104,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/memory", get(memory))
         .route("/memory/free", post(free_memory))
         .route("/accounts", get(list_accounts).post(create_account))
+        .route("/accounts/active", post(active_account))
         .route("/accounts/{id}", axum::routing::delete(delete_account))
         .route("/accounts/{id}/login", post(login_account))
         .route("/accounts/{id}/move", post(move_account))
@@ -141,6 +144,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/peers/keys", get(peer_keys))
         .route("/peers/accept", post(accept_peer))
         .route("/peers/{id}", axum::routing::delete(remove_peer))
+        .route("/hosts/{host}/{*rest}", axum::routing::any(hosts::proxy))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     // Pairing is the way in for a new device: it needs a one-time code, not a key.
     let public = Router::new().route("/pair", post(pair));
@@ -394,12 +398,12 @@ async fn session_action(
 
 #[derive(Deserialize)]
 struct AccountBody {
-    /// Account id; null or "default" means the provider's default login.
+    /// Account id; null, "system" or "default" means this computer's own login.
     account: Option<String>,
 }
 
 fn account_id(id: Option<String>) -> Option<String> {
-    id.filter(|a| !a.is_empty() && a != "default")
+    crate::services::sessions::account_key(id)
 }
 
 async fn session_account(
@@ -615,6 +619,12 @@ async fn delete_account(
     State(app): State<App>,
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    if id == crate::services::sessions::SYSTEM {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "this computer's own login is not kept by kimo: sign out in the agent itself".into(),
+        ));
+    }
     app.manager.delete_account(&id)?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -624,6 +634,28 @@ async fn login_account(
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
     Ok(Json(json!(app.manager.login_session(&id)?)))
+}
+
+#[derive(Deserialize)]
+struct ActiveBody {
+    provider: Provider,
+    /// Account id; null or "system" = this computer's own login.
+    account: Option<String>,
+    /// Also move the provider's agents to it now (they continue their conversations).
+    #[serde(default, rename = "move")]
+    move_agents: bool,
+}
+
+/// Choose the subscription new agents of a provider start on.
+async fn active_account(
+    State(app): State<App>,
+    Json(body): Json<ActiveBody>,
+) -> ApiResult<serde_json::Value> {
+    let moved = app
+        .manager
+        .set_active_account(body.provider, body.account, body.move_agents)
+        .await?;
+    Ok(Json(json!({ "moved": moved })))
 }
 
 #[derive(Deserialize)]

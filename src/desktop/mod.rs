@@ -45,6 +45,8 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
     if let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
         let _ = EXE.set(exe);
     }
+    // macOS: kimo.app in Applications, at the newest kimo (in the background).
+    std::thread::spawn(|| crate::services::macapp::ensure(&crate::config::user_home()));
     let client = Client::local(port);
     if client.call("GET", "/status", None).is_err() {
         start_server(port, data_dir)?;

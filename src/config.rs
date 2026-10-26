@@ -65,6 +65,8 @@ pub enum Command {
     App,
     /// Run only the server, without a window (servers, systemd).
     Serve,
+    /// macOS: put kimo.app in Applications, to open kimo from the Dock, Launchpad or Spotlight.
+    InstallApp,
     /// Show a QR code in this terminal to pair a phone with the kimo running on this machine.
     Pair,
     /// List the agents (id, name, state, resume id, folder).

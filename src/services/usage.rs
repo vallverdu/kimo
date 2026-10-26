@@ -4,7 +4,8 @@
 use crate::core::launch::default_home;
 use crate::core::models::{Provider, Run};
 use crate::core::usage::{
-    claude_message, codex_limits, codex_meta, codex_run_for, run_at, Limits, Tokens,
+    claude_limits, claude_message, codex_limits, codex_meta, codex_run_for, run_at, with_pace,
+    Limits, Tokens,
 };
 use crate::services::sessions::Manager;
 use serde::Serialize;
@@ -26,8 +27,93 @@ pub struct AccountUsage {
     pub detail_7d: Tokens,
     pub messages_7d: u64,
     pub last_activity: Option<u64>,
-    /// Latest plan limits reported by the agent (Codex).
+    /// Latest plan limits: Codex reports them in its logs, Claude through its API.
     pub limits: Option<Limits>,
+    /// Why Claude's plan limits are not shown, when they are not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limits_note: Option<String>,
+}
+
+/// Claude's plan limits per config folder, asked at most every two minutes.
+type PlanCache = HashMap<Option<PathBuf>, (std::time::Instant, Result<Limits, String>)>;
+static PLAN: std::sync::Mutex<Option<PlanCache>> = std::sync::Mutex::new(None);
+
+/// The OAuth token of a Claude login: the Keychain on macOS, `.credentials.json` elsewhere.
+/// `config_dir`: `CLAUDE_CONFIG_DIR` of a kimo account, `None` for this computer's login.
+fn claude_token(config_dir: Option<&Path>, user_home: &Path) -> Option<String> {
+    use crate::core::launch::{claude_access_token, claude_keychain_service};
+    if cfg!(target_os = "macos") {
+        let service = claude_keychain_service(config_dir.map(|d| d.to_str().unwrap_or_default()));
+        let out = crate::services::network::run_for(
+            std::process::Command::new("security").args([
+                "find-generic-password",
+                "-s",
+                &service,
+                "-w",
+            ]),
+            std::time::Duration::from_secs(60),
+        )
+        .ok()
+        .filter(|o| o.status.success());
+        if let Some(token) =
+            out.and_then(|o| claude_access_token(&String::from_utf8_lossy(&o.stdout)))
+        {
+            return Some(token);
+        }
+    }
+    let dir = config_dir.map_or_else(|| user_home.join(".claude"), Path::to_path_buf);
+    std::fs::read_to_string(dir.join(".credentials.json"))
+        .ok()
+        .and_then(|t| claude_access_token(&t))
+}
+
+/// Claude's 5-hour and weekly use of a login, from Claude's usage API.
+fn claude_plan(config_dir: Option<PathBuf>, user_home: &Path, now: u64) -> Result<Limits, String> {
+    let mut cache = PLAN.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((at, found)) = cache.get(&config_dir) {
+        if at.elapsed() < std::time::Duration::from_secs(120) {
+            return found.clone();
+        }
+    }
+    let found = (|| {
+        let token = claude_token(config_dir.as_deref(), user_home)
+            .ok_or("sign in to see its plan limits")?;
+        // The token goes to curl on stdin, never on its command line.
+        let config = format!(
+            "header = \"Authorization: Bearer {token}\"\nheader = \"anthropic-beta: oauth-2025-04-20\"\n"
+        );
+        let out = crate::services::network::run_with_input(
+            std::process::Command::new("curl").args([
+                "-sS",
+                "--max-time",
+                "10",
+                "-w",
+                "\n%{http_code}",
+                "--config",
+                "-",
+                "https://api.anthropic.com/api/oauth/usage",
+            ]),
+            Some(config.as_bytes()),
+            std::time::Duration::from_secs(15),
+        )
+        .map_err(|e| format!("cannot reach Claude: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let (body, code) = text.rsplit_once('\n').unwrap_or((&text, ""));
+        match code.trim() {
+            "200" => {
+                claude_limits(body, now).ok_or_else(|| "Claude sent no plan limits".to_string())
+            }
+            "401" | "403" => Err("updates the next time Claude runs on it".into()),
+            "429" => Err("Claude is busy: limits update in a few minutes".into()),
+            c => Err(format!("Claude's usage API answered {c}")),
+        }
+    })();
+    if let Err(e) = &found {
+        tracing::info!("claude plan limits: {e}");
+    }
+    cache.insert(config_dir, (std::time::Instant::now(), found.clone()));
+    found
 }
 
 fn lines(path: &Path) -> impl Iterator<Item = String> {
@@ -75,18 +161,12 @@ impl Manager {
         let week = now.saturating_sub(7 * 24 * HOUR);
         let mut out: HashMap<(Provider, Option<String>), AccountUsage> = HashMap::new();
         for provider in [Provider::Claude, Provider::Codex] {
+            let (_, email) = crate::services::accounts::system_login(&self.cfg.user_home, provider);
             out.insert(
                 (provider, None),
                 AccountUsage {
                     provider: Some(provider),
-                    name: format!(
-                        "default {} login",
-                        if provider == Provider::Claude {
-                            "claude"
-                        } else {
-                            "codex"
-                        }
-                    ),
+                    name: email.unwrap_or_else(|| "this computer's login".into()),
                     ..Default::default()
                 },
             );
@@ -159,7 +239,7 @@ impl Manager {
                 ..r.clone()
             })
             .collect();
-        if !codex_runs.is_empty() {
+        {
             let home = default_home(Provider::Codex, &self.cfg.user_home);
             for log in codex_logs(&home, week) {
                 let mut it = lines(&log);
@@ -167,24 +247,45 @@ impl Manager {
                     continue;
                 };
                 let cwd = crate::services::sessions::canonical(&cwd);
-                let Some(run) = codex_run_for(&codex_runs, &cwd, started) else {
-                    continue;
-                };
+                // Codex run outside kimo used this computer's own login.
+                let account =
+                    codex_run_for(&codex_runs, &cwd, started).and_then(|r| r.account.clone());
                 let mut latest: Option<Limits> = None;
                 for line in it {
                     if let Some(l) = codex_limits(&line) {
                         latest = Some(l);
                     }
                 }
-                if let (Some(l), Some(u)) =
-                    (latest, out.get_mut(&(Provider::Codex, run.account.clone())))
-                {
+                if let (Some(l), Some(u)) = (latest, out.get_mut(&(Provider::Codex, account))) {
                     u.last_activity = Some(u.last_activity.unwrap_or(0).max(l.at));
                     if u.limits.as_ref().is_none_or(|old| old.at < l.at) {
                         u.limits = Some(l);
                     }
                 }
             }
+        }
+
+        // Claude: plan limits from Claude's API (when allowed in the settings).
+        let claude_limits_on = self.settings().claude_limits;
+        let now_secs = now / 1000;
+        for ((provider, account), u) in out.iter_mut() {
+            if *provider != Provider::Claude {
+                continue;
+            }
+            if !claude_limits_on {
+                u.limits_note = Some("plan limits are off (show plan limits, below)".into());
+                continue;
+            }
+            let dir = account
+                .as_ref()
+                .map(|id| crate::core::launch::account_home(&self.cfg.data_dir, id));
+            match claude_plan(dir, &self.cfg.user_home, now) {
+                Ok(l) => u.limits = Some(l),
+                Err(e) => u.limits_note = Some(e),
+            }
+        }
+        for u in out.values_mut() {
+            u.limits = u.limits.take().map(|l| with_pace(l, now_secs));
         }
 
         let mut list: Vec<AccountUsage> = out.into_values().collect();

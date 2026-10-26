@@ -131,6 +131,70 @@ impl Client {
         Self::finish(res)
     }
 
+    /// Any call passed through as bytes: `(status, content type, body)`. `path` is what comes
+    /// after `/api` (with its query); used to reach a paired kimo through this one.
+    pub fn raw(
+        &self,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+        content_type: Option<&str>,
+        secs: u64,
+    ) -> Result<(u16, Option<String>, Vec<u8>)> {
+        let mut req = ureq::http::Request::builder()
+            .method(method)
+            .uri(self.url(path));
+        if let Some(t) = &self.token {
+            req = req.header("Authorization", format!("Bearer {t}"));
+        }
+        if let Some(ct) = content_type {
+            req = req.header("Content-Type", ct);
+        }
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(secs)))
+            .build()
+            .into();
+        let mut res = agent
+            .run(req.body(body)?)
+            .map_err(|e| anyhow!("cannot reach kimo at {}: {e}", self.base))?;
+        let status = res.status().as_u16();
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = res.body_mut().with_config().limit(64 << 20).read_to_vec()?;
+        Ok((status, content_type, bytes))
+    }
+
+    /// A streaming GET (server-sent events): the raw body, read as it arrives.
+    pub fn stream(&self, path: &str) -> Result<impl std::io::Read> {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let url = format!("{}{}", self.url(path), self.token_query());
+        let res = agent
+            .get(&url)
+            .call()
+            .map_err(|e| anyhow!("cannot reach kimo at {}: {e}", self.base))?;
+        if !res.status().is_success() {
+            bail!("kimo at {} answered {}", self.base, res.status());
+        }
+        Ok(res.into_body().into_reader())
+    }
+
+    /// The websocket address of an API path, with this client's key.
+    pub fn ws_url(&self, path: &str) -> String {
+        let url = self.url(path).replacen("http", "ws", 1);
+        match &self.token {
+            Some(t) if url.contains('?') => format!("{url}&token={t}"),
+            Some(t) => format!("{url}?token={t}"),
+            None => url,
+        }
+    }
+
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         Ok(serde_json::from_value(self.call("GET", path, None)?)?)
     }

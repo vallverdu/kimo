@@ -22,6 +22,16 @@ pub struct Event {
     pub prompt: bool,
     /// Hash of the message id, to count streamed or copied messages once.
     pub id: Option<u64>,
+    /// The model that answered (answers only).
+    pub model: Option<Arc<str>>,
+    /// What the answer costs at API prices, in millionths of a dollar.
+    pub cost_micros: u64,
+}
+
+fn micros(model: Option<&str>, tokens: &Tokens, cache_write_1h: u64) -> u64 {
+    model.map_or(0, |m| {
+        (super::pricing::cost(m, tokens, cache_write_1h) * 1e6).round() as u64
+    })
 }
 
 fn hash_id(id: &str) -> u64 {
@@ -63,6 +73,8 @@ pub fn claude_event(line: &str, conversation: &str) -> Option<Event> {
         tokens,
         prompt,
         id: id.map(hash_id),
+        model: None,
+        cost_micros: 0,
     };
     match v["type"].as_str()? {
         "assistant" => {
@@ -77,7 +89,17 @@ pub fn claude_event(line: &str, conversation: &str) -> Option<Event> {
                 cache_write: n("cache_creation_input_tokens"),
                 cache_read: n("cache_read_input_tokens"),
             };
-            Some(base(tokens, false, v["message"]["id"].as_str()))
+            let model = v["message"]["model"]
+                .as_str()
+                .filter(|m| !m.starts_with('<'));
+            let hour = u["cache_creation"]["ephemeral_1h_input_tokens"]
+                .as_u64()
+                .unwrap_or(0);
+            Some(Event {
+                model: model.map(Arc::from),
+                cost_micros: micros(model, &tokens, hour),
+                ..base(tokens, false, v["message"]["id"].as_str())
+            })
         }
         "user" if prompt_text(&v["message"]["content"]) => {
             Some(base(Tokens::default(), true, v["uuid"].as_str()))
@@ -91,6 +113,8 @@ pub fn claude_event(line: &str, conversation: &str) -> Option<Event> {
 pub struct CodexReader {
     pub cwd: Arc<str>,
     pub conversation: Arc<str>,
+    /// The model of the current turn (`turn_context` lines).
+    pub model: Option<Arc<str>>,
 }
 
 impl Default for CodexReader {
@@ -98,6 +122,7 @@ impl Default for CodexReader {
         Self {
             cwd: "".into(),
             conversation: "".into(),
+            model: None,
         }
     }
 }
@@ -115,6 +140,12 @@ impl CodexReader {
                 .into();
             return None;
         }
+        if v["type"] == "turn_context" {
+            if let Some(m) = p["model"].as_str() {
+                self.model = Some(m.into());
+            }
+            return None;
+        }
         let at = parse_iso_ms(v["timestamp"].as_str()?)?;
         let base = |tokens, prompt| Event {
             at,
@@ -124,6 +155,8 @@ impl CodexReader {
             tokens,
             prompt,
             id: None,
+            model: None,
+            cost_micros: 0,
         };
         match (v["type"].as_str(), p["type"].as_str()) {
             (Some("event_msg"), Some("token_count")) => {
@@ -133,15 +166,18 @@ impl CodexReader {
                 }
                 let n = |k: &str| u[k].as_u64().unwrap_or(0);
                 let cached = n("cached_input_tokens");
-                Some(base(
-                    Tokens {
-                        input: n("input_tokens").saturating_sub(cached),
-                        output: n("output_tokens"),
-                        cache_write: 0,
-                        cache_read: cached,
-                    },
-                    false,
-                ))
+                let tokens = Tokens {
+                    input: n("input_tokens").saturating_sub(cached),
+                    output: n("output_tokens"),
+                    cache_write: 0,
+                    cache_read: cached,
+                };
+                let model = self.model.clone();
+                Some(Event {
+                    cost_micros: micros(model.as_deref(), &tokens, 0),
+                    model,
+                    ..base(tokens, false)
+                })
             }
             (Some("event_msg"), Some("item_completed"))
                 if p["item"]["type"] == "UserMessage" && prompt_text(&p["item"]["content"]) =>
@@ -198,6 +234,19 @@ pub struct Day {
     pub tokens: Split,
     pub prompts: u64,
     pub cache_read: u64,
+    /// Dollars at API prices.
+    pub cost: f64,
+}
+
+/// Tokens and cost of one model.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelTotal {
+    pub model: String,
+    pub provider: Provider,
+    pub tokens: Tokens,
+    pub answers: u64,
+    /// Dollars at API prices (0 when the model's price is not known).
+    pub cost: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -210,6 +259,7 @@ pub struct Place {
     pub prompts: u64,
     pub conversations: u64,
     pub last_active: u64,
+    pub cost: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -220,6 +270,7 @@ pub struct AccountTotal {
     pub provider: Provider,
     pub tokens: u64,
     pub prompts: u64,
+    pub cost: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -234,6 +285,12 @@ pub struct Report {
     pub total: Split,
     pub prompts: u64,
     pub conversations: u64,
+    /// Dollars at API prices: today, last 7 days, the whole range.
+    pub cost_today: f64,
+    pub cost_7_days: f64,
+    pub cost_total: f64,
+    /// Per model, most expensive first.
+    pub models: Vec<ModelTotal>,
 }
 
 /// Where a folder belongs: (name, path, kimo project id).
@@ -268,6 +325,7 @@ pub fn aggregate(
     let mut accounts: HashMap<(Provider, Option<String>), AccountTotal> = HashMap::new();
     let mut seen: HashSet<(Provider, u64)> = HashSet::new();
     let mut convs: HashSet<(Provider, Arc<str>)> = HashSet::new();
+    let mut models: HashMap<(Provider, Arc<str>), ModelTotal> = HashMap::new();
     let mut report = Report::default();
     for e in events {
         let day = local_day(e.at, offset);
@@ -280,17 +338,36 @@ pub fn aggregate(
             }
         }
         let tokens = e.tokens.billable();
+        let cost = e.cost_micros as f64 / 1e6;
         let d = by_day.get_mut(&day).expect("day in range");
         d.tokens.add(e.agent, tokens);
         d.cache_read += e.tokens.cache_read;
         d.prompts += u64::from(e.prompt);
+        d.cost += cost;
         report.total.add(e.agent, tokens);
         report.prompts += u64::from(e.prompt);
+        report.cost_total += cost;
         if day == today {
             report.today.add(e.agent, tokens);
+            report.cost_today += cost;
         }
         if day > today - 7 {
             report.last_7_days.add(e.agent, tokens);
+            report.cost_7_days += cost;
+        }
+        if let Some(model) = &e.model {
+            let m = models
+                .entry((e.agent, model.clone()))
+                .or_insert_with(|| ModelTotal {
+                    model: model.to_string(),
+                    provider: e.agent,
+                    tokens: Tokens::default(),
+                    answers: 0,
+                    cost: 0.0,
+                });
+            m.tokens.add(e.tokens);
+            m.answers += 1;
+            m.cost += cost;
         }
         convs.insert((e.agent, e.conversation.clone()));
         let (name, path, project) = place_of(&e.cwd);
@@ -301,6 +378,7 @@ pub fn aggregate(
             ..Default::default()
         });
         place.tokens.add(e.agent, tokens);
+        place.cost += cost;
         place.prompts += u64::from(e.prompt);
         place.last_active = place.last_active.max(e.at);
         place_convs
@@ -317,8 +395,10 @@ pub fn aggregate(
                         provider: e.agent,
                         tokens: 0,
                         prompts: 0,
+                        cost: 0.0,
                     });
                 a.tokens += tokens;
+                a.cost += cost;
                 a.prompts += u64::from(e.prompt);
             }
             None => report.outside_kimo.add(e.agent, tokens),
@@ -354,6 +434,9 @@ pub fn aggregate(
     accounts.sort_by_key(|a| std::cmp::Reverse(a.tokens));
     report.accounts = accounts;
     report.conversations = convs.len() as u64;
+    let mut models: Vec<ModelTotal> = models.into_values().collect();
+    models.sort_by(|a, b| b.cost.total_cmp(&a.cost).then(b.answers.cmp(&a.answers)));
+    report.models = models;
     report
 }
 
@@ -424,6 +507,8 @@ mod tests {
                 },
                 prompt,
                 id: id.map(hash_id),
+                model: Some("claude-opus-5-5".into()),
+                cost_micros: out,
             };
         let events = vec![
             ev(

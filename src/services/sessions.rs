@@ -66,6 +66,18 @@ pub struct AccountInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     pub sessions: usize,
+    /// This computer's own login (`~/.claude`, `~/.codex`), not one kept by kimo.
+    pub system: bool,
+    /// New agents of its provider start on it.
+    pub active: bool,
+}
+
+/// The id that names this computer's own login where an account id is expected.
+pub const SYSTEM: &str = "system";
+
+/// An account id from a client: "system" and "default" mean this computer's own login.
+pub fn account_key(account: Option<String>) -> Option<String> {
+    account.filter(|a| !a.is_empty() && a != SYSTEM && a != "default")
 }
 
 /// Fields the user provides to create a session.
@@ -207,7 +219,9 @@ impl Manager {
     /// Must be called inside a tokio runtime.
     pub fn new(cfg: ManagerConfig) -> Result<Arc<Self>> {
         let store = Store::new(cfg.data_dir.join("state.json"));
-        let state = store.load()?;
+        let mut state = store.load()?;
+        // Sign-in terminals from before are done: none is running at start.
+        state.sessions.retain(|s| !launch::is_login(s));
         let live = state
             .sessions
             .iter()
@@ -311,27 +325,59 @@ impl Manager {
         })
     }
 
+    /// The accounts: this computer's own login per provider (when signed in), then kimo's.
     pub fn accounts(&self) -> Vec<AccountInfo> {
         let inner = self.lock();
-        inner
-            .state
-            .accounts
-            .iter()
-            .map(|a| {
-                let (signed_in, email) = accounts::login(&self.cfg.data_dir, a);
-                AccountInfo {
-                    account: a.clone(),
+        let active = &inner.state.settings.active_accounts;
+        let count = |provider: Provider, account: Option<&str>| {
+            inner
+                .state
+                .sessions
+                .iter()
+                .filter(|s| {
+                    s.account.as_deref() == account
+                        && s.kind.provider() == Some(provider)
+                        && !launch::is_login(s)
+                })
+                .count()
+        };
+        let mut list: Vec<AccountInfo> = [Provider::Claude, Provider::Codex]
+            .into_iter()
+            .filter_map(|provider| {
+                let (signed_in, email) = accounts::system_login(&self.cfg.user_home, provider);
+                // Shown when signed in, or while agents still use it.
+                if !signed_in && count(provider, None) == 0 {
+                    return None;
+                }
+                Some(AccountInfo {
+                    account: Account {
+                        id: SYSTEM.into(),
+                        name: email
+                            .clone()
+                            .unwrap_or_else(|| "this computer's login".into()),
+                        provider,
+                        extra: Default::default(),
+                    },
                     signed_in,
                     email,
-                    sessions: inner
-                        .state
-                        .sessions
-                        .iter()
-                        .filter(|s| s.account.as_deref() == Some(&a.id))
-                        .count(),
-                }
+                    sessions: count(provider, None),
+                    system: true,
+                    active: active.get(provider).is_none(),
+                })
             })
-            .collect()
+            .collect();
+        list.extend(inner.state.accounts.iter().map(|a| {
+            let (signed_in, email) = accounts::login(&self.cfg.data_dir, a);
+            AccountInfo {
+                account: a.clone(),
+                signed_in,
+                email,
+                sessions: count(a.provider, Some(&a.id)),
+                system: false,
+                active: active.get(a.provider) == Some(&a.id),
+            }
+        }));
+        list
     }
 
     // ----- sessions -----
@@ -349,12 +395,26 @@ impl Manager {
         if !std::path::Path::new(&cwd).is_dir() {
             bail!("folder not found: {cwd}");
         }
+        // No account named: the active one of the provider ("system" picks this computer's login).
+        let account = match new.account {
+            None if new.command.is_none() => new.kind.provider().and_then(|p| {
+                let inner = self.lock();
+                inner
+                    .state
+                    .settings
+                    .active_accounts
+                    .get(p)
+                    .filter(|id| inner.state.accounts.iter().any(|a| &a.id == *id))
+                    .cloned()
+            }),
+            other => account_key(other),
+        };
         let mut spec = SessionSpec {
             id: slug(name),
             name: name.to_string(),
             kind: new.kind,
             cwd,
-            account: new.account.filter(|a| !a.is_empty()),
+            account,
             args: new.args,
             command: new.command.filter(|c| !c.is_empty()),
             started_once: false,
@@ -674,7 +734,19 @@ impl Manager {
         }
         live.status = SessionStatus::Exited;
         live.usage = Usage::default();
+        let signed_in = live.exit_code == Some(0);
         end_run(&mut inner.state, id, now_ms());
+        // A sign-in terminal that finished well is not kept (failed ones stay to be read).
+        if signed_in
+            && inner
+                .state
+                .sessions
+                .iter()
+                .any(|s| s.id == id && launch::is_login(s))
+        {
+            inner.state.sessions.retain(|s| s.id != id);
+            inner.live.remove(id);
+        }
         let _ = self.save(&inner);
     }
 
@@ -824,6 +896,7 @@ impl Manager {
     /// Move a session to another account (or the default login). A live session is restarted
     /// and continues its conversation under the new subscription.
     pub async fn set_account(&self, id: &str, account: Option<String>) -> Result<SessionInfo> {
+        let account = account_key(account);
         let was_live = {
             let mut inner = self.lock();
             let kind = inner
@@ -873,6 +946,56 @@ impl Manager {
         };
         for id in &ids {
             self.set_account(id, to.clone()).await?;
+        }
+        Ok(ids.len())
+    }
+
+    /// Make `account` (None = this computer's login) the one new agents of `provider` start
+    /// on; with `move_agents`, also move that provider's agents to it (live ones restart and
+    /// continue their conversation). Returns how many agents moved.
+    pub async fn set_active_account(
+        &self,
+        provider: Provider,
+        account: Option<String>,
+        move_agents: bool,
+    ) -> Result<usize> {
+        let account = account_key(account);
+        let ids: Vec<String> = {
+            let mut inner = self.lock();
+            if let Some(id) = &account {
+                let acc = inner
+                    .state
+                    .accounts
+                    .iter()
+                    .find(|a| &a.id == id)
+                    .ok_or_else(|| anyhow!("unknown account: {id}"))?;
+                if acc.provider != provider {
+                    bail!("{} is not a {provider:?} account", acc.name);
+                }
+            }
+            inner
+                .state
+                .settings
+                .active_accounts
+                .set(provider, account.clone());
+            self.save(&inner)?;
+            if !move_agents {
+                return Ok(0);
+            }
+            inner
+                .state
+                .sessions
+                .iter()
+                .filter(|s| {
+                    s.kind.provider() == Some(provider)
+                        && s.command.is_none()
+                        && s.account != account
+                })
+                .map(|s| s.id.clone())
+                .collect()
+        };
+        for id in &ids {
+            self.set_account(id, account.clone()).await?;
         }
         Ok(ids.len())
     }

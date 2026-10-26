@@ -3,10 +3,14 @@
 
     python3 scripts/make-icons.py      # needs Pillow
 
-Writes the web client icons (web/icons) and raw RGBA icons for the native window
-(assets/icons/*.rgba, loaded without an image decoder)."""
+Writes the web client icons (web/icons), raw RGBA icons for the native window
+(assets/icons/*.rgba, loaded without an image decoder) and, on macOS, the app icon
+(assets/icons/kimo.icns, with iconutil)."""
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 LOGO = Image.open(ROOT / "assets/brand/kimo-1024.png").convert("RGBA")
@@ -35,4 +39,37 @@ raw = ROOT / "assets/icons"
 raw.mkdir(parents=True, exist_ok=True)
 (raw / "window-128.rgba").write_bytes(on_square(128, WHITE, 0.78).tobytes())
 (raw / "logo-64.rgba").write_bytes(on_square(64, (0, 0, 0, 0), 0.96).tobytes())
+
+# macOS app icon: the logo on a white rounded square (824 of 1024, Apple's grid), with a
+# soft edge so it reads on dark Docks too.
+def mac_icon(size):
+    scale = size / 1024
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    inset, side = round(100 * scale), round(824 * scale)
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (inset, inset, inset + side - 1, inset + side - 1), radius=round(185 * scale), fill=255)
+    tile = Image.new("RGBA", (size, size), WHITE)
+    canvas.paste(tile, (0, 0), mask)
+    ImageDraw.Draw(canvas).rounded_rectangle(
+        (inset, inset, inset + side - 1, inset + side - 1), radius=round(185 * scale),
+        outline=(0, 0, 0, 40), width=max(1, round(2 * scale)))
+    w, h = LOGO.size
+    k = side * 0.62 / max(w, h)
+    logo = LOGO.resize((max(1, round(w * k)), max(1, round(h * k))), Image.LANCZOS)
+    canvas.alpha_composite(logo, ((size - logo.width) // 2, (size - logo.height) // 2))
+    return canvas
+
+
+if shutil.which("iconutil"):
+    with tempfile.TemporaryDirectory() as tmp:
+        iconset = Path(tmp) / "kimo.iconset"
+        iconset.mkdir()
+        for px in (16, 32, 128, 256, 512):
+            mac_icon(px).save(iconset / f"icon_{px}x{px}.png")
+            mac_icon(px * 2).save(iconset / f"icon_{px}x{px}@2x.png")
+        subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(raw / "kimo.icns")],
+                       check=True)
+else:
+    print("no iconutil (macOS only): assets/icons/kimo.icns left as it is")
 print("icons written")

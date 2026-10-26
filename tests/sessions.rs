@@ -297,6 +297,8 @@ fn fake_agents() {
             concat!(
                 "#!/bin/sh\n",
                 "echo \"CFG=$CLAUDE_CONFIG_DIR ARGS=$*\"\n",
+                // `claude auth login` signs in and ends.
+                "if [ \"$1\" = auth ]; then echo 'Login successful.'; exit 0; fi\n",
                 // Like Claude: a conversation started with --session-id gets a transcript.
                 // Whole-second timestamps (portable `date`), written a second after the start so
                 // they never fall before the run kimo recorded.
@@ -625,4 +627,40 @@ async fn agents_stopped_to_free_memory_say_so_and_continue() {
     assert!(m.session(&id).unwrap().spec.freed.is_none());
     assert!(m.memory().freed.is_empty());
     m.shutdown().await;
+}
+
+#[tokio::test]
+async fn sign_in_terminals_go_away_when_done() {
+    fake_agents();
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    let m = manager(tmp.path());
+    let acc = m.add_account("Work", Provider::Claude).unwrap();
+    let login = m.login_session(&acc.id).unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while m.session(&login.spec.id).is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the sign-in terminal stayed after a good sign-in"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // One left from before (a failed sign-in, say) is gone at the next start.
+    let left = m
+        .create(
+            NewSession {
+                name: "login Work".into(),
+                kind: SessionKind::Claude,
+                cwd: String::new(),
+                account: Some(acc.id.clone()),
+                args: vec![],
+                command: Some(vec!["claude".into(), "auth".into(), "login".into()]),
+            },
+            false,
+        )
+        .unwrap();
+    drop(m);
+    let m = manager(tmp.path());
+    assert!(m.session(&left.spec.id).is_none());
+    assert_eq!(m.accounts().len(), 1, "the account itself stays");
 }

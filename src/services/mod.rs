@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod daily;
 pub mod devices;
 pub mod history;
+pub mod macapp;
 pub mod memory;
 pub mod network;
 pub mod peers;

@@ -1,7 +1,9 @@
 {
   "name": "kimo · agents",
   "short_name": "kimo",
-  "start_url": "/index.html",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#ffffff",

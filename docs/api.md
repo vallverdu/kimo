@@ -16,7 +16,7 @@ as `?token=<key>` where headers are not possible (websockets, EventSource).
 | An app | an app key (`/clients`), only from its listed origins | `control`: sessions, projects, messages, terminals, account switching · `read`: GET only, no terminals, no folder listing |
 
 Owner only: `/clients`, `/devices`, `/pairing`, `/network`, `/qr`, `/settings`, `/peers`,
-`/update`, installing or removing skills, adding, signing in or deleting accounts.
+`/hosts`, `/update`, installing or removing skills, adding, signing in or deleting accounts.
 
 Requests from another web page (an `Origin` that is not kimo itself) need a key that lists
 that origin; kimo answers CORS preflights for listed origins.
@@ -72,13 +72,14 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 
 | Method | Path | |
 |---|---|---|
-| GET | `/accounts` | list with `signed_in`, `email` (the Claude login, when known) and `sessions` |
+| GET | `/accounts` | this computer's own logins first (`id: "system"`, `system: true`, named by their email; listed when signed in or used), then kimo's accounts; each with `signed_in`, `email` (the Claude login, when known), `sessions` and `active` (new agents of its provider start on it) |
+| POST | `/accounts/active` | `{provider, account: id \| null \| "system", move?: bool}`: the subscription new agents of a provider start on; `move: true` also moves that provider's agents to it (running ones restart and continue their conversation) → `{moved}` |
 | POST | `/accounts` | `{name, provider: claude \| codex}` |
 | DELETE | `/accounts/{id}` | refused while sessions use it |
 | POST | `/accounts/{id}/login` | start a sign-in terminal for it |
-| POST | `/accounts/{id}/move` | `{to: id \| null}`: move every session of an account (`default` = default login) |
-| GET | `/usage/daily?days=30` | every Claude and Codex conversation on the machine (in kimo or not), from the agents' logs, in local days: `days[] {date, tokens {claude, codex}, prompts, cache_read}`, `places[] {name, path, project, tokens, prompts, conversations, last_active}` (folders grouped by kimo project, else by git repository), `accounts[] {account, name, provider, tokens, prompts}`, `outside_kimo`, `today`, `last_7_days`, `total`, `prompts`, `conversations`. Tokens = new input + output + cache writes |
-| GET | `/usage` | per account: `tokens_5h`, `tokens_7d`, `detail_7d`, `messages_7d`, `last_activity`, `limits` (Codex: `used_percent`, `window_minutes`, `resets_at`) |
+| POST | `/accounts/{id}/move` | `{to: id \| null}`: move every session of an account (`system` or `default` = this computer's own login) |
+| GET | `/usage/daily?days=30` | every Claude and Codex conversation on the machine (in kimo or not), from the agents' logs, in local days: `days[] {date, tokens {claude, codex}, prompts, cache_read}`, `places[] {name, path, project, tokens, prompts, conversations, last_active}` (folders grouped by kimo project, else by git repository), `accounts[] {account, name, provider, tokens, prompts, cost}`, `outside_kimo`, `today`, `last_7_days`, `total`, `prompts`, `conversations`, `cost_today`, `cost_7_days`, `cost_total`, `models[] {model, provider, tokens {input, output, cache_write, cache_read}, answers, cost}`. Tokens = new input + output + cache writes; costs are US dollars at API list prices per model (days, places and accounts carry `cost` too) |
+| GET | `/usage` | per account: `tokens_5h`, `tokens_7d`, `detail_7d`, `messages_7d`, `last_activity`, `limits {limits[] {name, used_percent, window_minutes, resets_at, pace {projected_percent, runs_out_at}}, reached}` (Codex from its logs; Claude from Claude's usage API when the `claude_limits` setting is on), `limits_note` (why Claude's are not shown). `pace`: the percent used by the reset at the current rate and, when that passes 100, when it runs out (unix seconds) |
 
 ## Skills, settings, agents
 
@@ -95,8 +96,8 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 
 | Method | Path | |
 |---|---|---|
-| POST | `/pairing` | a one-time pairing code (10 minutes) |
-| POST | `/pair` | `{code, name}` → a device key (no key needed: the code is the proof) |
+| POST | `/pairing` | a one-time pairing code (10 minutes), short enough to type: `K7M2-9QXP` |
+| POST | `/pair` | `{code, name}` → a device key (no key needed: the code is the proof). Case, spaces and dashes in typed codes do not matter; after 20 wrong codes every open code stops working |
 | GET, DELETE | `/devices`, `/devices/{id}` | paired devices; unpair |
 | GET | `/network` | addresses kimo is reachable on; Tailscale name and HTTPS address; `firewall`: why phones may be blocked (macOS firewall), when that is the case |
 | POST | `/network/https` | serve kimo over HTTPS on the tailnet (a free port; other services untouched) |
@@ -106,6 +107,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | DELETE | `/peers/{id}` | forget a paired kimo |
 | GET | `/peers/keys` | paired kimos with their keys (for the owner's own apps) |
 | POST | `/peers/accept` | used by another kimo during pairing |
+| any | `/hosts/{host}/…` | the same API on a paired kimo (`host`: its id or name from `/peers`), through this one with this kimo's key there: calls, `/events` and terminal websockets. A phone paired with one kimo uses all of them |
 
 ## Updates
 
@@ -149,6 +151,9 @@ kimo.deleteProject(id); kimo.browse(path); kimo.makeFolder(parent, name);
 kimo.addWorktree(id, { name, agent }); kimo.removeWorktree(id, path);
 kimo.conversations(path); kimo.continueConversation({ agent, cwd, id });
 kimo.accounts(); kimo.usage(); kimo.dailyUsage(days); kimo.moveSessions(from, to);
+kimo.setActiveAccount(provider, account, { move });   // new agents start on it
+kimo.hosts();                                           // paired kimos (owner only)
+kimo.useHost(id); kimo.forHost(id);                     // talk to one of them through this kimo
 kimo.settings(); kimo.saveSettings(s);                   // owner only
 kimo.release(force); kimo.installUpdate(); kimo.restartKimo();   // owner only
 quietFor(session);                  // seconds since its last output

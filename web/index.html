@@ -9,6 +9,9 @@
 	<link rel="manifest" href="manifest.webmanifest">
 	<meta name="theme-color" content="#ffffff">
 	<meta name="apple-mobile-web-app-capable" content="yes">
+	<meta name="mobile-web-app-capable" content="yes">
+	<meta name="apple-mobile-web-app-title" content="kimo">
+	<meta name="apple-mobile-web-app-status-bar-style" content="default">
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@300;400&display=swap" rel="stylesheet">
@@ -22,6 +25,7 @@
 	<header class="ui-header"><div class="row">
 		<a class="ui-brand" href="#agents"><img class="k-logo" src="icons/icon.svg" alt="" width="40" height="39">
 			<span><strong>kimo</strong><small>agent environment</small></span></a>
+		<label class="k-host" id="host-pick" hidden><span class="k-visually-hidden">kimo</span><select id="host" aria-label="Which kimo"></select></label>
 		<ul class="ui-nav"><li><a href="#agents" data-view="agents">Agents</a></li><li><a href="#projects" data-view="projects">Projects</a></li><li><a href="#usage" data-view="usage">Usage</a></li><li><a href="#accounts" data-view="accounts">Accounts</a></li><li><a href="#devices" data-view="devices">Devices</a></li><li><a href="#apps" data-view="apps">Apps</a></li></ul>
 	</div></header>
 
@@ -30,6 +34,7 @@
 			<h1 class="ui-page-title">Agents</h1>
 			<p class="ui-lead">Every terminal on this machine: pause to free CPU, stop to free memory, start to continue.</p>
 			<div class="ui-stats" id="stats"></div>
+			<div id="install"></div>
 			<div id="alerts"></div>
 			<h3 class="ui-section-title">Sessions</h3>
 			<ul class="k-sessions" id="sessions"></ul>
@@ -51,6 +56,11 @@
 			<div class="k-legend"><span><i style="background:var(--k-claude)"></i>claude</span><span><i style="background:var(--k-codex)"></i>codex</span><small>new input, output and cache writes; cache reads not counted</small></div>
 			<div class="k-chart" id="usage-chart"></div>
 			<details class="k-table"><summary>as a table</summary><table id="usage-table"></table></details>
+			<h3 class="ui-section-title">Models</h3>
+			<ul class="k-sessions k-usage" id="usage-models"></ul>
+			<p class="k-hint">Cost at API list prices per million tokens (input, output, cache writes and reads). Subscriptions are not billed per token.</p>
+			<h3 class="ui-section-title">Plan limits and pace</h3>
+			<ul class="k-sessions k-usage" id="usage-pace"></ul>
 			<h3 class="ui-section-title">Where</h3>
 			<ul class="k-sessions k-usage" id="usage-places"></ul>
 			<h3 class="ui-section-title">Subscriptions</h3>
@@ -86,9 +96,8 @@
 		</section>
 		<section id="view-accounts" hidden>
 			<h1 class="ui-page-title">Accounts</h1>
-			<p class="ui-lead">Subscriptions you can switch agents between without logging out. Conversations are shared.</p>
-			<h3 class="ui-section-title">Logins</h3>
-			<ul class="k-sessions" id="account-list"></ul>
+			<p class="ui-lead">New agents start on the active subscription of their provider. Switching can move the running agents too: each continues its conversation.</p>
+			<div id="account-list"></div>
 		</section>
 		<section id="view-apps" hidden>
 			<h1 class="ui-page-title">Apps</h1>
@@ -220,14 +229,17 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 	<dialog class="ui-sheet" id="sheet-pair"><form method="dialog">
 		<h3>Pair this device</h3>
 		<p class="k-hint">This device gets its own key to this kimo. You can unpair it anytime from Devices.</p>
+		<p class="k-hint k-install-first" id="pair-install" hidden></p>
 		<label>Device name<input name="name" required autocomplete="off"></label>
 		<div class="ui-sheet-actions"><button class="ui-button">Pair</button></div>
 	</form></dialog>
 
 	<dialog class="ui-sheet" id="sheet-token"><form method="dialog">
 		<h3>Pair this device</h3>
-		<p class="k-hint">This device is not paired with kimo yet. On the kimo machine open <strong>Devices</strong> → <strong>show QR code</strong> and scan it with this device, or run <code>kimo pair</code> there.</p>
-		<label>Or paste a key<input name="token" required autocomplete="off"></label>
+		<p class="k-hint">This device is not paired with kimo yet. On the kimo machine open <strong>Devices</strong>: type the code it shows here (or scan its QR code with the camera, or run <code>kimo pair</code> there).</p>
+		<label>Pairing code<input name="code" placeholder="K7M2-9QXP" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text"></label>
+		<label>Device name<input name="name" autocomplete="off"></label>
+		<details class="k-table"><summary>or paste a key</summary><label>Key<input name="token" autocomplete="off"></label></details>
 		<div class="ui-sheet-actions"><button class="ui-button">Connect</button></div>
 	</form></dialog>
 

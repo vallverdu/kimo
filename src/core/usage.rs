@@ -78,7 +78,7 @@ pub fn claude_message(line: &str) -> Option<ClaudeMessage> {
     })
 }
 
-/// One limit window of a Codex plan.
+/// One limit window of a plan (Codex reports them in its logs, Claude through its API).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Limit {
     pub name: String,
@@ -86,6 +86,132 @@ pub struct Limit {
     pub window_minutes: u64,
     /// Unix seconds.
     pub resets_at: u64,
+    /// Where the current pace leads by the reset (set by [`with_pace`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pace: Option<Pace>,
+}
+
+/// Where the use of a limit is heading at its current pace.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Pace {
+    /// Percent used at the reset if use goes on like since the window started.
+    pub projected_percent: f64,
+    /// Unix seconds when the limit runs out at this pace, if before the reset.
+    pub runs_out_at: Option<u64>,
+}
+
+/// The pace of a limit at `now` (unix seconds): `None` too early in the window to tell
+/// (under 5 % of it gone) or when the window is not known.
+pub fn pace(l: &Limit, now: u64) -> Option<Pace> {
+    let window = l.window_minutes * 60;
+    if window == 0 || l.resets_at == 0 {
+        return None;
+    }
+    let start = l.resets_at.saturating_sub(window);
+    let elapsed = now.saturating_sub(start).min(window);
+    if l.used_percent >= 100.0 {
+        return Some(Pace {
+            projected_percent: l.used_percent,
+            runs_out_at: Some(now.min(l.resets_at)),
+        });
+    }
+    if elapsed * 20 < window || now >= l.resets_at {
+        return None;
+    }
+    let rate = l.used_percent / elapsed as f64;
+    let left = (l.resets_at - now) as f64;
+    let projected = l.used_percent + rate * left;
+    let runs_out_at = (projected > 100.0 && rate > 0.0)
+        .then(|| now + ((100.0 - l.used_percent) / rate).round() as u64);
+    Some(Pace {
+        projected_percent: projected,
+        runs_out_at,
+    })
+}
+
+/// The same limits with their pace filled in.
+pub fn with_pace(mut limits: Limits, now: u64) -> Limits {
+    for l in &mut limits.limits {
+        l.pace = pace(l, now);
+    }
+    limits
+}
+
+/// `2026-10-26T22:00:00.123456+00:00` or `…Z` → unix seconds (Claude's usage API).
+pub fn parse_iso_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let (main, offset) = match s.strip_suffix('Z') {
+        Some(m) => (m, 0i64),
+        None => {
+            let at = s.rfind(['+', '-']).filter(|&i| i > 10)?;
+            let (m, off) = s.split_at(at);
+            let sign = if off.starts_with('-') { -1 } else { 1 };
+            let mut hm = off[1..].split(':');
+            let h: i64 = hm.next()?.parse().ok()?;
+            let mi: i64 = hm.next().unwrap_or("0").parse().ok()?;
+            (m, sign * (h * 3600 + mi * 60))
+        }
+    };
+    let ms = parse_iso_ms(&format!("{main}Z"))? as i64;
+    u64::try_from(ms / 1000 - offset).ok()
+}
+
+/// Plan limits from Claude's usage API (`/api/oauth/usage`): the 5-hour and weekly windows
+/// and the weekly windows of single models.
+pub fn claude_limits(json: &str, at_ms: u64) -> Option<Limits> {
+    let v: Value = serde_json::from_str(json).ok()?;
+    let window = |key: &str, name: &str, minutes: u64| -> Option<Limit> {
+        let w = &v[key];
+        Some(Limit {
+            name: name.to_string(),
+            used_percent: w["utilization"]
+                .as_f64()
+                .or(w["used_percentage"].as_f64())?,
+            window_minutes: minutes,
+            resets_at: w["resets_at"]
+                .as_str()
+                .and_then(parse_iso_secs)
+                .unwrap_or(0),
+            pace: None,
+        })
+    };
+    let mut limits: Vec<Limit> = [
+        window("five_hour", "5-hour", 300),
+        window("seven_day", "weekly", 10_080),
+        window("seven_day_opus", "weekly Opus", 10_080),
+        window("seven_day_sonnet", "weekly Sonnet", 10_080),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    for l in v["limits"].as_array().into_iter().flatten() {
+        let model = l["scope"]["model"]["display_name"].as_str();
+        if let (Some(model), Some(percent)) = (model, l["percent"].as_f64()) {
+            limits.push(Limit {
+                name: format!("weekly {model}"),
+                used_percent: percent,
+                window_minutes: 10_080,
+                resets_at: l["resets_at"]
+                    .as_str()
+                    .and_then(parse_iso_secs)
+                    .unwrap_or(0),
+                pace: None,
+            });
+        }
+    }
+    if limits.is_empty() {
+        return None;
+    }
+    let reached = limits
+        .iter()
+        .find(|l| l.used_percent >= 100.0)
+        .map(|l| l.name.clone());
+    Some(Limits {
+        at: at_ms,
+        plan: None,
+        limits,
+        reached,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -116,6 +242,7 @@ pub fn codex_limits(line: &str) -> Option<Limits> {
                 used_percent: l["used_percent"].as_f64()?,
                 window_minutes: l["window_minutes"].as_u64().unwrap_or(0),
                 resets_at: l["resets_at"].as_u64().unwrap_or(0),
+                pace: None,
             })
         })
         .collect();
@@ -259,5 +386,45 @@ mod tests {
         );
         assert!(codex_run_for(&runs, "/w", 2500).is_none());
         assert!(codex_run_for(&runs, "/elsewhere", 1500).is_none());
+    }
+
+    #[test]
+    fn pace_of_a_limit() {
+        let l = |used: f64, resets_in: u64| Limit {
+            name: "5-hour".into(),
+            used_percent: used,
+            window_minutes: 300,
+            resets_at: 100_000 + resets_in,
+            pace: None,
+        };
+        // Half the window gone, 60 % used: 120 % by the reset, out in 100 minutes.
+        let p = pace(&l(60.0, 9000), 100_000).unwrap();
+        assert!((p.projected_percent - 120.0).abs() < 1e-9);
+        assert_eq!(p.runs_out_at, Some(100_000 + 6000));
+        // On track: 20 % used halfway.
+        let p = pace(&l(20.0, 9000), 100_000).unwrap();
+        assert!((p.projected_percent - 40.0).abs() < 1e-9);
+        assert_eq!(p.runs_out_at, None);
+        // Too early to tell; already out.
+        assert!(pace(&l(3.0, 17_900), 100_000).is_none());
+        assert_eq!(
+            pace(&l(100.0, 600), 100_000).unwrap().runs_out_at,
+            Some(100_000)
+        );
+    }
+
+    #[test]
+    fn claude_usage_api() {
+        assert_eq!(parse_iso_secs("1970-01-01T01:00:00.5+01:00"), Some(0));
+        assert_eq!(parse_iso_secs("1970-01-01T00:00:10Z"), Some(10));
+        let json = r#"{"five_hour":{"utilization":42.0,"resets_at":"1970-01-01T05:00:00+00:00"},
+            "seven_day":{"utilization":100,"resets_at":"1970-01-08T00:00:00Z"},"seven_day_opus":null,
+            "limits":[{"kind":"weekly_scoped","percent":7,"resets_at":"1970-01-08T00:00:00Z","scope":{"model":{"display_name":"Fable"}}}]}"#;
+        let l = claude_limits(json, 1).unwrap();
+        let names: Vec<&str> = l.limits.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["5-hour", "weekly", "weekly Fable"]);
+        assert_eq!(l.limits[0].resets_at, 18_000);
+        assert_eq!(l.reached.as_deref(), Some("weekly"));
+        assert!(claude_limits("{}", 1).is_none());
     }
 }

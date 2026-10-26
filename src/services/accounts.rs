@@ -6,8 +6,11 @@ use crate::core::launch::{
 };
 use crate::core::models::{Account, Provider};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 /// Create the account home and its shared links (idempotent; existing entries are left alone).
 pub fn ensure_home(data_dir: &Path, user_home: &Path, account: &Account) -> Result<()> {
@@ -31,13 +34,43 @@ pub fn ensure_home(data_dir: &Path, user_home: &Path, account: &Account) -> Resu
 /// Whether the account is signed in, and as whom (Claude records the email).
 pub fn login(data_dir: &Path, account: &Account) -> (bool, Option<String>) {
     let home = account_home(data_dir, &account.id);
-    let email = match account.provider {
-        Provider::Claude => fs::read_to_string(home.join(".claude.json"))
-            .ok()
-            .and_then(|text| claude_login(&text)),
+    login_in(&home, &home.join(".claude.json"), account.provider)
+}
+
+/// This computer's own login of a provider (`~/.claude.json` + `~/.claude`, `~/.codex`).
+pub fn system_login(user_home: &Path, provider: Provider) -> (bool, Option<String>) {
+    login_in(
+        &default_home(provider, user_home),
+        &user_home.join(".claude.json"),
+        provider,
+    )
+}
+
+/// The login of a config home: credentials file, or (Claude) the account in its config file.
+/// Claude's config file can be large: it is read again only when it changes.
+fn login_in(home: &Path, claude_json: &Path, provider: Provider) -> (bool, Option<String>) {
+    type Seen = HashMap<PathBuf, (SystemTime, Option<String>)>;
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    let email = match provider {
+        Provider::Claude => {
+            let modified = fs::metadata(claude_json).and_then(|m| m.modified()).ok();
+            let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            let seen = seen.get_or_insert_with(HashMap::new);
+            match (modified, seen.get(claude_json)) {
+                (Some(m), Some((at, email))) if *at == m => email.clone(),
+                (Some(m), _) => {
+                    let email = fs::read_to_string(claude_json)
+                        .ok()
+                        .and_then(|text| claude_login(&text));
+                    seen.insert(claude_json.to_path_buf(), (m, email.clone()));
+                    email
+                }
+                (None, _) => None,
+            }
+        }
         Provider::Codex => None,
     };
-    let file = home.join(credentials_file(account.provider)).exists();
+    let file = home.join(credentials_file(provider)).exists();
     (file || email.is_some(), email.filter(|e| !e.is_empty()))
 }
 

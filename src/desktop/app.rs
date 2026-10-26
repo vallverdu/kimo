@@ -123,9 +123,22 @@ struct WorktreeForm {
 }
 
 /// An action that waits for a yes.
+#[allow(clippy::enum_variant_names)]
 enum Confirm {
     RemoveProject { id: String, name: String },
     RemoveWorktree { project: String, path: String },
+    RemoveAccount { id: String, name: String },
+}
+
+/// Making another subscription the active one: waits for a yes.
+struct Switch {
+    provider: String,
+    /// Account id, `system` for this computer's own login.
+    id: String,
+    name: String,
+    /// Agents of the provider on other subscriptions (moved too when `move_agents`).
+    agents: usize,
+    move_agents: bool,
 }
 
 /// Updating kimo: where it is.
@@ -220,10 +233,10 @@ pub struct KimoApp {
     toasts: Vec<(String, bool, Instant)>,
     project_form: Option<ProjectForm>,
     account_name: String,
-    account_provider: String,
-    move_targets: std::collections::HashMap<String, String>,
     skill_form: SkillForm,
     pairing: Option<Pairing>,
+    /// When a pairing code was last asked for (asked again after a failure, not every frame).
+    pairing_asked: Option<Instant>,
     pair_address: String,
     message: String,
     last_status: Instant,
@@ -232,12 +245,21 @@ pub struct KimoApp {
     theme: Theme,
     /// Projects shown folded (just their header), kept in `prefs`.
     collapsed: std::collections::HashSet<String>,
+    /// The projects panel is shown (hidden: the terminal takes the whole window), in `prefs`.
+    sidebar_open: bool,
+    /// Where the projects panel was drawn last frame (dropping folders there adds projects).
+    sidebar_rect: Option<egui::Rect>,
+    /// The project whose terminals the tabs show (`None`: sessions outside projects).
+    project: Option<String>,
+    /// The tab last shown per project, to come back to it.
+    last_tab: std::collections::HashMap<Option<String>, String>,
+    /// Subscriptions: the provider whose "add an account" field is open.
+    adding_account: Option<String>,
     prefs: PathBuf,
     project_settings: Option<ProjectSettings>,
     worktree_form: Option<WorktreeForm>,
     confirm: Option<Confirm>,
-    /// Where the terminal was drawn last frame (dropping files there types their paths).
-    terminal_rect: Option<egui::Rect>,
+    switch: Option<Switch>,
     /// The latest release as this machine's kimo reports it (`/update`).
     release: Value,
     /// Memory report: pressure, biggest agents, agents kimo stopped to free memory.
@@ -361,6 +383,10 @@ impl KimoApp {
     /// `prefs`: the window's own preferences file (folded projects).
     pub fn new(ctx: egui::Context, client: Client, prefs: PathBuf) -> Self {
         let (tx, rx) = channel();
+        let saved: Value = std::fs::read_to_string(&prefs)
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or(Value::Null);
         let local = Host::connect("local", "this machine", client, &ctx);
         // The logo is one colour: kept white here and tinted with the scheme's ink.
         let white: Vec<u8> = include_bytes!("../../assets/icons/logo-64.rgba")
@@ -401,8 +427,6 @@ impl KimoApp {
             toasts: vec![],
             project_form: None,
             account_name: String::new(),
-            account_provider: "claude".into(),
-            move_targets: Default::default(),
             skill_form: SkillForm {
                 source: String::new(),
                 skill: String::new(),
@@ -413,21 +437,23 @@ impl KimoApp {
                 replace: false,
             },
             pairing: None,
+            pairing_asked: None,
             pair_address: String::new(),
             message: String::new(),
             last_status: Instant::now() - Duration::from_secs(60),
             last_projects: Instant::now() - Duration::from_secs(60),
             theme: Theme::System,
-            collapsed: std::fs::read_to_string(&prefs)
-                .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .and_then(|v| serde_json::from_value(v["collapsed"].clone()).ok())
-                .unwrap_or_default(),
+            collapsed: serde_json::from_value(saved["collapsed"].clone()).unwrap_or_default(),
+            sidebar_open: saved["sidebar"].as_bool().unwrap_or(true),
+            sidebar_rect: None,
+            project: None,
+            last_tab: Default::default(),
+            adding_account: None,
             prefs,
             project_settings: None,
             worktree_form: None,
             confirm: None,
-            terminal_rect: None,
+            switch: None,
             release: Value::Null,
             memory: Value::Null,
             memory_dismissed: None,
@@ -440,6 +466,19 @@ impl KimoApp {
         };
         app.job(|c| Ok(Msg::Settings(Box::new(c.get("/settings")?))));
         app
+    }
+
+    /// The window's own preferences: folded projects, the projects panel.
+    fn save_prefs(&self) {
+        let prefs = json!({ "collapsed": self.collapsed, "sidebar": self.sidebar_open });
+        if let Err(e) = std::fs::write(&self.prefs, prefs.to_string()) {
+            tracing::warn!("cannot save {}: {e}", self.prefs.display());
+        }
+    }
+
+    fn toggle_sidebar(&mut self) {
+        self.sidebar_open = !self.sidebar_open;
+        self.save_prefs();
     }
 
     /// Run an API call off the UI thread; its result comes back as a message.
@@ -495,6 +534,10 @@ impl KimoApp {
         }
         self.current = index;
         self.projects.clear();
+        self.project = None;
+        self.pairing = None;
+        self.pair_address.clear();
+        self.network = Value::Null;
         self.skills.clear();
         self.usage.clear();
         self.settings = None;
@@ -532,6 +575,15 @@ impl KimoApp {
                 )
             });
         }
+        // The tabs follow the project the session belongs to (a brand-new session, not listed
+        // yet, stays in the project shown).
+        let sessions = self.sessions();
+        if let Some(x) = sessions.iter().find(|x| s(x, "id") == id) {
+            if !is_login_session(x) {
+                self.project = self.project_of(x);
+            }
+        }
+        self.last_tab.insert(self.project.clone(), id.to_string());
         let host = self.host().id.clone();
         if let Some(i) = self
             .terminals
@@ -544,6 +596,53 @@ impl KimoApp {
         self.terminals
             .push(TerminalView::open(self.client(), &host, id, &self.ctx));
         self.active = self.terminals.len() - 1;
+    }
+
+    /// The worktree folder a session works in: the longest project or worktree path its
+    /// folder is in, with the project's id.
+    fn home_of(&self, session: &Value) -> Option<(String, String)> {
+        let cwd = s(session, "cwd");
+        self.projects
+            .iter()
+            .flat_map(|p| {
+                worktrees_of(p)
+                    .into_iter()
+                    .map(move |w| (s(p, "id").to_string(), w.path))
+            })
+            .filter(|(_, f)| cwd == f.as_str() || cwd.starts_with(&format!("{f}/")))
+            .max_by_key(|(_, f)| f.len())
+    }
+
+    fn project_of(&self, session: &Value) -> Option<String> {
+        self.home_of(session).map(|(p, _)| p)
+    }
+
+    /// Start an agent or a terminal in a folder; it opens when the server answers.
+    fn start_agent(&self, label: &str, cwd: &str, kind: &str) {
+        let taken: Vec<String> = self
+            .sessions()
+            .iter()
+            .map(|x| s(x, "name").to_string())
+            .collect();
+        let what = if kind == "shell" { "terminal" } else { kind };
+        let base = if label.is_empty() {
+            what.to_string()
+        } else {
+            format!("{label} {what}")
+        };
+        let mut name = base.clone();
+        let mut n = 2;
+        while taken.contains(&name) {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        let (cwd, kind) = (cwd.to_string(), kind.to_string());
+        self.job(move |c| {
+            Ok(Msg::Open(c.post(
+                "/sessions",
+                json!({ "name": name, "kind": kind, "cwd": cwd }),
+            )?))
+        });
     }
 
     fn handle_messages(&mut self) {
@@ -634,6 +733,7 @@ impl KimoApp {
                     }
                 }
                 Msg::Pairing(code, secs) => {
+                    self.pairing_asked = None;
                     self.pairing = Some(Pairing {
                         code,
                         until: Instant::now() + Duration::from_secs(secs),
@@ -704,8 +804,12 @@ impl KimoApp {
             View::Usage => {
                 let days = self.daily_days;
                 self.job(move |c| Ok(Msg::Daily(c.get(&format!("/usage/daily?days={days}"))?)));
+                self.job(|c| Ok(Msg::Usage(c.get("/usage")?)));
             }
-            View::Subscriptions => self.job(|c| Ok(Msg::Usage(c.get("/usage")?))),
+            View::Subscriptions => {
+                self.job(|c| Ok(Msg::Usage(c.get("/usage")?)));
+                self.job(|c| Ok(Msg::Settings(Box::new(c.get("/settings")?))));
+            }
             View::Skills => self.job(|c| Ok(Msg::Skills(c.get("/skills")?))),
             View::Settings => {
                 self.job(|c| Ok(Msg::Settings(Box::new(c.get("/settings")?))));
@@ -742,19 +846,25 @@ impl KimoApp {
         self.ctx.request_repaint_after(Duration::from_secs(3));
     }
 
-    /// Dropped folders become projects; files or folders dropped on the terminal are typed
-    /// into it as paths (Claude Code and Codex read images and files given by path).
+    /// Folders dropped on the projects panel become projects; anything dropped elsewhere
+    /// while a terminal is open is typed into it as paths (Claude Code and Codex read images
+    /// and files given by path). With no terminal open, a drop anywhere adds a project.
     fn handle_drops(&mut self, ui: &Ui) {
         let ctx = ui.ctx().clone();
         let (dropped, hovering) =
             ui.input(|i| (i.raw.dropped_files.clone(), !i.raw.hovered_files.is_empty()));
-        let terminal = self
-            .terminal_rect
-            .filter(|_| self.view == View::Terminals && !self.terminals.is_empty());
-        let over_terminal =
-            |at: Option<egui::Pos2>| terminal.zip(at).is_some_and(|(r, p)| r.contains(p));
+        if dropped.is_empty() && !hovering {
+            return;
+        }
+        let full = ctx.content_rect();
+        let typing = self.view == View::Terminals && !self.terminals.is_empty();
+        let sidebar = self.sidebar_rect;
+        let over_sidebar = sidebar
+            .zip(drop_pointer(&ctx))
+            .is_some_and(|(r, p)| r.contains(p));
+        let to_terminal = typing && !over_sidebar;
         if !dropped.is_empty() {
-            if over_terminal(drop_pointer(&ctx)) {
+            if to_terminal {
                 let paths: Vec<String> = dropped
                     .iter()
                     .map(|f| shell_quote(&f.path().display().to_string()))
@@ -779,7 +889,6 @@ impl KimoApp {
             }
         }
         if hovering {
-            let full = ctx.content_rect();
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Foreground,
                 egui::Id::unique("drop"),
@@ -807,19 +916,19 @@ impl KimoApp {
                     if active { theme::ink() } else { theme::muted() },
                 );
             };
-            match terminal {
-                Some(term) => {
-                    let on_terminal = over_terminal(drop_pointer(&ctx));
-                    let left =
-                        egui::Rect::from_min_max(full.min, egui::pos2(term.left(), full.max.y));
-                    zone(left, "Drop a folder:\nadd it as a project", !on_terminal);
+            match (typing, sidebar) {
+                (true, Some(side)) => {
+                    let rest =
+                        egui::Rect::from_min_max(egui::pos2(side.right(), full.min.y), full.max);
+                    zone(side, "Drop a folder:\nadd it as a project", over_sidebar);
                     zone(
-                        term,
+                        rest,
                         "Drop files here:\ntype their paths in the terminal",
-                        on_terminal,
+                        !over_sidebar,
                     );
                 }
-                None => zone(full, "Drop a folder to add it as a project", true),
+                (true, None) => zone(full, "Drop files:\ntype their paths in the terminal", true),
+                (false, _) => zone(full, "Drop a folder to add it as a project", true),
             }
             // No pointer events arrive during a drag: look again soon to follow it.
             ctx.request_repaint_after(Duration::from_millis(60));
@@ -830,6 +939,21 @@ impl KimoApp {
 
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            let shortcut = if cfg!(target_os = "macos") {
+                "⌘B"
+            } else {
+                "Ctrl+B"
+            };
+            if panel_button(ui, self.sidebar_open)
+                .on_hover_text(format!(
+                    "{} the projects panel ({shortcut})",
+                    if self.sidebar_open { "hide" } else { "show" }
+                ))
+                .clicked()
+            {
+                self.toggle_sidebar();
+            }
+            ui.add_space(4.0);
             ui.add(
                 egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), [30.0, 30.0]))
                     .tint(theme::ink()),
@@ -841,40 +965,9 @@ impl KimoApp {
                     .color(theme::muted()),
             );
             ui.add_space(16.0);
-            // Which kimo the views show: this machine or a paired one.
-            let mut chosen = self.current;
-            let mut pair = false;
-            egui::ComboBox::from_id_salt("host")
-                .selected_text(
-                    RichText::new(format!("host: {}", self.host().name)).color(theme::ink()),
-                )
-                .width(170.0)
-                .show_ui(ui, |ui| {
-                    for (i, h) in self.hosts.iter().enumerate() {
-                        let running = h
-                            .sessions()
-                            .iter()
-                            .filter(|x| s(x, "status") == "running")
-                            .count();
-                        let label = if h.loaded() {
-                            format!("{} · {running} running", h.name)
-                        } else {
-                            format!("{} · offline", h.name)
-                        };
-                        ui.selectable_value(&mut chosen, i, label);
-                    }
-                    ui.separator();
-                    pair = ui.selectable_label(false, "pair another kimo…").clicked();
-                });
-            if chosen != self.current {
-                self.switch_host(chosen);
-            }
-            if pair {
-                self.switch_host(0);
-                self.view = View::Devices;
-                self.refresh_view();
-            }
             ui.add_space(16.0);
+            // The views as one row of buttons; the open one filled.
+            ui.spacing_mut().item_spacing.x = 4.0;
             for (view, label) in [
                 (View::Terminals, "Terminals"),
                 (View::Usage, "Usage"),
@@ -884,24 +977,33 @@ impl KimoApp {
                 (View::Devices, "Devices"),
             ] {
                 let selected = self.view == view;
-                let text = RichText::new(label).color(if selected {
-                    theme::ink()
+                let text = RichText::new(label).size(13.0).color(if selected {
+                    theme::background()
                 } else {
-                    theme::muted()
+                    theme::ink()
                 });
-                let r = ui.add(egui::Button::new(text).frame(false));
-                if selected {
-                    ui.painter().hline(
-                        r.rect.x_range(),
-                        r.rect.bottom() + 2.0,
-                        egui::Stroke::new(1.0, theme::ink()),
-                    );
-                }
-                if r.clicked() && !selected {
+                let button = egui::Button::new(text)
+                    .fill(if selected {
+                        theme::ink()
+                    } else {
+                        theme::surface()
+                    })
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        if selected {
+                            theme::ink()
+                        } else {
+                            theme::line()
+                        },
+                    ))
+                    .corner_radius(6)
+                    .min_size(egui::vec2(0.0, 28.0));
+                if ui.add(button).clicked() && !selected {
                     self.view = view;
                     self.refresh_view();
                 }
             }
+            ui.spacing_mut().item_spacing.x = 8.0;
             let waiting: Vec<Value> = self
                 .sessions()
                 .into_iter()
@@ -980,6 +1082,42 @@ impl KimoApp {
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
+        // The kimos this window shows: this machine and the paired ones (their projects,
+        // agents and terminals, as if they were here).
+        let mut chosen = None;
+        let mut connect = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (i, h) in self.hosts.iter().enumerate() {
+                let selected = i == self.current;
+                let online = h.loaded();
+                let running = h.sessions().iter().filter(|x| s(x, "status") == "running").count();
+                let text = RichText::new(format!("{} {}", if online { "●" } else { "○" }, h.name))
+                    .size(12.0)
+                    .color(if selected { theme::background() } else { theme::ink() });
+                let button = egui::Button::new(text)
+                    .fill(if selected { theme::ink() } else { theme::background() })
+                    .stroke(egui::Stroke::new(1.0, if selected { theme::ink() } else { theme::line() }))
+                    .corner_radius(6);
+                let hover = if online { format!("{running} running") } else { "offline".into() };
+                if ui.add(button).on_hover_text(hover).clicked() && !selected {
+                    chosen = Some(i);
+                }
+            }
+            connect = ui
+                .add(egui::Button::new(RichText::new("+ kimo").size(12.0).color(theme::muted())).frame(false))
+                .on_hover_text("connect the kimo of another machine (a Linux box, another Mac): its projects and agents show here")
+                .clicked();
+        });
+        if let Some(i) = chosen {
+            self.switch_host(i);
+        }
+        if connect {
+            self.switch_host(0);
+            self.view = View::Devices;
+            self.refresh_view();
+        }
+        ui.add_space(4.0);
         let sessions = self.sessions();
         section(ui, "Projects");
         ui.horizontal(|ui| {
@@ -1042,12 +1180,20 @@ impl KimoApp {
                     let running = mine.iter().filter(|x| s(x, "status") == "running").count();
                     let waiting = mine.iter().any(|x| s(x, "activity") == "waiting");
                     // Header: mark, name (opens its latest agent), then collapse, menu and +.
+                    // The project whose terminals are shown is highlighted.
+                    let shown = self.project.as_deref() == Some(id);
+                    egui::Frame::new()
+                        .fill(if shown { theme::background() } else { Color32::TRANSPARENT })
+                        .stroke(egui::Stroke::new(1.0, if shown { theme::line() } else { Color32::TRANSPARENT }))
+                        .corner_radius(6)
+                        .inner_margin(egui::Margin::symmetric(4, 3))
+                        .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         project_mark(ui, p);
                         let title = RichText::new(name).size(14.0).strong().color(theme::ink());
                         if ui
                             .add(egui::Label::new(title).sense(egui::Sense::click()).truncate())
-                            .on_hover_text(format!("{path}\nclick: open its latest agent"))
+                            .on_hover_text(format!("{path}\nclick: show its terminals"))
                             .clicked()
                         {
                             open_project = Some(id.to_string());
@@ -1094,6 +1240,7 @@ impl KimoApp {
                             }
                         });
                     });
+                        });
                     if collapsed {
                         ui.add_space(6.0);
                         continue;
@@ -1178,7 +1325,8 @@ impl KimoApp {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.spacing_mut().item_spacing.x = 10.0;
                                     for kind in ["claude", "codex", "shell"] {
-                                        if link_button(ui, &format!("+ {kind}")).on_hover_text(format!("start {kind} here")).clicked() {
+                                        let label = if kind == "shell" { "terminal" } else { kind };
+                                        if link_button(ui, &format!("+ {label}")).on_hover_text(format!("start {label} here")).clicked() {
                                             start = Some((
                                                 if w.primary { name.to_string() } else { format!("{name} {}", w.branch.clone().unwrap_or_default()) },
                                                 w.path.clone(),
@@ -1191,13 +1339,14 @@ impl KimoApp {
                     }
                     ui.add_space(8.0);
                 }
+                // Sessions outside every project (sign-in terminals are not listed: they end).
                 let others: Vec<&Value> = placed
                     .iter()
-                    .filter(|(_, home)| home.is_none())
+                    .filter(|(x, home)| home.is_none() && !is_login_session(x))
                     .map(|(x, _)| x)
                     .collect();
                 if !others.is_empty() {
-                    section(ui, "Other sessions");
+                    section(ui, "Not in a project");
                     for x in others {
                         ui.horizontal(|ui| {
                             dot(ui, theme::status_color(s(x, "status")));
@@ -1222,10 +1371,7 @@ impl KimoApp {
             if !self.collapsed.remove(&id) {
                 self.collapsed.insert(id);
             }
-            let prefs = json!({ "collapsed": self.collapsed });
-            if let Err(e) = std::fs::write(&self.prefs, prefs.to_string()) {
-                tracing::warn!("cannot save {}: {e}", self.prefs.display());
-            }
+            self.save_prefs();
         }
         if let Some(p) = settings {
             self.project_settings = Some(ProjectSettings {
@@ -1266,20 +1412,8 @@ impl KimoApp {
                 Ok(Msg::History(name, folder, list))
             });
         }
-        if let Some((project, cwd, kind)) = start {
-            let taken: Vec<String> = sessions.iter().map(|x| s(x, "name").to_string()).collect();
-            let mut name = format!("{project} {kind}");
-            let mut n = 2;
-            while taken.contains(&name) {
-                name = format!("{project} {kind} {n}");
-                n += 1;
-            }
-            self.job(move |c| {
-                Ok(Msg::Open(c.post(
-                    "/sessions",
-                    json!({ "name": name, "kind": kind, "cwd": cwd }),
-                )?))
-            });
+        if let Some((label, cwd, kind)) = start {
+            self.start_agent(&label, &cwd, &kind);
         }
     }
 
@@ -1289,6 +1423,22 @@ impl KimoApp {
         let Some(p) = self.projects.iter().find(|p| s(p, "id") == id).cloned() else {
             return;
         };
+        self.view = View::Terminals;
+        self.project = Some(id.to_string());
+        // Its terminals already open: show them as they were.
+        let host = self.host().id.clone();
+        let open_here = self.terminals.iter().any(|t| {
+            t.host == host
+                && placed.iter().any(|(x, home)| {
+                    s(x, "id") == t.session_id
+                        && home
+                            .as_ref()
+                            .is_some_and(|h| worktrees_of(&p).iter().any(|w| &w.path == h))
+                })
+        });
+        if open_here {
+            return;
+        }
         let trees = worktrees_of(&p);
         let latest = placed
             .iter()
@@ -1322,18 +1472,6 @@ impl KimoApp {
     }
 
     fn terminals_view(&mut self, ui: &mut Ui) {
-        if self.terminals.is_empty() {
-            ui.add_space(80.0);
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No terminal open").size(22.0).color(theme::ink()));
-                ui.label(RichText::new("Open a session on the left, add an agent to a project, or drop a folder to start a project.").color(theme::muted()));
-                ui.add_space(16.0);
-                if primary(ui, "start a new project from zero").on_hover_text("a new folder (with git), ready for agents").clicked() {
-                    self.project_form = Some(ProjectForm { mode: "new".into(), git: true, ..Default::default() });
-                }
-            });
-            return;
-        }
         // Tabs of deleted sessions (or of forgotten hosts) close by themselves.
         let hosts = &self.hosts;
         // A tab opened for a brand-new session waits until the session shows up in the list.
@@ -1347,64 +1485,97 @@ impl KimoApp {
                 Some(_) => true,
                 None => false,
             });
-        if self.terminals.is_empty() {
-            return;
-        }
-        self.active = self.active.min(self.terminals.len() - 1);
-        // The toolbar acts on the active tab's host.
-        let tab_host = self.terminals[self.active].host.clone();
-        if let Some(i) = self.hosts.iter().position(|h| h.id == tab_host) {
-            self.switch_host(i);
-        }
         let sessions = self.sessions();
-        // Each tab's session, from its own host.
-        let infos: Vec<(Option<Value>, String)> = self
+        let host_id = self.host().id.clone();
+        let info_of = |id: &str| sessions.iter().find(|x| s(x, "id") == id).cloned();
+        // The tabs of the project shown (sign-in terminals show everywhere until they end).
+        let visible: Vec<usize> = self
             .terminals
             .iter()
-            .map(|t| {
-                let host = self.hosts.iter().find(|h| h.id == t.host);
-                let info = host.and_then(|h| {
-                    h.sessions()
-                        .into_iter()
-                        .find(|x| s(x, "id") == t.session_id)
-                });
-                (
-                    info,
-                    host.filter(|h| h.id != "local")
-                        .map(|h| h.name.clone())
-                        .unwrap_or_default(),
-                )
+            .enumerate()
+            .filter(|(_, t)| t.host == host_id)
+            .filter(|(_, t)| match info_of(&t.session_id) {
+                Some(x) => is_login_session(&x) || self.project_of(&x) == self.project,
+                // Brand new: it was started in the project shown.
+                None => true,
             })
+            .map(|(i, _)| i)
             .collect();
-        // Tabs.
+        if !visible.contains(&self.active) {
+            let remembered = self.last_tab.get(&self.project).and_then(|id| {
+                visible
+                    .iter()
+                    .copied()
+                    .find(|&i| self.terminals[i].session_id == *id)
+            });
+            if let Some(i) = remembered.or_else(|| visible.last().copied()) {
+                self.active = i;
+            }
+        }
+        let project = self
+            .project
+            .as_ref()
+            .and_then(|id| self.projects.iter().find(|p| s(p, "id") == id))
+            .cloned();
+        let project_name = project.as_ref().map(|p| s(p, "name").to_string());
+        // Where "+" starts things: the active tab's folder when it is in this project.
+        let active_cwd = visible
+            .contains(&self.active)
+            .then(|| info_of(&self.terminals[self.active].session_id))
+            .flatten()
+            .and_then(|x| self.home_of(&x))
+            .map(|(_, w)| w);
+        let new_cwd = active_cwd
+            .or_else(|| project.as_ref().map(|p| s(p, "path").to_string()))
+            .unwrap_or_default();
+        let label = project_name.clone().unwrap_or_default();
+
+        // Tabs, then "+".
         let mut close = None;
+        let mut start: Option<&'static str> = None;
         ui.horizontal_wrapped(|ui| {
-            for (i, t) in self.terminals.iter().enumerate() {
-                let (info, host_name) = (&infos[i].0, &infos[i].1);
-                let info = info.as_ref();
+            if let Some(name) = &project_name {
+                ui.label(RichText::new(name).size(14.0).strong().color(theme::ink()));
+                ui.add_space(6.0);
+            }
+            for &i in &visible {
+                let t = &self.terminals[i];
+                let info = info_of(&t.session_id);
                 let name = info
-                    .map(|x| s(x, "name"))
-                    .unwrap_or(&t.session_id)
-                    .to_string();
-                let name = if host_name.is_empty() {
-                    name
-                } else {
-                    format!("{name} · {host_name}")
-                };
-                let status = info.map(|x| s(x, "status")).unwrap_or("");
+                    .as_ref()
+                    .map(|x| s(x, "name").to_string())
+                    .unwrap_or_else(|| t.session_id.clone());
+                let status = info
+                    .as_ref()
+                    .map(|x| s(x, "status").to_string())
+                    .unwrap_or_default();
+                let selected = i == self.active;
                 egui::Frame::new()
+                    .fill(if selected {
+                        theme::surface()
+                    } else {
+                        theme::background()
+                    })
                     .stroke(egui::Stroke::new(
                         1.0,
-                        if i == self.active {
+                        if selected {
                             theme::ink()
                         } else {
                             theme::line()
                         },
                     ))
+                    .corner_radius(6)
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            dot(ui, theme::status_color(status));
+                            dot(ui, theme::status_color(&status));
+                            if let Some(x) = &info {
+                                ui.label(
+                                    RichText::new(kind_label(s(x, "kind")))
+                                        .size(10.0)
+                                        .color(theme::muted()),
+                                );
+                            }
                             if ui
                                 .add(
                                     egui::Button::new(RichText::new(&name).color(theme::ink()))
@@ -1427,14 +1598,89 @@ impl KimoApp {
                         });
                     });
             }
+            let plus =
+                egui::Button::new(RichText::new("+").size(16.0).color(theme::ink())).frame(false);
+            egui::containers::menu::MenuButton::from_button(plus)
+                .ui(ui, |ui| {
+                    ui.set_min_width(190.0);
+                    let place = if label.is_empty() {
+                        "your home folder".to_string()
+                    } else {
+                        short_path(&new_cwd, 30)
+                    };
+                    ui.label(
+                        RichText::new(format!("in {place}"))
+                            .size(10.5)
+                            .color(theme::muted()),
+                    );
+                    for (kind, text) in [
+                        ("shell", "New terminal"),
+                        ("claude", "Claude"),
+                        ("codex", "Codex"),
+                    ] {
+                        let shortcut = (kind == "shell").then_some(if cfg!(target_os = "macos") {
+                            "⌘T"
+                        } else {
+                            "Ctrl+T"
+                        });
+                        let button = egui::Button::new(text).shortcut_text(shortcut.unwrap_or(""));
+                        if ui.add(button).clicked() {
+                            start = Some(kind);
+                            ui.close();
+                        }
+                    }
+                })
+                .0
+                .on_hover_text("new terminal or agent in this project");
         });
+        if ui
+            .ctx()
+            .input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::T))
+        {
+            start = Some("shell");
+        }
+        if let Some(kind) = start {
+            self.start_agent(&label, &new_cwd, kind);
+        }
         if let Some(i) = close {
             self.terminals.remove(i);
-            if self.terminals.is_empty() {
-                return;
+            if self.active > i {
+                self.active -= 1;
             }
-            self.active = self.active.min(self.terminals.len() - 1);
+            return;
         }
+        if !visible.contains(&self.active) || self.terminals.is_empty() {
+            ui.add_space(80.0);
+            ui.vertical_centered(|ui| match &project_name {
+                Some(name) => {
+                    ui.label(RichText::new(format!("No terminal open in {name}")).size(22.0).color(theme::ink()));
+                    ui.label(RichText::new("Start an agent or a terminal here, or open one of its agents on the left.").color(theme::muted()));
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        let width = 3.0 * 120.0;
+                        ui.add_space((ui.available_width() - width).max(0.0) / 2.0);
+                        for (kind, text) in [("claude", "+ Claude"), ("codex", "+ Codex"), ("shell", "+ Terminal")] {
+                            if ui.add(egui::Button::new(text).min_size(egui::vec2(110.0, 30.0))).clicked() {
+                                self.start_agent(&label, &new_cwd, kind);
+                            }
+                        }
+                    });
+                }
+                None => {
+                    ui.label(RichText::new("No terminal open").size(22.0).color(theme::ink()));
+                    ui.label(RichText::new("Open a project on the left, add an agent to one, or drop a folder to start a project.").color(theme::muted()));
+                    ui.add_space(16.0);
+                    if primary(ui, "start a new project from zero").on_hover_text("a new folder (with git), ready for agents").clicked() {
+                        self.project_form = Some(ProjectForm { mode: "new".into(), git: true, ..Default::default() });
+                    }
+                }
+            });
+            return;
+        }
+        self.last_tab.insert(
+            self.project.clone(),
+            self.terminals[self.active].session_id.clone(),
+        );
 
         // Toolbar of the active session.
         let id = self.terminals[self.active].session_id.clone();
@@ -1501,10 +1747,13 @@ impl KimoApp {
             if kind != "shell" && info["command"].is_null() && !kind.is_empty() {
                 let current = info["account"].as_str().unwrap_or("").to_string();
                 let accounts = self.accounts();
-                let options: Vec<(String, String)> = std::iter::once((String::new(), format!("default {kind} login")))
-                    .chain(accounts.iter().filter(|a| s(a, "provider") == kind).map(|a| (s(a, "id").to_string(), s(a, "name").to_string())))
+                // This computer's own login is the empty key (no account).
+                let options: Vec<(String, String)> = accounts
+                    .iter()
+                    .filter(|a| s(a, "provider") == kind)
+                    .map(|a| (if a["system"] == true { String::new() } else { s(a, "id").to_string() }, s(a, "name").to_string()))
                     .collect();
-                let label = options.iter().find(|(k, _)| *k == current).map(|(_, n)| n.clone()).unwrap_or(current.clone());
+                let label = options.iter().find(|(k, _)| *k == current).map(|(_, n)| n.clone()).unwrap_or_else(|| if current.is_empty() { "this computer's login".into() } else { current.clone() });
                 let mut chosen = current.clone();
                 egui::ComboBox::from_id_salt(("account", &id)).selected_text(label).width(170.0).show_ui(ui, |ui| {
                     for (key, name) in &options {
@@ -1591,112 +1840,221 @@ impl KimoApp {
                     }
                 });
             });
-        let shown = egui::Frame::new()
+        egui::Frame::new()
             .stroke(egui::Stroke::new(1.0, theme::line()))
             .show(ui, |ui| {
                 self.terminals[self.active].show(ui, font_size);
             });
-        self.terminal_rect = Some(shown.response.rect);
     }
 
     fn subscriptions_view(&mut self, ui: &mut Ui) {
-        ui.heading(RichText::new("Subscriptions").color(theme::ink()));
-        ui.label(
-            RichText::new(
-                "Accounts you switch agents between without logging out. Conversations are shared.",
-            )
-            .color(theme::muted()),
-        );
-        let sessions = self.sessions();
         let accounts = self.accounts();
-        section(ui, "Logins");
-        let mut rows: Vec<Value> = ["claude", "codex"]
-            .iter()
-            .map(|p| json!({ "id": "default", "name": format!("default {p} login"), "provider": p, "signed_in": null,
-                "sessions": sessions.iter().filter(|x| s(x, "kind") == *p && x["account"].is_null()).count() }))
-            .collect();
-        rows.extend(accounts.iter().cloned());
-        egui::Grid::new("accounts").num_columns(5).spacing([18.0, 10.0]).striped(false).show(ui, |ui| {
-            for a in &rows {
-                let (id, provider) = (s(a, "id").to_string(), s(a, "provider").to_string());
-                ui.label(RichText::new(s(a, "name")).color(theme::ink()).size(14.0));
-                ui.label(RichText::new(format!("{provider} · {} sessions", a["sessions"])).size(11.0).color(theme::muted()));
-                match a["signed_in"].as_bool() {
-                    Some(true) => {
-                        let text = match a["email"].as_str() {
-                            Some(email) => format!("signed in · {email}"),
-                            None => "signed in".to_string(),
-                        };
-                        ui.label(RichText::new(text).size(11.0).color(theme::good()));
-                    }
-                    Some(false) => { ui.label(RichText::new("not signed in").size(11.0).color(theme::warn())); }
-                    None => { ui.label(""); }
-                }
-                let key = if id == "default" { Value::Null } else { Value::String(id.clone()) };
-                let usage = self.usage.iter().find(|u| u["account"] == key && s(u, "provider") == provider);
-                let reached = usage.and_then(|u| u["limits"]["reached"].as_str()).is_some();
-                ui.label(RichText::new(usage.map(usage_line).unwrap_or_default()).size(11.0).color(if reached { theme::bad() } else { theme::teal() }));
+        let claude_limits = self.settings.as_ref().is_some_and(|st| st.claude_limits);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let mut use_account: Option<Switch> = None;
+        let mut sign_in: Option<String> = None;
+        let mut remove: Option<(String, String)> = None;
+        let mut add: Option<(String, String)> = None;
+        let mut limits_on = false;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_width(760.0);
+            ui.heading(RichText::new("Subscriptions").color(theme::ink()));
+            ui.label(RichText::new("New agents start on the active subscription of their provider. Switching can move the running agents too: each continues its conversation.").color(theme::muted()));
+            for (provider, title) in [("claude", "Claude"), ("codex", "Codex")] {
+                ui.add_space(18.0);
                 ui.horizontal(|ui| {
-                    if id != "default" && ui.button("sign in").on_hover_text("opens a terminal with this account's login").clicked() {
-                        let id = id.clone();
-                        self.job(move |c| Ok(Msg::Open(c.post(&format!("/accounts/{id}/login"), json!({}))?)));
-                    }
-                    let targets: Vec<(String, String)> = std::iter::once(("default".to_string(), format!("default {provider} login")))
-                        .chain(accounts.iter().filter(|b| s(b, "provider") == provider).map(|b| (s(b, "id").to_string(), s(b, "name").to_string())))
-                        .filter(|(k, _)| *k != id)
-                        .collect();
-                    if a["sessions"].as_u64().unwrap_or(0) > 0 && !targets.is_empty() {
-                        let target = self.move_targets.entry(id.clone()).or_insert_with(|| targets[0].0.clone());
-                        let label = targets.iter().find(|(k, _)| k == target).map(|(_, n)| n.clone()).unwrap_or_default();
-                        egui::ComboBox::from_id_salt(("move", &id)).selected_text(label).width(160.0).show_ui(ui, |ui| {
-                            for (k, n) in &targets {
-                                ui.selectable_value(target, k.clone(), n);
-                            }
-                        });
-                        if ui.button("move sessions").on_hover_text("every session continues its conversation on the other account").clicked() {
-                            let (from, to) = (id.clone(), target.clone());
-                            self.job(move |c| {
-                                let r = c.post(&format!("/accounts/{from}/move"), json!({ "to": if to == "default" { Value::Null } else { Value::String(to) } }))?;
-                                Ok(Msg::Toast(format!("Moved {} sessions", r["moved"])))
-                            });
+                    ui.label(RichText::new(title).size(18.0).strong().color(theme::ink()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("+ Add account").on_hover_text("another subscription: sign in to it in a terminal").clicked() {
+                            self.adding_account = Some(provider.to_string());
+                            self.account_name.clear();
                         }
-                    }
-                    if id != "default" && a["sessions"].as_u64() == Some(0) && ui.button(RichText::new("delete").color(theme::bad())).clicked() {
-                        let id = id.clone();
-                        self.action("Account deleted", move |c| c.delete(&format!("/accounts/{id}")));
-                    }
+                    });
                 });
-                ui.end_row();
+                if self.adding_account.as_deref() == Some(provider) {
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(egui::TextEdit::singleline(&mut self.account_name).hint_text("a name: Work Max, Personal…").desired_width(260.0));
+                        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (primary(ui, "add and sign in").clicked() || enter) && !self.account_name.trim().is_empty() {
+                            add = Some((std::mem::take(&mut self.account_name), provider.to_string()));
+                        }
+                        if ui.button("cancel").clicked() {
+                            self.adding_account = None;
+                        }
+                    });
+                }
+                let mine: Vec<&Value> = accounts.iter().filter(|a| s(a, "provider") == provider).collect();
+                if mine.is_empty() {
+                    ui.label(RichText::new(format!("Not signed in to {title} on this computer. Add an account to sign in.")).size(12.0).color(theme::muted()));
+                }
+                let others_agents = |id: &str| -> usize {
+                    mine.iter().filter(|b| s(b, "id") != id).map(|b| b["sessions"].as_u64().unwrap_or(0) as usize).sum()
+                };
+                for a in &mine {
+                    let (id, name) = (s(a, "id").to_string(), s(a, "name").to_string());
+                    let system = a["system"] == true;
+                    let active = a["active"] == true;
+                    let agents = a["sessions"].as_u64().unwrap_or(0);
+                    let key = if system { Value::Null } else { Value::String(id.clone()) };
+                    let usage = self.usage.iter().find(|u| u["account"] == key && s(u, "provider") == provider);
+                    egui::Frame::new()
+                        .stroke(egui::Stroke::new(1.0, if active { theme::ink() } else { theme::line() }))
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .outer_margin(egui::Margin { left: 0, right: 0, top: 6, bottom: 0 })
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(&name).size(14.0).color(theme::ink()));
+                                if active {
+                                    badge(ui, "Active");
+                                }
+                                if system {
+                                    badge(ui, "this computer's login");
+                                }
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if !system {
+                                        let r = ui.add_enabled(agents == 0, egui::Button::new(RichText::new("Remove").color(theme::bad())).frame(false))
+                                            .on_disabled_hover_text(format!("{agents} agents use it: move them first"));
+                                        if r.clicked() {
+                                            remove = Some((id.clone(), name.clone()));
+                                        }
+                                        let label = if a["signed_in"] == true { "Sign in again" } else { "Sign in" };
+                                        if ui.add(egui::Button::new(label).frame(false)).on_hover_text("opens a terminal with this account's login").clicked() {
+                                            sign_in = Some(id.clone());
+                                        }
+                                    }
+                                    if !active && primary(ui, "Use").on_hover_text("new agents start on it; you choose whether running ones move").clicked() {
+                                        use_account = Some(Switch {
+                                            provider: provider.to_string(),
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            agents: others_agents(&id),
+                                            move_agents: true,
+                                        });
+                                    }
+                                });
+                            });
+                            let mut meta = vec![];
+                            if let Some(email) = a["email"].as_str().filter(|e| *e != name) {
+                                meta.push(email.to_string());
+                            }
+                            meta.push(format!("{agents} agent{}", if agents == 1 { "" } else { "s" }));
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(meta.join(" · ")).size(11.5).color(theme::muted()));
+                                if a["signed_in"] == false {
+                                    ui.label(RichText::new("not signed in").size(11.5).color(theme::warn()));
+                                }
+                            });
+                            limit_rows(ui, usage, now);
+                        });
+                }
+                if provider == "claude" && !claude_limits && !mine.is_empty() {
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("See each Claude subscription's 5-hour and weekly use, and when it runs out at the current pace.").size(11.5).color(theme::text()));
+                        if ui.button("show plan limits").on_hover_text(if cfg!(target_os = "macos") { "kimo reads Claude's login to ask Claude for them: macOS asks you once to allow it (Always Allow)" } else { "kimo reads Claude's login to ask Claude for them" }).clicked() {
+                            limits_on = true;
+                        }
+                    });
+                }
             }
+            ui.add_space(14.0);
+            ui.label(RichText::new("Plan limits come from Claude and Codex themselves. Costs per model are in Usage.").size(11.0).color(theme::muted()));
         });
-        section(ui, "Add an account");
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.account_name)
-                    .hint_text("Work Max")
-                    .desired_width(220.0),
-            );
-            egui::ComboBox::from_id_salt("provider")
-                .selected_text(&self.account_provider)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.account_provider, "claude".into(), "claude");
-                    ui.selectable_value(&mut self.account_provider, "codex".into(), "codex");
+        if let Some(sw) = use_account {
+            self.switch = Some(sw);
+        }
+        if let Some(id) = sign_in {
+            self.job(move |c| {
+                Ok(Msg::Open(
+                    c.post(&format!("/accounts/{id}/login"), json!({}))?,
+                ))
+            });
+        }
+        if let Some((id, name)) = remove {
+            self.confirm = Some(Confirm::RemoveAccount { id, name });
+        }
+        if let Some((name, provider)) = add {
+            self.adding_account = None;
+            // Add it, then open its sign-in terminal.
+            self.job(move |c| {
+                let a = c.post("/accounts", json!({ "name": name, "provider": provider }))?;
+                Ok(Msg::Open(c.post(
+                    &format!("/accounts/{}/login", s(&a, "id")),
+                    json!({}),
+                )?))
+            });
+        }
+        if limits_on {
+            if let Some(st) = self.settings.as_mut() {
+                st.claude_limits = true;
+            }
+            self.job(|c| {
+                let mut current: Value = c.get("/settings")?;
+                current["claude_limits"] = json!(true);
+                c.put("/settings", current)?;
+                Ok(Msg::Usage(c.get("/usage")?))
+            });
+        }
+    }
+
+    /// "Use this subscription?" with the choice to move the running agents too.
+    fn switch_dialog(&mut self, ctx: &egui::Context) {
+        let Some(sw) = self.switch.as_mut() else {
+            return;
+        };
+        let (mut yes, mut no) = (false, false);
+        let provider = if sw.provider == "codex" {
+            "Codex"
+        } else {
+            "Claude"
+        };
+        egui::Window::new(format!("Use {}?", sw.name))
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(RichText::new(format!("New {provider} agents start on {}.", sw.name)).color(theme::text()));
+                if sw.agents > 0 {
+                    ui.add_space(6.0);
+                    ui.checkbox(
+                        &mut sw.move_agents,
+                        format!(
+                            "Also move the {} {provider} agent{} on other subscriptions (running ones restart and continue their conversation)",
+                            sw.agents,
+                            if sw.agents == 1 { "" } else { "s" }
+                        ),
+                    );
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    yes = primary(ui, &format!("Use {}", sw.name)).clicked();
+                    no = ui.button("cancel").clicked();
                 });
-            if primary(ui, "add").clicked() && !self.account_name.trim().is_empty() {
-                let (name, provider) = (
-                    std::mem::take(&mut self.account_name),
-                    self.account_provider.clone(),
-                );
-                self.action("Account added: sign in next", move |c| {
-                    c.post("/accounts", json!({ "name": name, "provider": provider }))
+            });
+        if yes {
+            if let Some(sw) = self.switch.take() {
+                let body = json!({
+                    "provider": sw.provider,
+                    "account": if sw.id == "system" { Value::Null } else { Value::String(sw.id) },
+                    "move": sw.move_agents && sw.agents > 0,
+                });
+                let name = sw.name;
+                self.job(move |c| {
+                    let r = c.post("/accounts/active", body)?;
+                    Ok(Msg::Toast(match r["moved"].as_u64().unwrap_or(0) {
+                        0 => format!("{name} is the active subscription"),
+                        n => format!("{name} is the active subscription · moved {n} agents"),
+                    }))
                 });
             }
-        });
-        ui.label(
-            RichText::new("Usage counts the agents run through kimo: Claude tokens from their transcripts, Codex plan limits as Codex reports them.")
-                .size(11.0)
-                .color(theme::muted()),
-        );
+        } else if no {
+            self.switch = None;
+        }
     }
 
     fn skills_view(&mut self, ui: &mut Ui) {
@@ -2011,21 +2369,27 @@ impl KimoApp {
             }
             ui.add_space(14.0);
             // Headline figures.
-            ui.horizontal(|ui| {
-                let tile = |ui: &mut Ui, label: &str, value: String, note: String| {
-                    ui.vertical(|ui| {
-                        ui.set_min_width(150.0);
-                        ui.label(RichText::new(label).size(11.0).color(theme::muted()));
-                        ui.label(RichText::new(value).size(26.0).color(theme::ink()));
-                        ui.label(RichText::new(note).size(11.0).color(theme::text()));
-                    });
+            ui.horizontal_wrapped(|ui| {
+                let tile = |ui: &mut Ui, label: &str, value: String, note: String| -> egui::Response {
+                    let r = ui
+                        .vertical(|ui| {
+                            ui.set_min_width(150.0);
+                            ui.label(RichText::new(label).size(11.0).color(theme::muted()));
+                            ui.label(RichText::new(value).size(26.0).color(theme::ink()));
+                            ui.label(RichText::new(note).size(11.0).color(theme::text()));
+                        })
+                        .response;
                     ui.add_space(18.0);
+                    r
                 };
                 let split = |v: &Value| format!("claude {} · codex {}", tokens(n(&v["claude"])), tokens(n(&v["codex"])));
                 tile(ui, "Today", tokens(both(&r["today"])), split(&r["today"]));
                 tile(ui, "Last 7 days", tokens(both(&r["last_7_days"])), split(&r["last_7_days"]));
                 tile(ui, &format!("Last {} days", self.daily_days), tokens(both(&r["total"])), split(&r["total"]));
                 tile(ui, "Prompts", n(&r["prompts"]).to_string(), format!("in {} conversations", n(&r["conversations"])));
+                let f = |v: &Value| v.as_f64().unwrap_or(0.0);
+                tile(ui, "Cost at API prices", dollars(f(&r["cost_total"])), format!("today {} · 7 days {}", dollars(f(&r["cost_today"])), dollars(f(&r["cost_7_days"]))))
+                    .on_hover_text("What the same tokens cost on the Claude and OpenAI APIs (input, output, cache writes and reads per model). Subscriptions are not billed per token.");
             });
 
             section(ui, "Tokens per day");
@@ -2056,6 +2420,34 @@ impl KimoApp {
                     }
                 });
             });
+
+            section(ui, "Models");
+            let models = r["models"].as_array().cloned().unwrap_or_default();
+            if models.is_empty() {
+                ui.label(RichText::new("No answers in these days.").color(theme::muted()));
+            }
+            egui::Grid::new("models").num_columns(7).spacing([20.0, 6.0]).show(ui, |ui| {
+                for h in ["model", "input", "output", "cache writes", "cache reads", "answers", "cost"] {
+                    ui.label(RichText::new(h).size(11.0).color(theme::muted()));
+                }
+                ui.end_row();
+                for m in &models {
+                    let t = &m["tokens"];
+                    ui.label(RichText::new(s(m, "model")).size(12.5).color(theme::ink()));
+                    for k in ["input", "output", "cache_write", "cache_read"] {
+                        ui.label(RichText::new(tokens(n(&t[k]))).size(12.0).color(theme::text()));
+                    }
+                    ui.label(RichText::new(n(&m["answers"]).to_string()).size(12.0).color(theme::text()));
+                    let cost = m["cost"].as_f64().unwrap_or(0.0);
+                    if cost > 0.0 || crate_price_known(s(m, "model")) {
+                        ui.label(RichText::new(dollars(cost)).size(12.5).color(theme::ink()));
+                    } else {
+                        ui.label(RichText::new("price not known").size(11.0).color(theme::muted()));
+                    }
+                    ui.end_row();
+                }
+            });
+            ui.label(RichText::new("At API list prices per million tokens: new input, output, cache writes (5 minutes or 1 hour) and cache reads.").size(11.0).color(theme::muted()));
 
             section(ui, "Where");
             let places = r["places"].as_array().cloned().unwrap_or_default();
@@ -2106,7 +2498,7 @@ impl KimoApp {
                     });
                     chart::share(ui, if claude { n(&a["tokens"]) } else { 0 }, if claude { 0 } else { n(&a["tokens"]) }, top, 180.0);
                     ui.label(RichText::new(tokens(n(&a["tokens"]))).color(theme::ink()));
-                    ui.label(RichText::new(format!("{} prompts", n(&a["prompts"]))).size(12.0).color(theme::text()));
+                    ui.label(RichText::new(format!("{} prompts · {}", n(&a["prompts"]), dollars(a["cost"].as_f64().unwrap_or(0.0)))).size(12.0).color(theme::text()));
                     ui.end_row();
                 }
                 if outside > 0 {
@@ -2123,61 +2515,99 @@ impl KimoApp {
                     ui.end_row();
                 }
             });
+            section(ui, "Plan limits and pace");
+            let now_secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let with_limits: Vec<&Value> = self.usage.iter().filter(|u| u["limits"]["limits"].as_array().is_some_and(|l| !l.is_empty())).collect();
+            if with_limits.is_empty() {
+                ui.label(RichText::new("No plan limits known yet: Codex reports them as it works; Claude's show once turned on in Subscriptions.").size(11.5).color(theme::muted()));
+            }
+            for u in with_limits {
+                ui.label(RichText::new(format!("{} · {}", s(u, "name"), s(u, "provider"))).size(13.0).color(theme::ink()));
+                limit_rows(ui, Some(u), now_secs);
+                ui.add_space(6.0);
+            }
             ui.add_space(20.0);
         });
     }
 
     fn devices_view(&mut self, ui: &mut Ui) {
         ui.heading(RichText::new("Devices").color(theme::ink()));
-        ui.label(RichText::new("Use kimo from your phone or any device on your network: show the QR code and scan it.").color(theme::muted()));
+        ui.label(RichText::new("Use kimo from your phone or any device on your network: scan the QR code, or type the code in the installed app.").color(theme::muted()));
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             section(ui, "Pair a phone");
             let addresses: Vec<Value> = self.network["addresses"].as_array().cloned().unwrap_or_default();
             let remote: Vec<&Value> = addresses.iter().filter(|a| a["kind"] != "localhost").collect();
+            // The QR code shows as soon as there is an address: no extra click.
+            let expired = self.pairing.as_ref().is_some_and(|p| p.until <= Instant::now());
+            if expired {
+                self.pairing = None;
+            }
+            let asked_lately = self.pairing_asked.is_some_and(|t| t.elapsed() < Duration::from_secs(15));
+            if self.pairing.is_none() && !asked_lately && !self.pair_address.is_empty() {
+                self.pairing_asked = Some(Instant::now());
+                self.job(move |c| {
+                    let p = c.post("/pairing", json!({}))?;
+                    Ok(Msg::Pairing(s(&p, "code").to_string(), p["expires_in"].as_u64().unwrap_or(600)))
+                });
+            }
             ui.horizontal(|ui| {
+                ui.label(RichText::new("Address the phone uses").size(12.0).color(theme::muted()));
                 // Choosing another address redraws the QR code at once (same one-time code).
                 egui::ComboBox::from_id_salt("pair-address").selected_text(&self.pair_address).width(320.0).show_ui(ui, |ui| {
                     for a in &remote {
                         ui.selectable_value(&mut self.pair_address, s(a, "url").to_string(), format!("{} · {}", s(a, "label"), s(a, "url")));
                     }
                 });
-                if self.pairing.is_none() && primary(ui, "show QR code").clicked() && !self.pair_address.is_empty() {
-                    self.job(move |c| {
-                        let p = c.post("/pairing", json!({}))?;
-                        Ok(Msg::Pairing(s(&p, "code").to_string(), p["expires_in"].as_u64().unwrap_or(600)))
-                    });
-                }
-                if self.pairing.is_some() && ui.button("hide").clicked() {
-                    self.pairing = None;
-                }
             });
+            if remote.is_empty() && !self.network.is_null() {
+                ui.label(RichText::new("kimo is only reachable from this machine: start it with --bind all (or KIMO_BIND=all) to pair phones.").size(11.5).color(theme::warn()));
+            }
             if let Some(warning) = self.network["firewall"].as_str() {
                 ui.add_space(6.0);
                 ui.label(RichText::new(warning).size(11.5).color(theme::bad()));
             }
-            if let Some(tip) = remote.iter().find(|a| s(a, "url") == self.pair_address).and_then(|a| reach_tip(s(a, "kind"))) {
+            let chosen = remote.iter().find(|a| s(a, "url") == self.pair_address).copied();
+            if let Some(tip) = chosen.and_then(|a| reach_tip(s(a, "kind"))) {
                 ui.add_space(4.0);
                 ui.label(RichText::new(tip).size(11.0).color(theme::muted()));
             }
             if let Some(p) = &self.pairing {
                 let left = p.until.saturating_duration_since(Instant::now()).as_secs();
-                if left == 0 {
-                    self.pairing = None;
-                } else {
+                ui.add_space(8.0);
+                let url = format!("{}/#pair={}", self.pair_address, p.code);
+                let code = p.code.clone();
+                let mut fresh = false;
+                ui.horizontal(|ui| {
+                    qr(ui, &url, 220.0);
                     ui.add_space(8.0);
-                    let url = format!("{}/#pair={}", self.pair_address, p.code);
-                    ui.horizontal(|ui| {
-                        qr(ui, &url, 220.0);
-                        ui.vertical(|ui| {
-                            ui.label("Scan with the phone camera, or open:");
-                            ui.label(RichText::new(&url).size(11.0).color(theme::teal()));
-                            ui.label(RichText::new(format!("valid for {}:{:02}, once", left / 60, left % 60)).size(11.0).color(theme::muted()));
-                        });
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Scan it with the phone's camera.").color(theme::ink()));
+                        ui.label(RichText::new(&url).size(11.0).color(theme::teal()));
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Or type this code in the installed kimo app:").size(12.0).color(theme::text()));
+                        ui.label(RichText::new(&code).size(26.0).monospace().color(theme::ink()));
+                        ui.label(RichText::new(format!("valid for {}:{:02}, once", left / 60, left % 60)).size(11.0).color(theme::muted()));
+                        ui.add_space(6.0);
+                        fresh = ui.button("new code").clicked();
+                        ui.add_space(6.0);
+                        let https = chosen.is_some_and(|a| a["https"] == true);
+                        ui.label(
+                            RichText::new(if https {
+                                "Install it as an app: open the link on the phone, then Add to Home Screen (iPhone: Share menu; Android: ⋮ menu → Install app). Open the app and type the code."
+                            } else {
+                                "Install it as an app: iPhone → Share → Add to Home Screen, then open it and type the code. Android installs apps only over HTTPS: choose the Tailscale HTTPS address (enable HTTPS below)."
+                            })
+                            .size(11.0)
+                            .color(theme::muted()),
+                        );
                     });
-                    // Watch for the new device.
-                    if self.last_projects.elapsed() > Duration::from_secs(2) {
-                        self.job(|c| Ok(Msg::Devices(c.get("/devices")?)));
-                    }
+                });
+                if fresh {
+                    self.pairing = None;
+                }
+                // Watch for the new device.
+                if self.last_projects.elapsed() > Duration::from_secs(2) {
+                    self.job(|c| Ok(Msg::Devices(c.get("/devices")?)));
                 }
             }
             let ts = &self.network["tailscale"];
@@ -2238,7 +2668,7 @@ impl KimoApp {
                     self.last_hosts = Instant::now() - Duration::from_secs(60);
                 }
             });
-            ui.label(RichText::new("The code is the part after #pair= in the other kimo's pairing link (Devices → show QR code, or `kimo pair` there).").size(10.5).color(theme::muted()));
+            ui.label(RichText::new("The code is the one the other kimo shows in its Devices view (or `kimo pair` there).").size(10.5).color(theme::muted()));
             section(ui, "Paired devices");
             let mut unpair = None;
             for d in &self.devices {
@@ -2573,6 +3003,10 @@ impl KimoApp {
                 "Remove this worktree?".to_string(),
                 format!("git deletes the folder {} (refused if it has uncommitted changes). The branch stays; stopped agents that worked there are removed from kimo.", home(path)),
             ),
+            Confirm::RemoveAccount { name, .. } => (
+                format!("Remove {name}?"),
+                "kimo deletes its sign-in on this computer. Conversations stay; you can add it again and sign in.".to_string(),
+            ),
         };
         let (mut yes, mut no) = (false, false);
         egui::Window::new(title)
@@ -2603,6 +3037,11 @@ impl KimoApp {
                             "/projects/{project}/worktrees?path={}",
                             query_escape(&path)
                         ))
+                    });
+                }
+                Some(Confirm::RemoveAccount { id, .. }) => {
+                    self.action("Subscription removed", move |c| {
+                        c.delete(&format!("/accounts/{id}"))
                     });
                 }
                 None => {}
@@ -3117,6 +3556,31 @@ fn chevron(ui: &mut Ui, open: bool) -> egui::Response {
     response
 }
 
+/// The button that shows or hides the projects panel: a window outline with a side bar.
+fn panel_button(ui: &mut Ui, open: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let color = if response.hovered() {
+        theme::ink()
+    } else {
+        theme::text()
+    };
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 6.0, theme::surface());
+    }
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 14.0));
+    let stroke = egui::Stroke::new(1.5, color);
+    ui.painter()
+        .rect_stroke(r, 2.5, stroke, egui::StrokeKind::Inside);
+    let bar = egui::Rect::from_min_max(r.min, egui::pos2(r.min.x + 6.0, r.max.y));
+    if open {
+        ui.painter().rect_filled(bar, 2.0, color);
+    } else {
+        ui.painter()
+            .vline(bar.max.x, r.y_range(), egui::Stroke::new(1.5, color));
+    }
+    response
+}
+
 /// A menu behind a frameless button (the "···" of projects and worktrees).
 fn flat_menu(ui: &mut Ui, label: RichText, add: impl FnOnce(&mut Ui)) {
     egui::containers::menu::MenuButton::from_button(egui::Button::new(label).frame(false))
@@ -3137,6 +3601,141 @@ fn badge(ui: &mut Ui, text: &str) {
         .show(ui, |ui| {
             ui.label(RichText::new(text).size(10.0).color(theme::muted()));
         });
+}
+
+/// Plan limits of a subscription: a bar per window, when it resets and where the pace leads.
+fn limit_rows(ui: &mut Ui, usage: Option<&Value>, now: u64) {
+    let Some(u) = usage else {
+        return;
+    };
+    let limits = u["limits"]["limits"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if limits.is_empty() {
+        let note = u["limits_note"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| usage_line(u));
+        ui.label(RichText::new(note).size(11.0).color(theme::muted()));
+        return;
+    }
+    for l in &limits {
+        let used = l["used_percent"].as_f64().unwrap_or(0.0);
+        let resets = l["resets_at"].as_u64().unwrap_or(0);
+        let pace = &l["pace"];
+        let out_at = pace["runs_out_at"].as_u64();
+        let color = if used >= 100.0 {
+            theme::bad()
+        } else if out_at.is_some() {
+            theme::warn()
+        } else {
+            theme::teal()
+        };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(s(l, "name")).size(11.5).color(theme::text()));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(140.0, 8.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 4.0, theme::line());
+            let fill = egui::Rect::from_min_size(
+                rect.min,
+                egui::vec2(
+                    rect.width() * (used / 100.0).clamp(0.0, 1.0) as f32,
+                    rect.height(),
+                ),
+            );
+            ui.painter().rect_filled(fill, 4.0, color);
+            ui.label(
+                RichText::new(format!("{used:.0}%"))
+                    .size(11.5)
+                    .color(theme::ink()),
+            );
+            let mut text = vec![];
+            if resets > 0 {
+                text.push(format!("resets in {}", until(resets, now)));
+            }
+            match (out_at, pace["projected_percent"].as_f64()) {
+                _ if used >= 100.0 => text.push("used up".into()),
+                (Some(at), _) => text.push(format!(
+                    "at this pace runs out in {} ({})",
+                    until(at, now),
+                    clock(at)
+                )),
+                (None, Some(p)) => text.push(format!("at this pace about {p:.0}% by then")),
+                _ => {}
+            }
+            ui.label(
+                RichText::new(text.join(" · "))
+                    .size(11.0)
+                    .color(if out_at.is_some() {
+                        theme::warn()
+                    } else {
+                        theme::muted()
+                    }),
+            );
+        });
+    }
+}
+
+/// `$12.30`, `$0.42`, `$1,204`.
+fn dollars(v: f64) -> String {
+    if v >= 1000.0 {
+        let whole = v.round() as u64;
+        let s = whole.to_string();
+        let mut out = String::new();
+        for (i, c) in s.chars().enumerate() {
+            if i > 0 && (s.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        format!("${out}")
+    } else {
+        format!("${v:.2}")
+    }
+}
+
+fn crate_price_known(model: &str) -> bool {
+    crate::core::pricing::price_of(model).is_some()
+}
+
+/// `14:35` (local time) of a unix-seconds time.
+fn clock(unix_secs: u64) -> String {
+    let local = unix_secs as i64 + local_offset_secs();
+    format!(
+        "{:02}:{:02}",
+        local.rem_euclid(86_400) / 3600,
+        local.rem_euclid(3600) / 60
+    )
+}
+
+/// This machine's offset from UTC in seconds (`date +%z`), looked up once.
+fn local_offset_secs() -> i64 {
+    static OFFSET: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| {
+        std::process::Command::new("date")
+            .arg("+%z")
+            .output()
+            .ok()
+            .and_then(|o| {
+                let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                let sign = if t.starts_with('-') { -1 } else { 1 };
+                let digits = t.trim_start_matches(['+', '-']);
+                let h: i64 = digits.get(..2)?.parse().ok()?;
+                let m: i64 = digits.get(2..4)?.parse().ok()?;
+                Some(sign * (h * 3600 + m * 60))
+            })
+            .unwrap_or(0)
+    })
+}
+
+/// The terminal that signs an account in (`claude auth login`, `codex login`).
+fn is_login_session(session: &Value) -> bool {
+    let words: Vec<&str> = session["command"]
+        .as_array()
+        .map(|c| c.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    !session["account"].is_null()
+        && (words == ["claude", "auth", "login"] || words == ["codex", "login"])
 }
 
 fn kind_label(kind: &str) -> &str {
@@ -3299,7 +3898,6 @@ impl eframe::App for KimoApp {
         self.handle_messages();
         self.poll();
         let ctx = ui.ctx().clone();
-        self.terminal_rect = None;
         let dark = match self.theme {
             Theme::Dark => true,
             Theme::Light => false,
@@ -3320,15 +3918,22 @@ impl eframe::App for KimoApp {
                     .inner_margin(egui::Margin::symmetric(16, 5)),
             )
             .show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("projects")
-            .resizable(true)
-            .default_size(280.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(theme::surface())
-                    .inner_margin(egui::Margin::same(14)),
-            )
-            .show(ui, |ui| self.sidebar(ui));
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B)) {
+            self.toggle_sidebar();
+        }
+        self.sidebar_rect = None;
+        if self.sidebar_open {
+            let shown = egui::Panel::left("projects")
+                .resizable(true)
+                .default_size(280.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::surface())
+                        .inner_margin(egui::Margin::same(14)),
+                )
+                .show(ui, |ui| self.sidebar(ui));
+            self.sidebar_rect = Some(shown.response.rect);
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -3348,6 +3953,7 @@ impl eframe::App for KimoApp {
         self.project_settings_dialog(&ctx);
         self.worktree_dialog(&ctx);
         self.confirm_dialog(&ctx);
+        self.switch_dialog(&ctx);
         self.update_card(&ctx);
         self.memory_card(&ctx);
         self.handle_drops(ui);
@@ -3358,6 +3964,192 @@ impl eframe::App for KimoApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every text the frame painted (a screenshot in words).
+    fn texts(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(shape: &egui::Shape, into: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => into.push(t.galley.text().to_string()),
+                egui::Shape::Vec(list) => list.iter().for_each(|s| walk(s, into)),
+                _ => {}
+            }
+        }
+        let mut list = vec![];
+        for c in &out.shapes {
+            walk(&c.shape, &mut list);
+        }
+        list
+    }
+
+    /// The window against a real kimo server: every view draws (no panic), the tabs show the
+    /// selected project's terminals and the views show what changed.
+    #[test]
+    fn the_window_draws_every_view() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let (app_dir, other) = (home.join("app"), home.join("other"));
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let port = rt.block_on(async {
+            let manager =
+                crate::services::sessions::Manager::new(crate::services::sessions::ManagerConfig {
+                    data_dir: tmp.path().join("kimo"),
+                    user_home: home.clone(),
+                    shell: "/bin/sh".into(),
+                    scrollback_bytes: 4096,
+                    projects_dir: home.clone(),
+                    port: 0,
+                    host_name: "test".into(),
+                })
+                .unwrap();
+            let router = crate::api::router(
+                manager,
+                crate::api::Options {
+                    token: None,
+                    admin_origins: vec![],
+                    local_owner: true,
+                    bound: "127.0.0.1".parse().unwrap(),
+                },
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            port
+        });
+        let client = Client::local(port);
+        for dir in [&app_dir, &other] {
+            client
+                .post(
+                    "/projects",
+                    json!({ "mode": "existing", "path": dir.display().to_string(), "resume": false }),
+                )
+                .unwrap();
+        }
+        for (name, dir) in [
+            ("app one", &app_dir),
+            ("app two", &app_dir),
+            ("other one", &other),
+        ] {
+            client
+                .post(
+                    "/sessions",
+                    json!({ "name": name, "kind": "shell", "cwd": dir.display().to_string() }),
+                )
+                .unwrap();
+        }
+        client
+            .post("/accounts", json!({ "name": "Work", "provider": "claude" }))
+            .unwrap();
+
+        let ctx = egui::Context::default();
+        let mut app = KimoApp::new(ctx.clone(), client.clone(), tmp.path().join("window.json"));
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut run = |app: &mut KimoApp, frames: usize| {
+            let mut out = None;
+            for _ in 0..frames {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 820.0),
+                    )),
+                    ..Default::default()
+                };
+                let mut o = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+                // No renderer here: textures are not uploaded anywhere.
+                o.textures_delta.clear();
+                out = Some(o);
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            texts(&out.unwrap())
+        };
+        // Data arrives (projects every few seconds, sessions from the event stream).
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            run(&mut app, 2);
+            if app.projects.len() == 2 && app.sessions().len() == 3 {
+                break;
+            }
+            app.last_projects = Instant::now() - Duration::from_secs(60);
+        }
+        assert_eq!((app.projects.len(), app.sessions().len()), (2, 3));
+
+        // Opening a project's agent shows that project's tabs only, and "+".
+        let one = app
+            .sessions()
+            .into_iter()
+            .find(|x| s(x, "name") == "app one")
+            .unwrap();
+        app.open_session(s(&one, "id"));
+        app.open_session(
+            s(
+                &app.sessions()
+                    .into_iter()
+                    .find(|x| s(x, "name") == "app two")
+                    .unwrap(),
+                "id",
+            )
+            .to_string()
+            .as_str(),
+        );
+        let shown = run(&mut app, 5);
+        assert!(shown.iter().any(|t| t == "app one"), "{shown:?}");
+        assert!(shown.iter().any(|t| t == "app two"));
+        assert!(shown.iter().any(|t| t == "+"));
+        let other_id = s(
+            &app.sessions()
+                .into_iter()
+                .find(|x| s(x, "name") == "other one")
+                .unwrap(),
+            "id",
+        )
+        .to_string();
+        app.open_session(&other_id);
+        let shown = run(&mut app, 5);
+        // Each name shows in the sidebar; a tab adds a second one.
+        let count = |name: &str| shown.iter().filter(|t| *t == name).count();
+        assert_eq!(count("other one"), 2, "{shown:?}");
+        assert_eq!(
+            count("app two"),
+            1,
+            "other project's tabs hidden: {shown:?}"
+        );
+
+        // The view buttons, the panel toggle and every view.
+        assert!(shown.iter().any(|t| t == "Subscriptions"));
+        app.toggle_sidebar();
+        let hidden = run(&mut app, 3);
+        assert!(!hidden.iter().any(|t| t == "Projects" || t == "PROJECTS"));
+        app.toggle_sidebar();
+        for view in [
+            View::Usage,
+            View::Subscriptions,
+            View::Skills,
+            View::Settings,
+            View::Devices,
+            View::Terminals,
+        ] {
+            app.view = view;
+            app.refresh_view();
+            let shown = run(&mut app, 20);
+            if view == View::Subscriptions {
+                assert!(shown.iter().any(|t| t == "Work"), "{shown:?}");
+                assert!(shown.iter().any(|t| t == "+ Add account"));
+                assert!(!shown.iter().any(|t| t.contains("default claude login")));
+            }
+        }
+        let prefs: Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.path().join("window.json")).unwrap())
+                .unwrap();
+        assert_eq!(prefs["sidebar"], true);
+    }
 
     #[test]
     fn dropped_file_means_its_folder() {
@@ -3387,6 +4179,9 @@ mod tests {
 
     #[test]
     fn sizes_and_paths() {
+        assert_eq!(dollars(12.3), "$12.30");
+        assert_eq!(dollars(2676.6), "$2,677");
+        assert_eq!(dollars(1_204_000.0), "$1,204,000");
         assert_eq!(mb(5 << 20), "5 MB");
         assert_eq!(mb(3 << 30), "3.0 GB");
         assert_eq!(home("/elsewhere/x"), "/elsewhere/x");

@@ -6,6 +6,12 @@ const SERIES = [['claude', 'var(--k-claude)'], ['codex', 'var(--k-codex)']];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const SVG = 'http://www.w3.org/2000/svg';
 
+const dollars = v => v >= 1000 ? `$${Math.round(v).toLocaleString('en-US')}` : `$${(v || 0).toFixed(2)}`;
+const until = at => {
+  const left = Math.max(0, at - Date.now() / 1000), d = Math.floor(left / 86400), h = Math.floor(left % 86400 / 3600), m = Math.floor(left % 3600 / 60);
+  return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`;
+};
+const clock = at => new Date(at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 export const compact = n => n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
 const both = t => (t?.claude || 0) + (t?.codex || 0);
 const shortDate = d => { const [, m, day] = d.split('-'); return `${Number(day)} ${MONTHS[Number(m) - 1]}`; };
@@ -32,7 +38,7 @@ export function initUsage({ api, state, run }) {
 
   async function load() {
     try {
-      state.daily = await api.dailyUsage(days);
+      [state.daily, state.usage] = await Promise.all([api.dailyUsage(days), api.usage().catch(() => state.usage)]);
       render();
     } catch (e) { toast(e.message, true); }
   }
@@ -133,7 +139,19 @@ export function initUsage({ api, state, run }) {
       tile(compact(both(r.last_7_days)), 'last 7 days', split(r.last_7_days)),
       tile(compact(both(r.total)), `last ${days} days`, split(r.total)),
       tile(r.prompts, 'prompts', `in ${r.conversations} conversations`),
+      tile(dollars(r.cost_total), 'cost at API prices', `today ${dollars(r.cost_today)} · 7 days ${dollars(r.cost_7_days)}`),
     ].join('');
+    $('usage-models').innerHTML = (r.models || []).length ? r.models.map(m => `<li><span class="k-name" style="cursor:default">${esc(m.model)}</span><span class="k-num">${dollars(m.cost)}</span>
+      <div class="k-meta"><span>in ${compact(m.tokens.input)}</span><span>out ${compact(m.tokens.output)}</span><span>cache writes ${compact(m.tokens.cache_write)}</span><span>cache reads ${compact(m.tokens.cache_read)}</span><span>${m.answers} answers</span></div></li>`).join('')
+      : '<li class="k-empty">No answers in these days.</li>';
+    const paced = (state.usage || []).filter(u => u.limits?.limits?.length);
+    $('usage-pace').innerHTML = paced.length ? paced.map(u => `<li><span class="k-name" style="cursor:default">${esc(u.name)}</span><span>${esc(u.provider)}</span>
+      <div class="k-meta k-pace">${u.limits.limits.map(l => {
+        const out = l.pace?.runs_out_at;
+        const pace = l.used_percent >= 100 ? 'used up' : out ? `at this pace runs out in ${until(out)} (${clock(out)})` : l.pace ? `about ${Math.round(l.pace.projected_percent)}% by the reset` : '';
+        return `<span class="${out || l.used_percent >= 100 ? 'k-warn' : ''}">${esc(l.name)} <span class="k-num">${Math.round(l.used_percent)}%</span>${l.resets_at ? ` · resets in ${until(l.resets_at)}` : ''}${pace ? ` · ${pace}` : ''}</span>`;
+      }).join('')}</div></li>`).join('')
+      : '<li class="k-empty">No plan limits known yet: Codex reports them as it works; Claude\'s show once turned on in the window (Subscriptions).</li>';
     chart(r.days);
     $('usage-table').innerHTML = `<thead><tr><th>day</th><th>claude</th><th>codex</th><th>prompts</th></tr></thead><tbody>${
       [...r.days].reverse().map(d => `<tr><td>${esc(d.date)}</td><td>${compact(d.tokens.claude)}</td><td>${compact(d.tokens.codex)}</td><td>${d.prompts}</td></tr>`).join('')}</tbody>`;
@@ -156,7 +174,7 @@ export function initUsage({ api, state, run }) {
     $('usage-accounts').innerHTML = [
       ...r.accounts.map(a => `<li><span class="k-name" style="cursor:default">${esc(a.name)}</span><span class="k-num">${compact(a.tokens)}</span>
         ${share(a.provider === 'claude' ? a.tokens : 0, a.provider === 'codex' ? a.tokens : 0, atop)}
-        <div class="k-meta"><span>${esc(a.provider)}</span><span>${a.prompts} prompts</span></div></li>`),
+        <div class="k-meta"><span>${esc(a.provider)}</span><span>${a.prompts} prompts</span><span>${dollars(a.cost)}</span></div></li>`),
       outside ? `<li><span class="k-name" style="cursor:default">outside kimo</span><span class="k-num">${compact(outside)}</span>
         ${share(r.outside_kimo.claude, r.outside_kimo.codex, atop)}
         <div class="k-meta"><span>conversations not run by kimo: account not known</span></div></li>` : '',

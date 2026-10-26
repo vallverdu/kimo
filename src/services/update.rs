@@ -222,5 +222,7 @@ pub fn install(data_dir: &Path) -> Result<String> {
     let _ = std::fs::remove_dir_all(&work);
     *LAST.lock().unwrap_or_else(|e| e.into_inner()) = None;
     tracing::info!("installed kimo {version} at {}", exe.display());
+    // macOS: the app in Applications and the command in ~/.local/bin get it too.
+    crate::services::macapp::after_update(&exe, &crate::config::user_home());
     Ok(version)
 }
