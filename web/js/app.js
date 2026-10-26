@@ -213,12 +213,12 @@ function renderAccounts() {
       const key = a.system ? 'system' : a.id;
       return `<li data-account="${esc(key)}" data-provider="${provider}" data-name="${esc(a.name)}" class="${a.active ? 'k-active' : ''}">
         <span class="k-name" style="cursor:default">${esc(a.name)}</span>
-        <span>${a.active ? '<span class="ui-badge running">active</span>' : ''}${a.signed_in === false ? ' <span class="ui-badge paused">not signed in</span>' : ''}</span>
+        <span>${a.active ? '<span class="ui-badge running">active</span>' : ''}${a.signed_in === false ? ' <span class="ui-badge paused">not signed in</span>' : ' <span class="ui-badge">✓ signed in</span>'}</span>
         <div class="k-meta">${a.system ? "<span>this computer's login</span>" : ''}${a.email && a.email !== a.name ? `<span>${esc(a.email)}</span>` : ''}<span><span class="k-num">${a.sessions}</span> agents</span></div>
         <div class="k-usage k-pace">${esc(usageText(u)).replace(/\n/g, '<br>')}</div>
         <div class="k-actions">
           ${a.active ? '' : '<button class="ui-button k-small" data-do="use">use</button>'}
-          ${a.system ? '' : `<button class="ui-button ghost k-small" data-do="login">${a.signed_in ? 'sign in again' : 'sign in'}</button>`}
+          ${a.system ? '' : a.signed_in ? '<button class="ui-button ghost k-small" data-do="login" title="only if its login expired">sign in again</button>' : '<button class="ui-button k-small" data-do="login">sign in</button>'}
           ${!a.system && !a.sessions ? '<button class="ui-button k-small k-danger" data-do="delete-account">remove</button>' : ''}
         </div></li>`;
     });

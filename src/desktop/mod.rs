@@ -47,10 +47,14 @@ pub(crate) fn start_server(port: u16, data_dir: &std::path::Path) -> Result<()> 
 
 /// The window's icon. macOS shows it in the Dock while kimo runs (in place of the app's), so
 /// it is the app icon's rounded square there; Linux desktops draw their own frame.
-fn window_icon() -> egui::IconData {
+pub(crate) fn window_icon(dark: bool) -> egui::IconData {
     if cfg!(target_os = "macos") {
         egui::IconData {
-            rgba: include_bytes!("../../assets/icons/mac-256.rgba").to_vec(),
+            rgba: if dark {
+                include_bytes!("../../assets/icons/mac-256-dark.rgba").to_vec()
+            } else {
+                include_bytes!("../../assets/icons/mac-256.rgba").to_vec()
+            },
             width: 256,
             height: 256,
         }
@@ -93,6 +97,11 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
             std::thread::sleep(Duration::from_millis(150));
         }
     }
+    // The icon style chosen in Settings → Appearance (kept with the window's preferences).
+    let dark_icon = std::fs::read_to_string(data_dir.join("window.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|v| v["icon"] == "dark");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("kimo")
@@ -100,7 +109,7 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([760.0, 480.0])
             .with_drag_and_drop(true)
-            .with_icon(std::sync::Arc::new(window_icon())),
+            .with_icon(std::sync::Arc::new(window_icon(dark_icon))),
         ..Default::default()
     };
     let prefs = data_dir.join("window.json");

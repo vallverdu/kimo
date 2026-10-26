@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.10
+
+- The projects panel resizes between 250 points (its content still fits, no dark gap) and
+  half the window (560 at most).
+- Settings → Appearance → app icon: light or dark, for the Dock icon while kimo runs and for
+  kimo in Applications; updates keep the chosen style.
+- Subscriptions say whether each account is signed in (✓ signed in / not signed in). *Sign
+  in* shows only when needed; signing in again (an expired login) and removing are in the
+  account's ··· menu (on the phone, a quiet "sign in again").
+
 ## 0.1.9
 
 - Paste in the window's terminals uses the system clipboard: text copied in other apps pastes,

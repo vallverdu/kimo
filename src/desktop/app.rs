@@ -291,6 +291,8 @@ pub struct KimoApp {
     updating: Updating,
     /// This machine's kimo server version, as it last answered.
     server_version: Option<String>,
+    /// The app icon's style (Settings → Appearance), kept with the window's preferences.
+    dark_icon: bool,
     /// Listening ports of the shown kimo, for the bottom bar.
     ports: Vec<Value>,
     last_ports: Instant,
@@ -489,6 +491,7 @@ impl KimoApp {
             theme: Theme::System,
             collapsed: serde_json::from_value(saved["collapsed"].clone()).unwrap_or_default(),
             sidebar_open: saved["sidebar"].as_bool().unwrap_or(true),
+            dark_icon: saved["icon"] == "dark",
             sidebar_rect: None,
             project: None,
             last_tab: Default::default(),
@@ -521,7 +524,11 @@ impl KimoApp {
 
     /// The window's own preferences: folded projects, the projects panel.
     fn save_prefs(&self) {
-        let prefs = json!({ "collapsed": self.collapsed, "sidebar": self.sidebar_open });
+        let prefs = json!({
+            "collapsed": self.collapsed,
+            "sidebar": self.sidebar_open,
+            "icon": if self.dark_icon { "dark" } else { "light" },
+        });
         if let Err(e) = std::fs::write(&self.prefs, prefs.to_string()) {
             tracing::warn!("cannot save {}: {e}", self.prefs.display());
         }
@@ -2348,14 +2355,21 @@ impl KimoApp {
                                     badge(ui, "this computer's login");
                                 }
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let signed_in = a["signed_in"] == true;
                                     if !system {
-                                        let r = ui.add_enabled(agents == 0, egui::Button::new(RichText::new("Remove").color(theme::bad())).frame(false))
-                                            .on_disabled_hover_text(format!("{agents} agents use it: move them first"));
-                                        if r.clicked() {
-                                            remove = Some((id.clone(), name.clone()));
-                                        }
-                                        let label = if a["signed_in"] == true { "Sign in again" } else { "Sign in" };
-                                        if ui.add(egui::Button::new(label).frame(false)).on_hover_text("opens a terminal with this account's login").clicked() {
+                                        // Less common actions in a menu: signing in again (an
+                                        // expired login) and removing.
+                                        ui.menu_button(RichText::new("···").color(theme::muted()), |ui| {
+                                            if ui.button("Sign in again").on_hover_text("opens a terminal with this account's login").clicked() {
+                                                sign_in = Some(id.clone());
+                                            }
+                                            let r = ui.add_enabled(agents == 0, egui::Button::new(RichText::new("Remove").color(theme::bad())))
+                                                .on_disabled_hover_text(format!("{agents} agents use it: move them first"));
+                                            if r.clicked() {
+                                                remove = Some((id.clone(), name.clone()));
+                                            }
+                                        });
+                                        if !signed_in && primary(ui, "Sign in").on_hover_text("opens a terminal with this account's login").clicked() {
                                             sign_in = Some(id.clone());
                                         }
                                     }
@@ -2376,10 +2390,12 @@ impl KimoApp {
                             }
                             meta.push(format!("{agents} agent{}", if agents == 1 { "" } else { "s" }));
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(meta.join(" · ")).size(11.5).color(theme::muted()));
-                                if a["signed_in"] == false {
+                                if a["signed_in"] == true {
+                                    ui.label(RichText::new("✓ signed in").size(11.5).color(theme::good()));
+                                } else {
                                     ui.label(RichText::new("not signed in").size(11.5).color(theme::warn()));
                                 }
+                                ui.label(RichText::new(meta.join(" · ")).size(11.5).color(theme::muted()));
                             });
                             limit_rows(ui, usage, now);
                         });
@@ -2658,6 +2674,7 @@ impl KimoApp {
         let mut save = false;
         let mut new_theme = None;
         let mut check_now = false;
+        let mut icon_to: Option<bool> = None;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             section(ui, "Appearance");
             ui.horizontal(|ui| {
@@ -2669,6 +2686,17 @@ impl KimoApp {
                 }
             });
             ui.label(RichText::new("For this window and the phone app. Saved at once.").size(11.0).color(theme::muted()));
+            if cfg!(target_os = "macos") {
+                ui.horizontal(|ui| {
+                    ui.label("app icon");
+                    for (dark, label) in [(false, "light"), (true, "dark")] {
+                        if ui.radio(self.dark_icon == dark, label).clicked() && self.dark_icon != dark {
+                            icon_to = Some(dark);
+                        }
+                    }
+                });
+                ui.label(RichText::new("The Dock icon while kimo runs and kimo in Applications.").size(11.0).color(theme::muted()));
+            }
             section(ui, "Agents");
             for (name, prefs) in [("Claude Code", &mut settings.agents.claude), ("Codex", &mut settings.agents.codex)] {
                 let kind = if name == "Codex" { "codex" } else { "claude" };
@@ -2757,6 +2785,20 @@ impl KimoApp {
             save = primary(ui, "save settings").clicked();
         });
         let body = save.then(|| serde_json::to_value(&*settings).unwrap_or(Value::Null));
+        if let Some(dark) = icon_to {
+            self.dark_icon = dark;
+            self.save_prefs();
+            self.ctx
+                .send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(
+                    super::window_icon(dark),
+                ))));
+            std::thread::spawn(move || {
+                if let Err(e) = crate::services::macapp::set_icon(&crate::config::user_home(), dark)
+                {
+                    tracing::warn!("cannot change kimo.app's icon: {e:#}");
+                }
+            });
+        }
         if check_now {
             self.dismissed = None;
             self.local_job(|c| {
@@ -4721,9 +4763,12 @@ impl eframe::App for KimoApp {
         }
         self.sidebar_rect = None;
         if self.sidebar_open {
+            // Narrower, its content would not fit; wider, there is no room left to work.
+            let widest = (ctx.content_rect().width() * 0.5).clamp(260.0, 560.0);
             let shown = egui::Panel::left("projects")
                 .resizable(true)
                 .default_size(280.0)
+                .size_range(250.0..=widest)
                 .frame(
                     egui::Frame::new()
                         .fill(theme::surface())
@@ -4957,6 +5002,17 @@ mod tests {
                 assert!(shown.iter().any(|t| t == "Work"), "{shown:?}");
                 assert!(shown.iter().any(|t| t == "+ Add account"));
                 assert!(!shown.iter().any(|t| t.contains("default claude login")));
+                // A sign-in state on every account, never only a "sign in again" button.
+                assert!(
+                    shown
+                        .iter()
+                        .any(|t| t == "not signed in" || t == "✓ signed in"),
+                    "{shown:?}"
+                );
+                assert!(!shown.iter().any(|t| t == "Sign in again"));
+            }
+            if view == View::Settings && cfg!(target_os = "macos") {
+                assert!(shown.iter().any(|t| t == "app icon"), "{shown:?}");
             }
         }
         // Updates: a new release, a newer kimo installed, a server behind this window.

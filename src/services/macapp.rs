@@ -10,6 +10,8 @@ use std::process::Command;
 use std::time::Duration;
 
 const ICON: &[u8] = include_bytes!("../../assets/icons/kimo.icns");
+/// The dark style (Settings → Appearance → app icon): a white kimo on a near-black square.
+const ICON_DARK: &[u8] = include_bytes!("../../assets/icons/kimo-dark.icns");
 
 /// The app's `Info.plist` for a kimo version.
 pub fn info_plist(version: &str) -> String {
@@ -74,22 +76,47 @@ pub fn install(exe: &Path, user_home: &Path) -> Result<PathBuf> {
     }
     let version = version_of(&target).unwrap_or_else(|| env!("CARGO_PKG_VERSION").into());
     std::fs::write(contents.join("Info.plist"), info_plist(&version))?;
-    std::fs::write(res_dir.join("kimo.icns"), ICON)?;
+    // Updates keep the icon style chosen in Settings.
+    let icon = res_dir.join("kimo.icns");
+    let dark = std::fs::read(&icon).is_ok_and(|b| b == ICON_DARK);
+    std::fs::write(&icon, if dark { ICON_DARK } else { ICON })?;
+    seal_and_register(&app);
+    Ok(app)
+}
+
+/// The app icon's style, light or dark, in Applications (Finder, Launchpad, the Dock when
+/// kimo is not running). Nothing to do when kimo.app is not there.
+pub fn set_icon(user_home: &Path, dark: bool) -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let app = app_path(user_home);
+    let icon = app.join("Contents/Resources/kimo.icns");
+    if !icon.exists() {
+        return Ok(());
+    }
+    std::fs::write(&icon, if dark { ICON_DARK } else { ICON })?;
+    // Finder and the Dock notice a changed icon when the bundle's date changes.
+    let _ = run_for(Command::new("touch").arg(&app), Duration::from_secs(5));
+    seal_and_register(&app);
+    Ok(())
+}
+
+fn seal_and_register(app: &Path) {
     // A sealed (ad hoc) signature, so macOS treats it as one app; best effort.
     let _ = run_for(
         Command::new("codesign")
             .args(["--force", "--sign", "-"])
-            .arg(&app),
+            .arg(app),
         Duration::from_secs(60),
     );
     // Tell the Dock and Finder about the new icon and version.
     let _ = run_for(
         Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
             .args(["-f"])
-            .arg(&app),
+            .arg(app),
         Duration::from_secs(20),
     );
-    Ok(app)
 }
 
 /// At start on macOS: make sure kimo.app exists and every copy of kimo (the app, the command
