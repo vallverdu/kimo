@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.13
+
+- No *Terminals* button in the window's top bar: terminals open from their project or
+  agent; clicking the open view's button again, or *kimo* next to the logo, goes back to
+  them.
+
 ## 0.1.12
 
 Security (from an audit of 0.1.7–0.1.11; please update):

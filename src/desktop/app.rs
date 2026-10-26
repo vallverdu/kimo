@@ -1044,7 +1044,18 @@ impl KimoApp {
                 egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), [30.0, 30.0]))
                     .tint(theme::ink()),
             );
-            ui.label(RichText::new("kimo").size(20.0).color(theme::ink()));
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("kimo").size(20.0).color(theme::ink()))
+                        .frame(false),
+                )
+                .on_hover_text("the terminals")
+                .clicked()
+                && self.view != View::Terminals
+            {
+                self.view = View::Terminals;
+                self.refresh_view();
+            }
             ui.label(
                 RichText::new("AGENT ENVIRONMENT")
                     .size(10.0)
@@ -1063,10 +1074,11 @@ impl KimoApp {
             }
             ui.add_space(16.0);
             ui.add_space(16.0);
-            // The views as one row of buttons; the open one filled.
+            // The views as one row of buttons; the open one filled. The terminals are the
+            // projects' own place (open a project or an agent); clicking the open view's
+            // button again, or the logo, goes back to them.
             ui.spacing_mut().item_spacing.x = 4.0;
             for (view, label) in [
-                (View::Terminals, "Terminals"),
                 (View::Usage, "Usage"),
                 (View::Subscriptions, "Subscriptions"),
                 (View::Skills, "Skills"),
@@ -1095,8 +1107,12 @@ impl KimoApp {
                     ))
                     .corner_radius(6)
                     .min_size(egui::vec2(0.0, 28.0));
-                if ui.add(button).clicked() && !selected {
-                    self.view = view;
+                let r = ui.add(button);
+                if selected {
+                    r.clone().on_hover_text("back to the terminals");
+                }
+                if r.clicked() {
+                    self.view = if selected { View::Terminals } else { view };
                     self.refresh_view();
                 }
             }
@@ -5007,6 +5023,8 @@ mod tests {
 
         // The view buttons, the panel toggle and every view.
         assert!(shown.iter().any(|t| t == "Subscriptions"));
+        // No "Terminals" view button: the terminals belong to the projects.
+        assert!(!shown.iter().any(|t| t == "Terminals"), "{shown:?}");
         // The bottom bar: plan use, keeping awake, resources, ports and the kimos.
         assert!(shown.iter().any(|t| t.starts_with("Used")), "{shown:?}");
         assert!(shown.iter().any(|t| t.ends_with("awake: off")), "{shown:?}");
