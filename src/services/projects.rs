@@ -363,6 +363,8 @@ impl Manager {
         let session = match (req.mode, url) {
             (ProjectMode::Clone, Some(url)) => Some(self.create(
                 NewSession {
+                    model: None,
+                    effort: None,
                     name: format!("clone {name}"),
                     kind: SessionKind::Shell,
                     cwd: path,
@@ -566,6 +568,8 @@ impl Manager {
         let session = match req.agent {
             Some(kind) => Some(self.create(
                 NewSession {
+                    model: None,
+                    effort: None,
                     name: format!("{} {branch}", project.name),
                     kind,
                     cwd: target,

@@ -80,6 +80,12 @@ pub struct SessionSpec {
     /// Set when kimo stopped this agent to free memory (cleared when it starts again).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub freed: Option<Freed>,
+    /// This agent's model (else the agent settings' one, else the CLI's default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// This agent's effort level (else the agent settings' one, else the CLI's default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -154,6 +160,10 @@ pub struct AgentPrefs {
     /// Model passed on start (`--model` / `-m`); empty = the CLI's default.
     #[serde(default)]
     pub model: String,
+    /// Effort level passed on start (Claude `--effort`, Codex reasoning effort); empty = the
+    /// CLI's default.
+    #[serde(default)]
+    pub effort: String,
     /// Extra arguments for every session of this agent.
     #[serde(default)]
     pub args: Vec<String>,
@@ -171,6 +181,7 @@ impl Default for AgentPrefs {
             enabled: true,
             permissions: Permissions::Manual,
             model: String::new(),
+            effort: String::new(),
             args: vec![],
             extra: Map::new(),
         }
@@ -377,6 +388,9 @@ pub struct Peer {
     pub token: String,
     /// How the peer knows this kimo (the prefix of our agents over there).
     pub self_name: String,
+    /// The device (key) the peer uses on this kimo: revoked when the peer is forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

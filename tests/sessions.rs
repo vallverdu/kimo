@@ -57,6 +57,8 @@ async fn shell_session_echoes_input() {
     let s = m
         .create(
             NewSession {
+                model: None,
+                effort: None,
                 name: "sh".into(),
                 kind: SessionKind::Shell,
                 cwd: "~".into(),
@@ -97,6 +99,8 @@ async fn shell_session_echoes_input() {
     assert!(m
         .create(
             NewSession {
+                model: None,
+                effort: None,
                 name: "x".into(),
                 kind: SessionKind::Shell,
                 cwd: "/no/such/dir".into(),
@@ -124,6 +128,8 @@ async fn pause_switch_account_stop_and_continue() {
     let s = m
         .create(
             NewSession {
+                model: None,
+                effort: None,
                 name: "api".into(),
                 kind: SessionKind::Claude,
                 cwd: work.display().to_string(),
@@ -264,6 +270,8 @@ async fn agent_settings_reach_the_command_line() {
     let s = m
         .create(
             NewSession {
+                model: None,
+                effort: None,
                 name: "c".into(),
                 kind: SessionKind::Codex,
                 cwd: work.display().to_string(),
@@ -343,6 +351,8 @@ async fn codex_sessions_learn_their_id_and_resume_it() {
     let s = m
         .create(
             NewSession {
+                model: None,
+                effort: None,
                 name: "cx".into(),
                 kind: SessionKind::Codex,
                 cwd: work.display().to_string(),
@@ -374,6 +384,8 @@ async fn agents_message_each_other_and_read_replies() {
     std::fs::create_dir_all(tmp.path().join("home")).unwrap();
     let m = manager(tmp.path());
     let shell = |name: &str, cmd: &[&str]| NewSession {
+        model: None,
+        effort: None,
         name: name.into(),
         kind: SessionKind::Shell,
         cwd: "~".into(),
@@ -541,6 +553,8 @@ async fn sessions_running_at_an_update_restart_start_again() {
     std::fs::create_dir_all(tmp.path().join("home")).unwrap();
     let m = manager(tmp.path());
     let new = |name: &str| NewSession {
+        model: None,
+        effort: None,
         name: name.into(),
         kind: SessionKind::Shell,
         cwd: tmp.path().display().to_string(),
@@ -585,6 +599,8 @@ async fn agents_stopped_to_free_memory_say_so_and_continue() {
     let s = m
         .create(
             NewSession {
+                model: None,
+                effort: None,
                 name: "big".into(),
                 kind: SessionKind::Claude,
                 cwd: work.display().to_string(),
@@ -649,6 +665,8 @@ async fn sign_in_terminals_go_away_when_done() {
     let left = m
         .create(
             NewSession {
+                model: None,
+                effort: None,
                 name: "login Work".into(),
                 kind: SessionKind::Claude,
                 cwd: String::new(),

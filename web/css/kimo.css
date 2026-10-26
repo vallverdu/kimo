@@ -217,3 +217,7 @@
 .k-machine-choices small { display: block; color: var(--color-muted); font-size: 1.1rem; }
 .k-machine-list .k-name { background: none; border: 0; padding: 0; margin: 0; height: auto; color: var(--color-ink); font: inherit; font-size: 1.4rem; letter-spacing: 0; text-transform: none; text-align: left; cursor: pointer; }
 .k-machine-list .k-name:hover { text-decoration: underline; }
+
+/* Two short fields side by side (model and effort of a new agent). */
+.k-field-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 9rem); gap: 1.2rem; }
+.k-field-row[hidden] { display: none; }

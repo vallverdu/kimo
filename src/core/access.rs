@@ -23,6 +23,62 @@ pub fn is_same_origin(origin: &str, host: &str) -> bool {
     origin == format!("http://{host}") || origin == format!("https://{host}")
 }
 
+/// Is `host` (a `Host` header: a name or address, with or without a port) one of this
+/// machine's own names? Only then does a request from the machine itself act as its owner: a
+/// name someone else points at this machine (DNS rebinding) must bring a key.
+pub fn is_own_authority(host: &str, names: &[String], ips: &[std::net::IpAddr]) -> bool {
+    let host = host.trim().to_ascii_lowercase();
+    let name = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => match host.rsplit_once(':') {
+            Some((name, port))
+                if !name.contains(':') && port.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                name
+            }
+            _ => host.as_str(),
+        },
+    };
+    let name = name.trim_end_matches('.');
+    if name.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = name.parse::<std::net::IpAddr>() {
+        return ip.is_loopback() || ips.contains(&ip);
+    }
+    name == "localhost" || names.iter().any(|n| n.eq_ignore_ascii_case(name))
+}
+
+/// This machine's own names for [`is_own_authority`]: its host names (with and without
+/// `.local`) and the hosts of the configured admin origins.
+pub fn own_names(host_names: &[String], admin_origins: &[String]) -> Vec<String> {
+    let mut names = Vec::new();
+    for n in host_names {
+        let n = n.trim().trim_end_matches('.').to_ascii_lowercase();
+        if n.is_empty() {
+            continue;
+        }
+        let bare = n.strip_suffix(".local").unwrap_or(&n).to_string();
+        names.push(format!("{bare}.local"));
+        names.push(bare);
+    }
+    for o in admin_origins {
+        let o = normalize(o);
+        let host = o.split("://").nth(1).unwrap_or(&o);
+        let host = host.split('/').next().unwrap_or_default();
+        let host = match host.rsplit_once(':') {
+            Some((h, p)) if p.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => host,
+        };
+        if !host.is_empty() && host != "*" {
+            names.push(host.to_string());
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 pub fn origin_listed(origin: &str, list: &[String]) -> bool {
     let origin = normalize(origin);
     list.iter().any(|o| o == "*" || normalize(o) == origin)
@@ -86,6 +142,41 @@ pub fn normalize_code(code: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn own_names_only() {
+        let ips: Vec<std::net::IpAddr> = vec!["192.168.1.150".parse().unwrap()];
+        let names = own_names(
+            &["Jordis-MacBook-Air.local".into(), "macbook".into()],
+            &["https://kimo.example.com:8443".into(), "*".into()],
+        );
+        for ok in [
+            "localhost",
+            "localhost:7777",
+            "LOCALHOST.:7777",
+            "127.0.0.1:7777",
+            "[::1]:7777",
+            "::1",
+            "192.168.1.150:7777",
+            "jordis-macbook-air.local:7777",
+            "Jordis-MacBook-Air",
+            "macbook.local",
+            "kimo.example.com",
+        ] {
+            assert!(is_own_authority(ok, &names, &ips), "{ok}");
+        }
+        for bad in [
+            "",
+            "attacker.example:7777",
+            "localhost.attacker.example",
+            "10.0.0.9:7777",
+            "jordis-macbook-air.attacker.example",
+            "[2001:db8::1]:7777",
+            "localhost:77:77",
+        ] {
+            assert!(!is_own_authority(bad, &names, &ips), "{bad}");
+        }
+    }
+
     use super::*;
 
     fn client(scope: Scope) -> Caller {

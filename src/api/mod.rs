@@ -8,7 +8,7 @@ use crate::core::models::{Provider, Scope};
 use crate::services::sessions::{Manager, NewSession};
 use crate::services::stats;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Path, Query, Request, State};
+use axum::extract::{ConnectInfo, Extension, Path, Query, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -38,6 +38,9 @@ struct App {
     local_owner: bool,
     /// Addresses of this machine: requests from them are the owner (when `local_owner`).
     local_ips: Arc<[IpAddr]>,
+    /// This machine's names: only requests addressed to one of them (or to an address of
+    /// the machine) are the local owner.
+    own_names: Arc<[String]>,
     bound: IpAddr,
 }
 
@@ -76,12 +79,17 @@ fn not_found(what: &str) -> ApiError {
 }
 
 pub fn router(manager: Arc<Manager>, options: Options) -> Router {
+    let own_names = access::own_names(
+        &[manager.host_name().to_string(), crate::config::hostname()],
+        &options.admin_origins,
+    );
     let app = App {
         manager,
         token: options.token.map(Into::into),
         admin_origins: options.admin_origins.into(),
         local_owner: options.local_owner,
         local_ips: crate::services::network::local_ips().into(),
+        own_names: own_names.into(),
         bound: options.bound,
     };
     let api = Router::new()
@@ -166,7 +174,7 @@ fn denied(status: StatusCode, message: &str) -> Response {
 /// - a request from another page (`Origin` not kimo itself) needs a key listing that origin,
 ///   so no website can reach kimo, even on localhost without a token;
 /// - app keys are limited by their scope.
-async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
+async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response {
     // Read what is needed up front: a borrow of the request must not live across an await.
     let (origin, token, local) = {
         let header =
@@ -198,7 +206,8 @@ async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
             .map(|c| c.0.ip());
         let local = app.local_owner
             && !forwarded
-            && peer.is_some_and(|ip| ip.is_loopback() || app.local_ips.contains(&ip));
+            && peer.is_some_and(|ip| ip.is_loopback() || app.local_ips.contains(&ip))
+            && access::is_own_authority(&host, &app.own_names, &app.local_ips);
         (origin, token, local)
     };
 
@@ -221,7 +230,7 @@ async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
         let h = res.headers_mut();
         h.insert(
             header::ACCESS_CONTROL_ALLOW_METHODS,
-            HeaderValue::from_static("GET, POST, DELETE"),
+            HeaderValue::from_static("GET, POST, PUT, PATCH, DELETE"),
         );
         h.insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
@@ -234,9 +243,10 @@ async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
         return res;
     }
 
+    let owner_here = local && origin.is_none();
     let caller = match (&token, &app.token) {
         // kimo's own page (or curl) on the server itself is the owner.
-        _ if local && origin.is_none() => Some(Caller::Admin),
+        _ if owner_here => Some(Caller::Admin),
         (Some(t), Some(admin)) if t.as_str() == &**admin => Some(Caller::Admin),
         (Some(t), _) if app.manager.device_by_token(t).is_some() => Some(Caller::Admin),
         (Some(t), _) => app.manager.client_by_token(t).map(|c| Caller::Client {
@@ -259,11 +269,43 @@ async fn auth(State(app): State<App>, req: Request, next: Next) -> Response {
     if !access::permits(&caller, req.method().as_str(), req.uri().path()) {
         return denied(StatusCode::FORBIDDEN, "this key cannot do that");
     }
+    // The key behind the call: open terminals and streams end when it is revoked.
+    req.extensions_mut()
+        .insert(Principal(if owner_here { None } else { token.clone() }));
     let mut res = next.run(req).await;
     if let Some(origin) = &origin {
         cors(&mut res, origin);
     }
     res
+}
+
+/// The key a call came with (`None`: the machine itself, which nothing revokes).
+#[derive(Clone)]
+pub(crate) struct Principal(pub(crate) Option<String>);
+
+impl App {
+    /// Is this key still one kimo accepts (owner token, paired device, app key)?
+    fn key_valid(&self, token: &str) -> bool {
+        self.token.as_deref() == Some(token)
+            || self.manager.device_by_token(token).is_some()
+            || self.manager.client_by_token(token).is_some()
+    }
+
+    /// Resolves when the key behind a connection is revoked (never for the machine itself).
+    pub(crate) async fn until_revoked(&self, principal: Principal) {
+        let Some(token) = principal.0 else {
+            return std::future::pending().await;
+        };
+        let mut revocations = self.manager.revocations();
+        loop {
+            if !self.key_valid(&token) {
+                return;
+            }
+            if revocations.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+        }
+    }
 }
 
 fn cors(res: &mut Response, origin: &str) {
@@ -684,8 +726,13 @@ async fn move_account(
 /// (status, account, usage every ~2 s while agents run). The first event is the full state.
 async fn events(
     State(app): State<App>,
+    Extension(principal): Extension<Principal>,
 ) -> Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>> {
     let rx = app.manager.subscribe();
+    let revoked = {
+        let app = app.clone();
+        Box::pin(async move { app.until_revoked(principal).await })
+    };
     let stream = futures_util::stream::unfold(
         (app.manager, rx, String::new(), true),
         |(manager, mut rx, mut last, mut first)| async move {
@@ -708,6 +755,8 @@ async fn events(
             }
         },
     );
+    // A revoked key's stream ends.
+    let stream = futures_util::StreamExt::take_until(stream, revoked);
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(20)))
 }
 
@@ -1174,29 +1223,78 @@ struct AcceptPeer {
 /// Called by a kimo that just paired with this one: it registers itself with a key for it.
 async fn accept_peer(
     State(app): State<App>,
+    Extension(principal): Extension<Principal>,
     Json(body): Json<AcceptPeer>,
 ) -> ApiResult<serde_json::Value> {
+    // The device key the peer called with: revoked when it is forgotten here.
+    let device = principal
+        .0
+        .and_then(|t| app.manager.device_by_token(&t))
+        .map(|d| d.id);
     let peer = app
         .manager
-        .accept_peer(&body.name, &body.url, &body.token)?;
+        .accept_peer(&body.name, &body.url, &body.token, device)?;
     // `accepted_as`: the prefix under which this kimo lists the caller's agents.
     Ok(Json(
         json!({ "host": app.manager.host_name(), "accepted_as": peer.id }),
     ))
 }
 
+/// Forget a paired kimo: its key here is revoked (its open terminals close), and it is asked
+/// to forget this kimo and revoke our key there. When it cannot be reached, the answer says
+/// so: forget this kimo over there too.
 async fn remove_peer(
     State(app): State<App>,
     Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
 ) -> ApiResult<serde_json::Value> {
+    let peer = app
+        .manager
+        .peer_list()
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| not_found("host"))?;
+    // `from_peer`: the other kimo is the one asking; it forgets us by itself.
+    let remote = if q.contains_key("from_peer") {
+        Ok(())
+    } else {
+        let p = peer.clone();
+        tokio::task::spawn_blocking(move || {
+            Manager::peer_client(&p)
+                .call_timeout(
+                    "DELETE",
+                    &format!("/peers/{}?from_peer=1", p.self_name),
+                    None,
+                    8,
+                )
+                .map(|_| ())
+        })
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
     app.manager.remove_peer(&id)?;
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(match remote {
+        Ok(()) => json!({ "ok": true, "remote_forgotten": true }),
+        Err(e) => {
+            tracing::warn!("{} could not forget this kimo: {e:#}", peer.name);
+            json!({
+                "ok": true,
+                "remote_forgotten": false,
+                "note": format!(
+                    "{} was not reachable: forget {} in its Devices too, so the key this kimo has there stops working",
+                    peer.name,
+                    app.manager.host_name()
+                ),
+            })
+        }
+    }))
 }
 
 /// Terminal websocket: binary frames carry raw bytes both ways; text frames carry control
 /// messages such as `{"type":"resize","cols":80,"rows":24}`.
 async fn terminal(
     State(app): State<App>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
     Query(_q): Query<HashMap<String, String>>,
     ws: WebSocketUpgrade,
@@ -1205,7 +1303,13 @@ async fn terminal(
         .manager
         .attach(&id)
         .ok_or_else(|| not_found("session"))?;
-    Ok(ws.on_upgrade(move |socket| pump(socket, app.manager, id, attachment)))
+    Ok(ws.on_upgrade(move |socket| async move {
+        // The terminal closes when the key it was opened with is revoked.
+        tokio::select! {
+            _ = pump(socket, app.manager.clone(), id, attachment) => {}
+            _ = app.until_revoked(principal) => {}
+        }
+    }))
 }
 
 async fn pump(

@@ -95,8 +95,14 @@ export class Kimo {
   // Sessions
   sessions() { return this.request('GET', '/sessions'); }
   session(id) { return this.request('GET', `/sessions/${enc(id)}`); }
-  /** @param {{name: string, kind: 'claude'|'codex'|'shell', cwd?: string, account?: string|null, args?: string[], command?: string[], start?: boolean}} spec */
+  /**
+   * @param {{name: string, kind: 'claude'|'codex'|'shell', cwd?: string, account?: string|null, model?: string, effort?: string, args?: string[], command?: string[], start?: boolean}} spec
+   * `model` and `effort`: this agent's own (see `agents()` for the levels and model names);
+   * a folder outside every project becomes a project.
+   */
   createSession(spec) { return this.request('POST', '/sessions', spec); }
+  /** The agents' CLIs: [{kind, installed, version, efforts, models}]. */
+  agents() { return this.request('GET', '/agents'); }
   deleteSession(id) { return this.request('DELETE', `/sessions/${enc(id)}`); }
   act(id, action) { return this.request('POST', `/sessions/${enc(id)}/action`, { action }); }
   start(id) { return this.act(id, 'start'); }
@@ -125,16 +131,20 @@ export class Kimo {
    * returns {path}. Put the path in a message: Claude Code and Codex read images from it.
    */
   async sendFile(id, file, name = file.name || 'file') {
+    // The kimo chosen now, even if useHost() changes while the file is read.
+    const to = this.forHost(this.host);
     const bytes = new Uint8Array(await file.arrayBuffer());
     let binary = '';
     for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return this.request('POST', `/sessions/${enc(id)}/files`, { name, data: btoa(binary) });
+    return to.request('POST', `/sessions/${enc(id)}/files`, { name, data: btoa(binary) });
   }
   /** Send a message to an agent: the text, then Enter (separately, so TUIs see typing, not a paste). */
   async send(id, text) {
-    await this.type(id, text);
+    // Both steps go to the kimo chosen now, even if useHost() changes in between.
+    const to = this.forHost(this.host);
+    await to.type(id, text);
     await new Promise(r => setTimeout(r, 40));
-    return this.type(id, '\r');
+    return to.type(id, '\r');
   }
 
   // Accounts

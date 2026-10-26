@@ -360,6 +360,10 @@ pub struct AgentCli {
     pub kind: &'static str,
     pub installed: bool,
     pub version: Option<String>,
+    /// Effort levels it accepts (for a new agent's `effort`), lowest first.
+    pub efforts: &'static [&'static str],
+    /// Model names to suggest (for a new agent's `model`); others work too.
+    pub models: &'static [&'static str],
 }
 
 pub fn detect_agents() -> Vec<AgentCli> {
@@ -373,8 +377,15 @@ pub fn detect_agents() -> Vec<AgentCli> {
             )
             .ok()
             .filter(|o| o.status.success());
+            let provider = if kind == "claude" {
+                crate::core::models::Provider::Claude
+            } else {
+                crate::core::models::Provider::Codex
+            };
             AgentCli {
                 kind,
+                efforts: crate::core::launch::effort_levels(provider),
+                models: crate::core::launch::model_aliases(provider),
                 installed: out.is_some(),
                 version: out.map(|o| {
                     String::from_utf8_lossy(&o.stdout)

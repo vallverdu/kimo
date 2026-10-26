@@ -118,6 +118,9 @@ impl Manager {
         if inner.state.devices.len() == before {
             return Err(anyhow!("unknown device: {id}"));
         }
-        self.save(&inner)
+        self.save(&inner)?;
+        drop(inner);
+        self.revoked();
+        Ok(())
     }
 }

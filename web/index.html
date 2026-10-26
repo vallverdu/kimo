@@ -168,6 +168,11 @@ await kimo.pause(id);  await kimo.send(id, 'run the tests');</code></pre>
 		<label>Folder<span class="k-field"><input name="cwd" placeholder="~/dev/project" autocomplete="off" list="recent-folders"><button type="button" class="ui-button ghost k-small" data-browse="cwd">browse</button></span></label>
 		<datalist id="recent-folders"></datalist>
 		<label data-for="agent">Account<select name="account"></select></label>
+		<div class="k-field-row" data-for="agent">
+			<label>Model<input name="model" list="agent-models" autocomplete="off" placeholder="agent's default"></label>
+			<label>Effort<select name="effort"></select></label>
+		</div>
+		<datalist id="agent-models"></datalist>
 		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Cancel</button><button class="ui-button">Start</button></div>
 	</form></dialog>
 

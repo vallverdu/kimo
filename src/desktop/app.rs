@@ -2728,6 +2728,17 @@ impl KimoApp {
                     ui.label("model");
                     ui.add(egui::TextEdit::singleline(&mut prefs.model).hint_text("the CLI's default").desired_width(220.0));
                     ui.end_row();
+                    ui.label("effort");
+                    let provider = if kind == "codex" { crate::core::models::Provider::Codex } else { crate::core::models::Provider::Claude };
+                    egui::ComboBox::from_id_salt(("effort", kind))
+                        .selected_text(if prefs.effort.is_empty() { "the CLI's default".to_string() } else { prefs.effort.clone() })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut prefs.effort, String::new(), "the CLI's default");
+                            for level in crate::core::launch::effort_levels(provider) {
+                                ui.selectable_value(&mut prefs.effort, level.to_string(), *level);
+                            }
+                        });
+                    ui.end_row();
                     ui.label("extra arguments");
                     let mut args = prefs.args.join(" ");
                     if ui.add(egui::TextEdit::singleline(&mut args).hint_text("--verbose").desired_width(320.0)).changed() {

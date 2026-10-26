@@ -118,18 +118,22 @@ function clearAttachments() {
 
 async function attach(files) {
   if (!current) return;
+  // The kimo and session chosen now: shrinking takes a while, and the user may switch.
   const id = current.id;
+  const to = kimo.forHost(kimo.host);
   for (const original of files) {
     const a = { url: URL.createObjectURL(original), path: null, error: null };
     attachments.push(a);
     renderAttachments();
     try {
       const file = await shrink(original);
-      a.path = (await kimo.sendFile(id, file, file.name || 'photo.jpg')).path;
+      if (!attachments.includes(a)) return; // closed or removed meanwhile
+      a.path = (await to.sendFile(id, file, file.name || 'photo.jpg')).path;
     } catch (err) {
       a.error = err.message;
-      toast(err.message, true);
+      if (attachments.includes(a)) toast(err.message, true);
     }
+    if (!attachments.includes(a)) return;
     renderAttachments();
   }
 }

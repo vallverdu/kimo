@@ -136,6 +136,33 @@ pub fn account_home(data_dir: &Path, account_id: &str) -> PathBuf {
 /// `account` must be the spec's account (already resolved), `resume` continues the session's
 /// conversation (its own id for Claude, the folder's last one for Codex), `shell` is the
 /// user's login shell.
+/// Effort levels each CLI accepts, lowest first.
+pub fn effort_levels(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Claude => &["low", "medium", "high", "xhigh", "max"],
+        Provider::Codex => &["minimal", "low", "medium", "high", "xhigh"],
+    }
+}
+
+/// Model names to suggest (the CLI's own aliases for its latest models); any other name the
+/// CLI knows works too.
+pub fn model_aliases(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Claude => &["fable", "opus", "sonnet", "haiku"],
+        Provider::Codex => &[],
+    }
+}
+
+/// Is `model` a plain model name (an alias or full name), safe as one argument?
+pub fn valid_model(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 100
+        && !model.starts_with('-')
+        && model
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.:/[]@".contains(&b))
+}
+
 /// Arguments the agent preferences add to every agent session (not to custom commands).
 pub fn pref_args(provider: Provider, prefs: &AgentPrefs) -> Vec<String> {
     let mut args = vec![];
@@ -145,12 +172,21 @@ pub fn pref_args(provider: Provider, prefs: &AgentPrefs) -> Vec<String> {
             Provider::Codex => "--dangerously-bypass-approvals-and-sandbox".into(),
         });
     }
-    if !prefs.model.trim().is_empty() {
+    if valid_model(prefs.model.trim()) {
         args.push(match provider {
             Provider::Claude => "--model".into(),
             Provider::Codex => "-m".into(),
         });
         args.push(prefs.model.trim().to_string());
+    }
+    let effort = prefs.effort.trim();
+    if effort_levels(provider).contains(&effort) {
+        match provider {
+            Provider::Claude => args.extend(["--effort".into(), effort.to_string()]),
+            Provider::Codex => {
+                args.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")])
+            }
+        }
     }
     args.extend(prefs.args.iter().cloned());
     args
@@ -206,8 +242,16 @@ pub fn build(
             }
         },
     };
-    if let (None, Some(provider), Some(prefs)) = (&spec.command, spec.kind.provider(), prefs) {
-        args.extend(pref_args(provider, prefs));
+    if let (None, Some(provider)) = (&spec.command, spec.kind.provider()) {
+        // This agent's own model and effort, else the agent settings'.
+        let mut prefs = prefs.cloned().unwrap_or_default();
+        if let Some(model) = spec.model.as_deref().filter(|m| valid_model(m)) {
+            prefs.model = model.to_string();
+        }
+        if let Some(effort) = &spec.effort {
+            prefs.effort = effort.clone();
+        }
+        args.extend(pref_args(provider, &prefs));
     }
     args.extend(spec.args.iter().cloned());
     Ok(Launch {
@@ -236,8 +280,60 @@ mod tests {
             conversation: None,
             resume_on_start: false,
             freed: None,
+            model: None,
+            effort: None,
             extra: Map::new(),
         }
+    }
+
+    #[test]
+    fn model_and_effort_per_agent() {
+        let prefs = AgentPrefs {
+            model: "sonnet".into(),
+            effort: "high".into(),
+            ..Default::default()
+        };
+        let mut s = spec(SessionKind::Claude, None);
+        let args = |s: &SessionSpec, prefs: &AgentPrefs| {
+            build(s, None, Path::new("/k"), false, "sh", Some(prefs))
+                .unwrap()
+                .args
+        };
+        let a = args(&s, &prefs);
+        assert!(a.windows(2).any(|w| w == ["--model", "sonnet"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["--effort", "high"]), "{a:?}");
+        // The agent's own choice wins.
+        s.model = Some("opus".into());
+        s.effort = Some("max".into());
+        let a = args(&s, &prefs);
+        assert!(
+            a.windows(2).any(|w| w == ["--model", "opus"])
+                && a.windows(2).any(|w| w == ["--effort", "max"]),
+            "{a:?}"
+        );
+        // Codex: -m and its reasoning effort; levels a CLI does not know are left out.
+        let mut c = spec(SessionKind::Codex, None);
+        c.model = Some("gpt-5.5".into());
+        c.effort = Some("minimal".into());
+        let a = args(&c, &AgentPrefs::default());
+        assert!(a.windows(2).any(|w| w == ["-m", "gpt-5.5"]), "{a:?}");
+        assert!(
+            a.windows(2)
+                .any(|w| w == ["-c", "model_reasoning_effort=\"minimal\""]),
+            "{a:?}"
+        );
+        s.effort = Some("minimal".into());
+        assert!(!args(&s, &AgentPrefs::default()).contains(&"--effort".to_string()));
+        c.effort = Some("x\"; rm -rf /".into());
+        assert!(!args(&c, &AgentPrefs::default())
+            .iter()
+            .any(|a| a.contains("rm")));
+        // Models are one plain argument.
+        c.model = Some("--dangerously-bypass-approvals-and-sandbox".into());
+        assert!(!args(&c, &AgentPrefs::default())
+            .iter()
+            .any(|a| a.contains("dangerously")));
+        assert!(valid_model("claude-opus-5-5[1m]") && !valid_model("a b") && !valid_model(""));
     }
 
     fn account(id: &str, provider: Provider) -> Account {

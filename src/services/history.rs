@@ -156,6 +156,8 @@ impl Manager {
             None => {
                 let created = self.create(
                     NewSession {
+                        model: None,
+                        effort: None,
                         name: name.unwrap_or_else(|| {
                             format!(
                                 "{} {}",

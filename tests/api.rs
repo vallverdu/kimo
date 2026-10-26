@@ -58,7 +58,7 @@ fn req(
     let mut r = Request::builder()
         .method(method)
         .uri(uri)
-        .header(header::HOST, "kimo.local:7777");
+        .header(header::HOST, "localhost:7777");
     if let Some(o) = origin {
         r = r.header(header::ORIGIN, o);
     }
@@ -96,7 +96,7 @@ async fn other_sites_cannot_use_localhost_without_a_key() {
         .oneshot(local(req(
             "GET",
             "/api/sessions",
-            Some("http://kimo.local:7777"),
+            Some("http://localhost:7777"),
             None,
             None,
         )))
@@ -1343,4 +1343,143 @@ async fn terminals_belong_to_projects_and_go_with_them() {
         .collect();
     assert_eq!(names, vec!["home"]);
     assert!(site.join("web").is_dir());
+}
+
+/// A request from this machine with `Host`/`Origin` of `host` (no key).
+fn from_this_machine(path: &str, host: &str, origin: bool) -> Request<Body> {
+    let mut r = Request::builder().uri(path).header(header::HOST, host);
+    if origin {
+        r = r.header(header::ORIGIN, format!("http://{host}"));
+    }
+    local(r.body(Body::empty()).unwrap())
+}
+
+#[tokio::test]
+async fn only_this_machine_s_own_names_are_the_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    // A name pointed at this machine by someone else (DNS rebinding) is not the owner, with
+    // or without a matching Origin.
+    for (host, origin) in [
+        ("attacker.example:7777", true),
+        ("attacker.example:7777", false),
+        ("localhost.attacker.example:7777", true),
+    ] {
+        let r = app
+            .clone()
+            .oneshot(from_this_machine("/api/settings", host, origin))
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            StatusCode::UNAUTHORIZED,
+            "{host} origin={origin}"
+        );
+    }
+    // This machine's own names are.
+    for host in [
+        "localhost:7777",
+        "127.0.0.1:7777",
+        "[::1]:7777",
+        "localhost",
+        "test:7777",
+        "TEST.local:7777",
+    ] {
+        let r = app
+            .clone()
+            .oneshot(from_this_machine("/api/settings", host, true))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{host}");
+    }
+}
+
+#[tokio::test]
+async fn apps_on_their_own_origin_can_rename_projects() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), Some("admin-secret"));
+    let board = "https://board.example.com";
+    let created = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/api/clients",
+            None,
+            Some("admin-secret"),
+            Some(&format!(
+                r#"{{"name":"board","origins":["{board}"],"scope":"control"}}"#
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let mut pre = req("OPTIONS", "/api/projects/demo", Some(board), None, None);
+    pre.headers_mut()
+        .insert("access-control-request-method", "PATCH".parse().unwrap());
+    let res = app.oneshot(remote(pre)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    let methods = res.headers()["access-control-allow-methods"]
+        .to_str()
+        .unwrap();
+    for m in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+        assert!(methods.contains(m), "{methods}");
+    }
+}
+
+#[tokio::test]
+async fn agents_start_with_their_own_model_and_effort() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let work = tmp.path().join("home/work");
+    std::fs::create_dir_all(&work).unwrap();
+    let create = |body: String| local(req("POST", "/api/sessions", None, None, Some(&body)));
+    let body = |model: &str, effort: &str| {
+        format!(
+            r#"{{"name":"a","kind":"claude","cwd":"{}","start":false,"model":"{model}","effort":"{effort}"}}"#,
+            work.display()
+        )
+    };
+    let made = json(
+        app.clone()
+            .oneshot(create(body("opus", "High")))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        (made["model"].as_str(), made["effort"].as_str()),
+        (Some("opus"), Some("high")),
+        "{made}"
+    );
+    for (model, effort) in [("opus", "minimal"), ("--yolo", "high"), ("two words", "")] {
+        let r = app
+            .clone()
+            .oneshot(create(body(model, effort)))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{model} {effort}");
+    }
+    // Clients learn what to offer.
+    let agents = json(
+        app.oneshot(local(req("GET", "/api/agents", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let claude = agents
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "claude")
+        .unwrap();
+    assert!(claude["efforts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e == "max"));
+    assert!(claude["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m == "opus"));
 }

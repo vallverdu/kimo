@@ -36,7 +36,7 @@ reaches a session on a paired kimo.
 | Method | Path | |
 |---|---|---|
 | GET | `/sessions` | list; `?all=1` adds the sessions of paired kimos |
-| POST | `/sessions` | create `{name, kind, cwd?, account?, args?, command?, start? = true}`; terminals belong to projects, so a `cwd` outside every project (and its worktrees) becomes a project named after the folder (not the home folder itself) |
+| POST | `/sessions` | create `{name, kind, cwd?, account?, model?, effort?, args?, command?, start? = true}`; `model` and `effort` are this agent's own (Claude `--model`/`--effort`, Codex `-m`/reasoning effort; levels from `/agents`), kept for every start and resume; terminals belong to projects, so a `cwd` outside every project (and its worktrees) becomes a project named after the folder (not the home folder itself) |
 | GET, DELETE | `/sessions/{id}` | one session; delete (stops it first) |
 | POST | `/sessions/{id}/action` | `{action: start \| pause \| resume \| stop \| restart}` |
 | POST | `/sessions/{id}/account` | `{account: id \| null}`: switch subscription; a running agent restarts and continues its conversation |
@@ -89,8 +89,8 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | POST | `/skills` | install `{source, skill?, agents, project?, replace?}` from `owner/repo/folder`, a git URL or a folder |
 | DELETE | `/skills?path=` | remove (moved to `~/.kimo/skill-backups`) |
 | POST | `/skills/kimo` | install the bundled `kimo-agents` skill `{agents?}` |
-| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]`, `theme: system \| light \| dark` (window and web client), `updates.{notify, auto}` (a system notification once per new version; installing and restarting by itself when no agent is working), `keep_awake: off \| agents \| on` |
-| GET | `/agents` | agent CLIs found on the machine, with versions |
+| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, effort, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]`, `theme: system \| light \| dark` (window and web client), `updates.{notify, auto}` (a system notification once per new version; installing and restarting by itself when no agent is working), `keep_awake: off \| agents \| on` |
+| GET | `/agents` | agent CLIs found on the machine: `[{kind, installed, version, efforts, models}]` (the effort levels each accepts, model names to suggest) |
 
 ## Devices, network, other kimos
 

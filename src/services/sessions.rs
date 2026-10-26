@@ -92,6 +92,12 @@ pub struct NewSession {
     pub args: Vec<String>,
     #[serde(default)]
     pub command: Option<Vec<String>>,
+    /// Claude or Codex model for this agent (else the agent settings' one).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Effort level for this agent (else the agent settings' one).
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 struct Runtime {
@@ -133,6 +139,8 @@ pub struct Manager {
     restart: tokio::sync::Notify,
     /// When kimo last stopped agents to free memory (figures lag while processes exit).
     pub(crate) last_freed: Mutex<Option<Instant>>,
+    /// Bumped when a key is revoked: open terminals and event streams check their key again.
+    revocations: watch::Sender<u64>,
 }
 
 /// A folder path with symlinks resolved (macOS `/var` → `/private/var`), so paths written by
@@ -236,6 +244,7 @@ impl Manager {
             changes: watch::channel(0).0,
             pairing: Mutex::new(HashMap::new()),
             restart: tokio::sync::Notify::new(),
+            revocations: watch::channel(0).0,
             last_freed: Mutex::new(None),
         });
         let weak = Arc::downgrade(&manager);
@@ -421,8 +430,34 @@ impl Manager {
             conversation: None,
             resume_on_start: false,
             freed: None,
+            model: None,
+            effort: None,
             extra: Default::default(),
         };
+        // A model and effort the agent's CLI understands (empty = its default).
+        let model = new
+            .model
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        let effort = new
+            .effort
+            .map(|e| e.trim().to_lowercase())
+            .filter(|e| !e.is_empty());
+        if let Some(provider) = spec.kind.provider() {
+            if let Some(m) = &model {
+                if !crate::core::launch::valid_model(m) {
+                    bail!("{m:?} is not a model name");
+                }
+            }
+            if let Some(e) = &effort {
+                let levels = crate::core::launch::effort_levels(provider);
+                if !levels.contains(&e.as_str()) {
+                    bail!("effort must be one of {}", levels.join(", "));
+                }
+            }
+            spec.model = model;
+            spec.effort = effort;
+        }
         if spec.kind == SessionKind::Claude && spec.command.is_none() {
             spec.conversation = Some(uuid::Uuid::new_v4().to_string());
         }
@@ -886,6 +921,8 @@ impl Manager {
         };
         self.create(
             NewSession {
+                model: None,
+                effort: None,
                 name: format!("login {}", acc.name),
                 kind,
                 cwd: String::new(),
@@ -1211,7 +1248,20 @@ impl Manager {
         if inner.state.clients.len() == before {
             bail!("unknown app: {id}");
         }
-        self.save(&inner)
+        self.save(&inner)?;
+        drop(inner);
+        self.revoked();
+        Ok(())
+    }
+
+    /// A key was revoked: connections opened with it close.
+    pub(crate) fn revoked(&self) {
+        self.revocations.send_modify(|n| *n += 1);
+    }
+
+    /// Changes whenever a key is revoked.
+    pub fn revocations(&self) -> watch::Receiver<u64> {
+        self.revocations.subscribe()
     }
 
     /// Restart kimo (to run a newly installed version): the running sessions are marked to

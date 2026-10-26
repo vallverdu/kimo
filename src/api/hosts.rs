@@ -2,12 +2,12 @@
 //! machine (calls, the live event stream and terminals), with this kimo's key there. Phones
 //! paired with one kimo use every kimo it is paired with, without pairing again.
 
-use super::{ApiError, App};
+use super::{ApiError, App, Principal};
 use crate::core::models::Peer;
 use crate::services::sessions::Manager;
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{FromRequestParts, Path, Request, State};
+use axum::extract::{Extension, FromRequestParts, Path, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
@@ -42,6 +42,7 @@ fn query_without_token(query: Option<&str>) -> String {
 
 pub(super) async fn proxy(
     State(app): State<App>,
+    Extension(principal): Extension<Principal>,
     Path((host, rest)): Path<(String, String)>,
     req: Request,
 ) -> Result<Response, ApiError> {
@@ -58,10 +59,16 @@ pub(super) async fn proxy(
             .await
             .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
         let url = Manager::peer_client(&peer).ws_url(&path);
-        return Ok(ws.on_upgrade(move |socket| bridge(socket, url)));
+        // Like a local terminal, it closes when the caller's key is revoked here.
+        return Ok(ws.on_upgrade(move |socket| async move {
+            tokio::select! {
+                _ = bridge(socket, url) => {}
+                _ = app.until_revoked(principal) => {}
+            }
+        }));
     }
     if parts.method == axum::http::Method::GET && rest == "events" {
-        return Ok(events(peer));
+        return Ok(events(peer, app, principal));
     }
     let content_type = parts
         .headers
@@ -91,8 +98,8 @@ pub(super) async fn proxy(
     Ok(res)
 }
 
-/// The peer's event stream, passed through as it arrives.
-fn events(peer: Peer) -> Response {
+/// The peer's event stream, passed through as it arrives (until the caller's key is revoked).
+fn events(peer: Peer, app: App, principal: Principal) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(16);
     std::thread::Builder::new()
         .name("kimo-host-events".into())
@@ -112,6 +119,8 @@ fn events(peer: Peer) -> Response {
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|b| (Ok::<_, std::io::Error>(b), rx))
     });
+    let revoked = Box::pin(async move { app.until_revoked(principal).await });
+    let stream = futures_util::StreamExt::take_until(stream, revoked);
     let mut res = Body::from_stream(stream).into_response();
     let h = res.headers_mut();
     h.insert(

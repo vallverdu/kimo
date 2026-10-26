@@ -37,14 +37,17 @@ trap 'rm -rf "$tmp"' EXIT
 
 echo "downloading $name"
 curl -fsSL "$base/$name.tar.gz" -o "$tmp/kimo.tar.gz"
-if curl -fsSL "$base/$name.tar.gz.sha256" -o "$tmp/kimo.sha256" 2>/dev/null; then
-  expected="$(cut -d' ' -f1 "$tmp/kimo.sha256")"
-  actual="$( (sha256sum "$tmp/kimo.tar.gz" 2>/dev/null || shasum -a 256 "$tmp/kimo.tar.gz") | cut -d' ' -f1)"
-  [ "$expected" = "$actual" ] || { echo "checksum mismatch" >&2; exit 1; }
-fi
+# Every release publishes a checksum: without it, nothing is installed.
+curl -fsSL "$base/$name.tar.gz.sha256" -o "$tmp/kimo.sha256" \
+  || { echo "cannot download the checksum of $name: not installed" >&2; exit 1; }
+expected="$(cut -d' ' -f1 "$tmp/kimo.sha256")"
+actual="$( (sha256sum "$tmp/kimo.tar.gz" 2>/dev/null || shasum -a 256 "$tmp/kimo.tar.gz") | cut -d' ' -f1)"
+[ -n "$expected" ] && [ "$expected" = "$actual" ] || { echo "checksum mismatch: not installed" >&2; exit 1; }
 tar -xzf "$tmp/kimo.tar.gz" -C "$tmp"
 mkdir -p "$BIN_DIR"
-install -m 755 "$tmp/$name/kimo" "$BIN_DIR/kimo"
+# Next to the old one, then renamed over it: a running kimo keeps its own file.
+install -m 755 "$tmp/$name/kimo" "$BIN_DIR/.kimo-new"
+mv -f "$BIN_DIR/.kimo-new" "$BIN_DIR/kimo"
 echo "installed $BIN_DIR/kimo"
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "add $BIN_DIR to your PATH" ;; esac
 # macOS: kimo.app in Applications (Dock, Launchpad, Spotlight).

@@ -428,11 +428,24 @@ const sessionSheet = $('sheet-session'), accountSheet = $('sheet-account');
 const RECENT = 'kimo-folders';
 const recent = () => { try { return JSON.parse(localStorage.getItem(RECENT)) || []; } catch { return []; } };
 
+// The agents' CLIs on the shown kimo: which models to suggest and which effort levels exist.
+let agentClis = [];
+async function loadAgentClis() {
+  agentClis = await api.agents().catch(() => []);
+  syncKind();
+}
+
 function syncKind() {
   const form = sessionSheet.querySelector('form');
   const kind = form.elements.kind.value;
-  form.querySelector('[data-for=agent]').hidden = kind === 'shell';
+  form.querySelectorAll('[data-for=agent]').forEach(el => { el.hidden = kind === 'shell'; });
   form.elements.account.innerHTML = kind === 'shell' ? '' : accountOptions(kind, '', { active: true });
+  const cli = agentClis.find(a => a.kind === kind);
+  const defaults = state.settings?.agents?.[kind] || {};
+  form.elements.model.placeholder = defaults.model ? `default: ${defaults.model}` : "the agent's default";
+  $('agent-models').innerHTML = (cli?.models || []).map(m => `<option value="${esc(m)}">`).join('');
+  form.elements.effort.innerHTML = `<option value="">${defaults.effort ? `default (${esc(defaults.effort)})` : 'default'}</option>` +
+    (cli?.efforts || []).map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
 }
 
 $('add').addEventListener('click', () => {
@@ -446,6 +459,7 @@ $('add').addEventListener('click', () => {
   form.elements.cwd.value = recent()[0] || '';
   $('recent-folders').innerHTML = recent().map(f => `<option value="${esc(f)}">`).join('');
   syncKind();
+  loadAgentClis();
   sessionSheet.showModal();
 });
 sessionSheet.querySelectorAll('[name=kind]').forEach(r => r.addEventListener('change', syncKind));
@@ -458,6 +472,10 @@ sessionSheet.querySelector('form').addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target.elements;
   const body = { name: f.name.value, kind: f.kind.value, cwd: f.cwd.value, account: f.account.value || null };
+  if (body.kind !== 'shell') {
+    if (f.model.value.trim()) body.model = f.model.value.trim();
+    if (f.effort.value) body.effort = f.effort.value;
+  }
   const s = await run(api.createSession(body));
   if (!s) return;
   try { localStorage.setItem(RECENT, JSON.stringify([body.cwd, ...recent().filter(x => x !== body.cwd)].filter(Boolean).slice(0, 8))); } catch { /* ignore */ }

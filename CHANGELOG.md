@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.12
+
+Security (from an audit of 0.1.7–0.1.11; please update):
+
+- A request from this machine is its owner only when it is addressed to one of the
+  machine's own names or addresses; other names need a key.
+- Forgetting a paired kimo revokes the key it uses here and asks it to forget this kimo too;
+  when it cannot be reached, kimo says to forget it there as well.
+- Revoking a device, an app key or a paired kimo closes the terminals and event streams
+  already open with that key (direct and through `/api/hosts/…`).
+- `state.json` (it holds keys) is private from the moment it is written, and kimo's data
+  folder is closed to other users.
+- The SDK's `send()` and `sendFile()` (and the phone's photo upload) stay on the kimo chosen
+  when they started, even if the shown kimo changes meanwhile.
+- The install script refuses a download whose checksum it cannot check.
+- Apps on other origins can use PUT and PATCH (renaming projects through the SDK).
+
+Agents:
+
+- Choose a new agent's model and effort on the phone (and through the API and SDK:
+  `createSession({model, effort})`); the window's Settings have a default effort per agent.
+  Claude gets `--model`/`--effort`, Codex `-m` and its reasoning effort; `/api/agents` lists
+  the levels each accepts and model names to suggest.
+
 ## 0.1.11
 
 - Terminals belong to projects: a terminal or agent started in a folder outside every project

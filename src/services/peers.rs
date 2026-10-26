@@ -121,6 +121,7 @@ impl Manager {
                 .as_str()
                 .unwrap_or(&host_slug(self.host_name()))
                 .to_string(),
+            device: Some(back.id),
             extra: Default::default(),
         };
         let mut inner = self.lock();
@@ -130,17 +131,39 @@ impl Manager {
     }
 
     /// The other half of mutual pairing: a peer registers itself with a key for it.
-    pub fn accept_peer(&self, name: &str, url: &str, token: &str) -> Result<Peer> {
+    /// `device`: the device (key) the peer calls this kimo with, revoked when it is forgotten.
+    pub fn accept_peer(
+        &self,
+        name: &str,
+        url: &str,
+        token: &str,
+        device: Option<String>,
+    ) -> Result<Peer> {
         let url = url.trim().trim_end_matches('/').to_string();
         let mut inner = self.lock();
+        // Pairing again replaces the old record; the old key goes with it.
+        let old: Vec<Peer> = inner
+            .state
+            .peers
+            .iter()
+            .filter(|p| p.url == url)
+            .cloned()
+            .collect();
         inner.state.peers.retain(|p| p.url != url);
         drop(inner);
+        for p in old
+            .iter()
+            .filter(|p| p.device.is_some() && p.device != device)
+        {
+            self.revoke_peer_key(p);
+        }
         let peer = Peer {
             id: self.unique_peer_id(name),
             name: name.to_string(),
             url,
             token: token.to_string(),
             self_name: host_slug(self.host_name()),
+            device,
             extra: Default::default(),
         };
         let mut inner = self.lock();
@@ -149,14 +172,45 @@ impl Manager {
         Ok(peer)
     }
 
-    pub fn remove_peer(&self, id: &str) -> Result<()> {
+    /// Forget a peer and revoke the key it uses on this kimo (its open terminals close).
+    /// Asking the peer to forget this kimo too is the API's part.
+    pub fn remove_peer(&self, id: &str) -> Result<Peer> {
         let mut inner = self.lock();
-        let before = inner.state.peers.len();
+        let peer = inner
+            .state
+            .peers
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown host: {id}"))?;
         inner.state.peers.retain(|p| p.id != id);
-        if inner.state.peers.len() == before {
-            bail!("unknown host: {id}");
+        self.save(&inner)?;
+        drop(inner);
+        self.revoke_peer_key(&peer);
+        Ok(peer)
+    }
+
+    /// Revoke the device a peer uses here: the one recorded at pairing, or (pairings made
+    /// before kimo recorded it) the one pairing named after the peer.
+    fn revoke_peer_key(&self, peer: &Peer) {
+        let devices: Vec<String> = match &peer.device {
+            Some(id) => vec![id.clone()],
+            None => {
+                let name = format!("{} (kimo)", peer.name);
+                self.lock()
+                    .state
+                    .devices
+                    .iter()
+                    .filter(|d| d.name == name)
+                    .map(|d| d.id.clone())
+                    .collect()
+            }
+        };
+        for id in devices {
+            if let Err(e) = self.delete_device(&id) {
+                tracing::info!("key of {} already gone: {e:#}", peer.name);
+            }
         }
-        self.save(&inner)
     }
 
     /// Sessions of this kimo and of every reachable peer (ids of remote ones are `peer/id`).
