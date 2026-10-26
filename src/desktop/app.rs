@@ -57,6 +57,8 @@ enum Msg {
     Release(Value),
     /// Listening ports (`/ports`) of the shown kimo.
     Ports(Value),
+    /// Type text into a session's open terminal: (session id, text).
+    Type(String, String),
     /// Memory report (`/memory`).
     Memory(Value),
     /// What a session's memory is made of: (session id, parts).
@@ -130,9 +132,17 @@ struct WorktreeForm {
 /// An action that waits for a yes.
 #[allow(clippy::enum_variant_names)]
 enum Confirm {
+    RemoveSession { id: String, name: String },
     RemoveProject { id: String, name: String },
     RemoveWorktree { project: String, path: String },
     RemoveAccount { id: String, name: String },
+}
+
+/// What a session's right-click menu asked for.
+enum SessionAct {
+    Open(String),
+    Stop(String),
+    Remove { id: String, name: String },
 }
 
 /// Making another subscription the active one: waits for a yes.
@@ -800,6 +810,11 @@ impl KimoApp {
                 }
                 Msg::LocalVersion(v) => self.follow_server(v),
                 Msg::Ports(v) => self.ports = v.as_array().cloned().unwrap_or_default(),
+                Msg::Type(id, text) => {
+                    if let Some(t) = self.terminals.iter().find(|t| t.session_id == id) {
+                        t.send(&text);
+                    }
+                }
                 Msg::ServerRestarted(v) => {
                     self.updating = Updating::Idle;
                     self.toast(format!("kimo {v} is running"), false);
@@ -1017,16 +1032,7 @@ impl KimoApp {
             } else {
                 "Ctrl+B"
             };
-            // With the projects panel open, its button is in the panel (next to + kimo).
-            if !self.sidebar_open {
-                if panel_button(ui, false)
-                    .on_hover_text(format!("show the projects panel ({shortcut})"))
-                    .clicked()
-                {
-                    self.toggle_sidebar();
-                }
-                ui.add_space(4.0);
-            }
+
             ui.add(
                 egui::Image::new(egui::load::SizedTexture::new(self.logo.id(), [30.0, 30.0]))
                     .tint(theme::ink()),
@@ -1037,6 +1043,17 @@ impl KimoApp {
                     .size(10.0)
                     .color(theme::muted()),
             );
+            // Always here, so it opens the panel from where it closed it.
+            ui.add_space(6.0);
+            if panel_button(ui, self.sidebar_open)
+                .on_hover_text(format!(
+                    "{} the projects panel ({shortcut})",
+                    if self.sidebar_open { "hide" } else { "show" }
+                ))
+                .clicked()
+            {
+                self.toggle_sidebar();
+            }
             ui.add_space(16.0);
             ui.add_space(16.0);
             // The views as one row of buttons; the open one filled.
@@ -1408,7 +1425,6 @@ impl KimoApp {
         // agents and terminals, as if they were here).
         let mut chosen = None;
         let mut connect = false;
-        let mut fold = false;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (i, h) in self.hosts.iter().enumerate() {
@@ -1431,14 +1447,7 @@ impl KimoApp {
                 .add(egui::Button::new(RichText::new("+ kimo").size(12.0).color(theme::muted())).frame(false))
                 .on_hover_text("connect the kimo of another machine (a Linux box, another Mac): its projects and agents show here")
                 .clicked();
-            let shortcut = if cfg!(target_os = "macos") { "⌘B" } else { "Ctrl+B" };
-            fold = panel_button(ui, true)
-                .on_hover_text(format!("hide the projects panel ({shortcut})"))
-                .clicked();
         });
-        if fold {
-            self.toggle_sidebar();
-        }
         if let Some(i) = chosen {
             self.switch_host(i);
         }
@@ -1486,6 +1495,8 @@ impl KimoApp {
             sessions.iter().map(|x| (x.clone(), home_of(x))).collect();
         let now = now_ms();
         let mut open: Option<String> = None;
+        let mut session_act: Option<SessionAct> = None;
+        let mut add_folder: Option<String> = None;
         let mut start: Option<(String, String, String)> = None;
         let mut history: Option<(String, String)> = None;
         let mut open_project: Option<String> = None;
@@ -1648,6 +1659,7 @@ impl KimoApp {
                                                 if r.clicked() {
                                                     open = Some(s(x, "id").to_string());
                                                 }
+                                                session_menu(&r, x, &mut session_act);
                                             });
                                         });
                                     });
@@ -1677,14 +1689,39 @@ impl KimoApp {
                     .collect();
                 if !others.is_empty() {
                     section(ui, "Not in a project");
+                    // By folder, each one a project away from its agents' own place.
+                    let mut folders: Vec<(&str, Vec<&Value>)> = Vec::new();
                     for x in others {
+                        match folders.iter_mut().find(|(f, _)| *f == s(x, "cwd")) {
+                            Some((_, list)) => list.push(x),
+                            None => folders.push((s(x, "cwd"), vec![x])),
+                        }
+                    }
+                    for (folder, list) in folders {
                         ui.horizontal(|ui| {
-                            dot(ui, theme::status_color(s(x, "status")));
-                            if ui.selectable_label(false, s(x, "name")).clicked() {
-                                open = Some(s(x, "id").to_string());
+                            ui.label(RichText::new(home(folder)).size(11.0).color(theme::muted()))
+                                .on_hover_text(folder);
+                            if link_button(ui, "+ add as project")
+                                .on_hover_text("make this folder a project: its agents show under it")
+                                .clicked()
+                            {
+                                add_folder = Some(folder.to_string());
                             }
-                            activity_tag(ui, x);
                         });
+                        for x in list {
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                dot(ui, theme::status_color(s(x, "status")));
+                                let r = ui
+                                    .selectable_label(false, s(x, "name"))
+                                    .on_hover_text("click to open; right-click to stop or remove");
+                                if r.clicked() {
+                                    open = Some(s(x, "id").to_string());
+                                }
+                                session_menu(&r, x, &mut session_act);
+                                activity_tag(ui, x);
+                            });
+                        }
                     }
                 }
                 if self.projects.is_empty() {
@@ -1735,6 +1772,18 @@ impl KimoApp {
         }
         if let Some(id) = open {
             self.open_session(&id);
+        }
+        if let Some(act) = session_act {
+            self.session_act(act);
+        }
+        if let Some(path) = add_folder {
+            self.last_projects = Instant::now() - Duration::from_secs(60);
+            self.action("Project added: its agents show under it", move |c| {
+                c.post(
+                    "/projects",
+                    json!({ "mode": "existing", "path": path, "resume": false }),
+                )
+            });
         }
         if let Some((name, folder)) = history {
             self.job(move |c| {
@@ -1862,6 +1911,7 @@ impl KimoApp {
 
         // Tabs, then "+".
         let mut close = None;
+        let mut tab_act: Option<SessionAct> = None;
         let mut start: Option<&'static str> = None;
         ui.horizontal_wrapped(|ui| {
             if let Some(name) = &project_name {
@@ -1906,14 +1956,17 @@ impl KimoApp {
                                         .color(theme::muted()),
                                 );
                             }
-                            if ui
+                            let r = ui
                                 .add(
                                     egui::Button::new(RichText::new(&name).color(theme::ink()))
                                         .frame(false),
                                 )
-                                .clicked()
-                            {
+                                .on_hover_text("right-click to stop or remove");
+                            if r.clicked() {
                                 self.active = i;
+                            }
+                            if let Some(x) = &info {
+                                session_menu(&r, x, &mut tab_act);
                             }
                             if ui
                                 .add(
@@ -1971,6 +2024,9 @@ impl KimoApp {
         }
         if let Some(kind) = start {
             self.start_agent(&label, &new_cwd, kind);
+        }
+        if let Some(act) = tab_act {
+            self.session_act(act);
         }
         if let Some(i) = close {
             self.terminals.remove(i);
@@ -2175,6 +2231,53 @@ impl KimoApp {
             .show(ui, |ui| {
                 self.terminals[self.active].show(ui, font_size);
             });
+        if let Some(image) = self.terminals[self.active].pasted_image.take() {
+            self.paste_image(image);
+        }
+    }
+
+    fn session_act(&mut self, act: SessionAct) {
+        match act {
+            SessionAct::Open(id) => self.open_session(&id),
+            SessionAct::Stop(id) => self.action("Stopped: memory freed", move |c| {
+                c.post(
+                    &format!("/sessions/{id}/action"),
+                    json!({ "action": "stop" }),
+                )
+            }),
+            SessionAct::Remove { id, name } => {
+                self.confirm = Some(Confirm::RemoveSession { id, name })
+            }
+        }
+    }
+
+    /// An image pasted into the terminal. Claude Code and Codex on this machine read it from
+    /// the clipboard themselves (Ctrl+V, as in any terminal: "[Image #1]"); on another kimo,
+    /// or in a shell, it is saved on the session's machine and its path typed.
+    fn paste_image(&mut self, image: Arc<egui::ColorImage>) {
+        let t = &self.terminals[self.active];
+        let info = self
+            .sessions()
+            .into_iter()
+            .find(|x| s(x, "id") == t.session_id)
+            .unwrap_or(Value::Null);
+        let agent = matches!(s(&info, "kind"), "claude" | "codex") && info["command"].is_null();
+        if agent && t.host == "local" {
+            t.send("\x16");
+            return;
+        }
+        let id = t.session_id.clone();
+        self.toast("Pasting the image…", false);
+        self.job(move |c| {
+            use base64::Engine;
+            let png = encode_png(&image)?;
+            let name = format!("pasted-{}.png", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+            let r = c.post(
+                &format!("/sessions/{id}/files"),
+                json!({ "name": name, "data": base64::engine::general_purpose::STANDARD.encode(&png) }),
+            )?;
+            Ok(Msg::Type(id, format!("{} ", s(&r, "path"))))
+        });
     }
 
     fn subscriptions_view(&mut self, ui: &mut Ui) {
@@ -3352,6 +3455,10 @@ impl KimoApp {
             return;
         };
         let (title, text) = match confirm {
+            Confirm::RemoveSession { name, .. } => (
+                format!("Remove {name}?"),
+                "kimo ends it and takes it off the list. A Claude or Codex conversation stays in the agent's history: continue it later from the project's earlier conversations.".to_string(),
+            ),
             Confirm::RemoveProject { name, .. } => (
                 format!("Remove {name}?"),
                 "kimo forgets the project. Its folder and files stay where they are, and its agents move to Other sessions.".to_string(),
@@ -3383,6 +3490,13 @@ impl KimoApp {
             });
         if yes {
             match self.confirm.take() {
+                Some(Confirm::RemoveSession { id, .. }) => {
+                    self.terminals.retain(|t| t.session_id != id);
+                    self.active = self.active.min(self.terminals.len().saturating_sub(1));
+                    self.action("Session removed", move |c| {
+                        c.delete(&format!("/sessions/{id}"))
+                    });
+                }
                 Some(Confirm::RemoveProject { id, .. }) => {
                     self.action("Project removed: its folder is untouched", move |c| {
                         c.delete(&format!("/projects/{id}"))
@@ -4084,6 +4198,48 @@ fn badge(ui: &mut Ui, text: &str) {
 }
 
 /// Plan limits of a subscription: a bar per window, when it resets and where the pace leads.
+/// A session's right-click menu: open, stop (running ones), remove.
+fn session_menu(r: &egui::Response, x: &Value, act: &mut Option<SessionAct>) {
+    r.context_menu(|ui| {
+        let id = s(x, "id").to_string();
+        if ui.button("Open").clicked() {
+            *act = Some(SessionAct::Open(id.clone()));
+        }
+        if matches!(s(x, "status"), "running" | "paused")
+            && ui.button("Stop (free its memory)").clicked()
+        {
+            *act = Some(SessionAct::Stop(id.clone()));
+        }
+        if ui
+            .button(RichText::new("Remove…").color(theme::bad()))
+            .clicked()
+        {
+            *act = Some(SessionAct::Remove {
+                id,
+                name: s(x, "name").to_string(),
+            });
+        }
+    });
+}
+
+/// A pasted image as PNG (the format agents read).
+fn encode_png(image: &egui::ColorImage) -> Result<Vec<u8>> {
+    let [w, h] = image.size;
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, w as u32, h as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    let bytes: Vec<u8> = image
+        .pixels
+        .iter()
+        .flat_map(|p| p.to_srgba_unmultiplied())
+        .collect();
+    writer.write_image_data(&bytes)?;
+    writer.finish()?;
+    Ok(out)
+}
+
 /// A bottom-bar button: small text, no frame.
 fn bar_button(ui: &mut Ui, text: &str) -> egui::Response {
     ui.add(egui::Button::new(RichText::new(text).size(11.5).color(theme::text())).frame(false))
@@ -4827,6 +4983,19 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(tmp.path().join("window.json")).unwrap())
                 .unwrap();
         assert_eq!(prefs["sidebar"], true);
+    }
+
+    #[test]
+    fn pasted_images_become_png() {
+        let image = egui::ColorImage::filled([3, 2], Color32::RED);
+        let png = encode_png(&image).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((reader.info().width, reader.info().height), (3, 2));
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255]);
     }
 
     #[test]

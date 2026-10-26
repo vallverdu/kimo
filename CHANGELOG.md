@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.9
+
+- Paste in the window's terminals uses the system clipboard: text copied in other apps pastes,
+  and copying from the terminal reaches other apps. An image pasted into Claude Code or Codex
+  on this machine reaches it as with any terminal ("[Image #1]"); on a paired kimo or in a
+  shell it is saved on that machine and its path typed.
+- Sessions: right-click one in the projects panel or its tab to open, stop or remove it.
+  Sessions outside every project are grouped by folder, with *+ add as project*.
+- The projects panel's fold button is right of the logo again, open or closed.
+- The Dock icon stays the rounded app icon while kimo runs.
+
 ## 0.1.8
 
 - The window's bottom bar: *Used* with the plan use of each provider's active subscription

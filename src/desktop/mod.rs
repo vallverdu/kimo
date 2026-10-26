@@ -45,6 +45,24 @@ pub(crate) fn start_server(port: u16, data_dir: &std::path::Path) -> Result<()> 
     Ok(())
 }
 
+/// The window's icon. macOS shows it in the Dock while kimo runs (in place of the app's), so
+/// it is the app icon's rounded square there; Linux desktops draw their own frame.
+fn window_icon() -> egui::IconData {
+    if cfg!(target_os = "macos") {
+        egui::IconData {
+            rgba: include_bytes!("../../assets/icons/mac-256.rgba").to_vec(),
+            width: 256,
+            height: 256,
+        }
+    } else {
+        egui::IconData {
+            rgba: include_bytes!("../../assets/icons/window-128.rgba").to_vec(),
+            width: 128,
+            height: 128,
+        }
+    }
+}
+
 pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
     if let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
         let _ = EXE.set(exe);
@@ -82,11 +100,7 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
             .with_inner_size([1280.0, 820.0])
             .with_min_inner_size([760.0, 480.0])
             .with_drag_and_drop(true)
-            .with_icon(std::sync::Arc::new(egui::IconData {
-                rgba: include_bytes!("../../assets/icons/window-128.rgba").to_vec(),
-                width: 128,
-                height: 128,
-            })),
+            .with_icon(std::sync::Arc::new(window_icon())),
         ..Default::default()
     };
     let prefs = data_dir.join("window.json");

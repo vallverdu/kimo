@@ -61,6 +61,9 @@ def mac_icon(size):
     return canvas
 
 
+# The window's icon on macOS: the app icon's rounded square (the Dock shows it while kimo runs).
+(raw / "mac-256.rgba").write_bytes(mac_icon(256).tobytes())
+
 if shutil.which("iconutil"):
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / "kimo.iconset"

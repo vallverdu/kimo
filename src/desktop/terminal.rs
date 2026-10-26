@@ -49,6 +49,8 @@ pub struct TerminalView {
     nudge_back: Option<Instant>,
     redraw_asked: bool,
     scroll_rest: f32,
+    /// An image pasted into the terminal, for the app to hand to the agent.
+    pub pasted_image: Option<std::sync::Arc<egui::ColorImage>>,
 }
 
 const SETTLE: Duration = Duration::from_millis(180);
@@ -146,6 +148,7 @@ impl TerminalView {
             nudge_back: None,
             redraw_asked: false,
             scroll_rest: 0.0,
+            pasted_image: None,
         }
     }
 
@@ -300,6 +303,10 @@ impl TerminalView {
                 let copy_key = matches!(event, egui::Event::Key { key: egui::Key::C, pressed: true, modifiers, .. } if modifiers.ctrl && modifiers.shift);
                 if copy_key || (matches!(event, egui::Event::Copy) && self.has_selection()) {
                     self.copy_selection(ui);
+                    continue;
+                }
+                if let egui::Event::PasteImage(image) = event {
+                    self.pasted_image = Some(image.clone());
                     continue;
                 }
                 if let Some(bytes) = input::encode(event, modes) {
