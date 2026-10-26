@@ -151,6 +151,7 @@ export function initProjects({ api, state, run, terminal }) {
     const dir = e.target.closest('[data-path]')?.dataset.path;
     if (dir) browse(dir);
     if (e.target.closest('[data-do=up]') && folderSheet.dataset.parent) browse(folderSheet.dataset.parent);
+    if (e.target.closest('[data-do=mkdir]')) makeFolder();
     if (e.target.closest('[data-do=use]')) {
       pickTarget.value = folderSheet.dataset.path.replace(/^\/home\/[^/]+/, '~');
       pickTarget.title = folderSheet.dataset.path;
@@ -158,6 +159,16 @@ export function initProjects({ api, state, run, terminal }) {
       folderSheet.close();
     }
   });
+  async function makeFolder() {
+    const name = $('new-folder').value.trim();
+    if (!name) return $('new-folder').focus();
+    try {
+      const l = await api.makeFolder(folderSheet.dataset.path, name);
+      $('new-folder').value = '';
+      browse(l.path);
+    } catch (err) { toast(err.message, true); }
+  }
+  $('new-folder').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); makeFolder(); } });
   function pickFolder(input) {
     pickTarget = input;
     browse(input.value);

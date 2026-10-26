@@ -79,6 +79,8 @@ struct ProjectForm {
     url: String,
     /// Folder listing from the server for the picker.
     listing: Option<Value>,
+    /// Name typed for a new folder in the picker.
+    new_folder: String,
 }
 
 struct SkillForm {
@@ -1254,6 +1256,10 @@ impl KimoApp {
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("No terminal open").size(22.0).color(theme::ink()));
                 ui.label(RichText::new("Open a session on the left, add an agent to a project, or drop a folder to start a project.").color(theme::muted()));
+                ui.add_space(16.0);
+                if primary(ui, "start a new project from zero").on_hover_text("a new folder (with git), ready for agents").clicked() {
+                    self.project_form = Some(ProjectForm { mode: "new".into(), git: true, ..Default::default() });
+                }
             });
             return;
         }
@@ -2145,6 +2151,7 @@ impl KimoApp {
         let mut open = true;
         let mut submit = false;
         let mut browse: Option<String> = None;
+        let mut make_folder: Option<(String, String)> = None;
         egui::Window::new("New project")
             .open(&mut open)
             .collapsible(false)
@@ -2208,10 +2215,28 @@ impl KimoApp {
                         if ui.small_button("up").clicked() {
                             browse = listing["parent"].as_str().map(String::from);
                         }
-                        ui.label(RichText::new(home(s(&listing, "path"))).size(11.0));
+                        ui.label(RichText::new(short_path(s(&listing, "path"), 48)).size(11.0))
+                            .on_hover_text(s(&listing, "path"));
                         if ui.small_button("use this folder").clicked() {
                             form.path = s(&listing, "path").to_string();
                             form.listing = None;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        let edit = ui.add(
+                            egui::TextEdit::singleline(&mut form.new_folder)
+                                .hint_text("new folder here")
+                                .desired_width(200.0),
+                        );
+                        let enter =
+                            edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (ui.small_button("create folder").clicked() || enter)
+                            && !form.new_folder.trim().is_empty()
+                        {
+                            make_folder = Some((
+                                s(&listing, "path").to_string(),
+                                std::mem::take(&mut form.new_folder).trim().to_string(),
+                            ));
                         }
                     });
                     if let Some(l) = &form.listing {
@@ -2234,6 +2259,14 @@ impl KimoApp {
                 ui.add_space(6.0);
                 submit = primary(ui, "create").clicked();
             });
+        if let Some((parent, name)) = make_folder {
+            // The new folder opens in the picker, ready to be used.
+            self.job(move |c| {
+                Ok(Msg::Folder(
+                    c.post("/fs", json!({ "parent": parent, "name": name }))?,
+                ))
+            });
+        }
         if let Some(path) = browse {
             self.job(move |c| {
                 let q = if path.is_empty() {

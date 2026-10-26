@@ -173,3 +173,5 @@
 /* The logo is drawn in ink: lighten it on dark backgrounds. */
 :root[data-theme="dark"] .k-logo { filter: invert(.92); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .k-logo { filter: invert(.92); } }
+.k-new-folder { display: flex; gap: .8rem; align-items: center; margin: 1rem 0 0; }
+.k-new-folder input { flex: 1; margin: 0; padding: .8rem; border: 1px solid var(--color-field-line); background: var(--color-background); color: var(--color-ink); font: inherit; font-size: 1.4rem; }

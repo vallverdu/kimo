@@ -16,6 +16,8 @@
 - Projects like Orca: collapse, a ··· menu (settings, earlier conversations, show in
   Finder, remove) and + for a new git worktree with an agent in it; worktree cards group the
   agents of each branch. Project settings: display name and colour.
+- Start from zero: folder pickers (window and phone) create new folders, and the empty
+  terminal area has a "start a new project from zero" button (a new folder with git).
 - Updates: the window shows when a new kimo is out; *Update* downloads it, checks it and
   restarts kimo on it, and agents that were running continue their conversations.
 

@@ -70,6 +70,8 @@ export class Kimo {
   /** Continue a conversation as a session: `{agent, cwd, id, name?, start? = true}`. */
   continueConversation(c) { return this.request('POST', '/conversations/continue', c); }
   /** Subfolders of `path` (default: the projects folder). */
+  /** Create folder `name` inside `parent` (start a project from nothing); returns its listing. */
+  makeFolder(parent, name) { return this.request('POST', '/fs', { parent, name }); }
   browse(path) { return this.request('GET', `/fs${path ? `?path=${enc(path)}` : ''}`); }
 
   // Sessions

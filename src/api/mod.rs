@@ -111,7 +111,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         )
         .route("/conversations", get(list_conversations))
         .route("/conversations/continue", post(continue_conversation))
-        .route("/fs", get(browse))
+        .route("/fs", get(browse).post(make_folder))
         .route("/network", get(network))
         .route("/network/https", post(enable_https))
         .route("/pairing", post(start_pairing))
@@ -775,6 +775,22 @@ async fn browse(
     Ok(Json(json!(app
         .manager
         .browse(q.get("path").map(String::as_str))?)))
+}
+
+#[derive(Deserialize)]
+struct NewFolder {
+    parent: String,
+    name: String,
+}
+
+/// `{parent, name}`: create a folder (folder pickers); returns its listing.
+async fn make_folder(
+    State(app): State<App>,
+    Json(body): Json<NewFolder>,
+) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(app
+        .manager
+        .make_folder(&body.parent, &body.name)?)))
 }
 
 async fn network(State(app): State<App>) -> ApiResult<serde_json::Value> {

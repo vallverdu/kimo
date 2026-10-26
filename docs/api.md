@@ -62,6 +62,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | POST | `/projects/{id}/worktrees` | `{name, agent?: claude \| codex \| shell}` → `{worktree, session}`: `git worktree add` of branch `name` (made git-safe; an existing branch is checked out) in `~/.kimo/worktrees/<repository>/<branch>`, with an agent started in it |
 | DELETE | `/projects/{id}/worktrees?path=` | `git worktree remove` (refused with uncommitted changes, or while agents run there; the branch stays); its stopped sessions are removed → `{sessions_removed}` |
 | GET | `/fs?path=` | subfolders, for folder pickers |
+| POST | `/fs` | `{parent, name}`: create a folder (start a project from nothing) → its listing |
 | GET | `/conversations?path=` | earlier Claude and Codex conversations in a folder, newest first: `agent`, `id`, `title`, `updated_at`, `messages` (your prompts), `session` (when attached) |
 | POST | `/conversations/continue` | `{agent, cwd, id, name?, start? = true}`: continue one as a session (an attached one is reused) |
 
@@ -138,7 +139,7 @@ kimo.reply(id); kimo.screen(id, lines);
 kimo.waitFor(id, ['idle', 'waiting'], { timeout });   // resolves with the session
 kimo.subscribe(({ sessions, accounts }) => …);        // live updates; returns stop()
 kimo.projects(); kimo.createProject(p); kimo.updateProject(id, { name, color });
-kimo.deleteProject(id); kimo.browse(path);
+kimo.deleteProject(id); kimo.browse(path); kimo.makeFolder(parent, name);
 kimo.addWorktree(id, { name, agent }); kimo.removeWorktree(id, path);
 kimo.conversations(path); kimo.continueConversation({ agent, cwd, id });
 kimo.accounts(); kimo.usage(); kimo.dailyUsage(days); kimo.moveSessions(from, to);

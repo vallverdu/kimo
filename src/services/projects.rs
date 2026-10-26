@@ -527,6 +527,25 @@ impl Manager {
         Ok(inside.into_iter().map(|s| s.spec.id).collect())
     }
 
+    /// Create a folder `name` inside `parent` (for folder pickers: start a project from
+    /// nothing). Returns the listing of the new folder.
+    pub fn make_folder(&self, parent: &str, name: &str) -> Result<Listing> {
+        let name = name.trim();
+        if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+            bail!("folder names cannot be empty or contain /");
+        }
+        let parent = PathBuf::from(self.expand_home(parent.trim()));
+        if !parent.is_dir() {
+            bail!("folder not found: {}", parent.display());
+        }
+        let dir = parent.join(name);
+        if dir.exists() {
+            bail!("{} already exists", dir.display());
+        }
+        std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        self.browse(Some(&dir.display().to_string()))
+    }
+
     /// Subfolders of `path` (default: the projects folder) for the folder picker.
     pub fn browse(&self, path: Option<&str>) -> Result<Listing> {
         let dir = match path.map(str::trim).filter(|p| !p.is_empty()) {

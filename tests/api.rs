@@ -531,6 +531,18 @@ async fn projects_new_existing_clone_and_browse() {
         ]
     );
 
+    // Folder pickers create folders, to start a project from nothing.
+    let body = format!(r#"{{"parent":"{}","name":"brand new"}}"#, dev.display());
+    let (status, made) = call("POST", "/api/fs".into(), Some(body.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    assert_eq!(made["path"], dev.join("brand new").display().to_string());
+    assert!(dev.join("brand new").is_dir());
+    let (status, _) = call("POST", "/api/fs".into(), Some(body)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "already exists");
+    let bad = format!(r#"{{"parent":"{}","name":"../escape"}}"#, dev.display());
+    let (status, _) = call("POST", "/api/fs".into(), Some(bad)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
     // Forgetting a project never deletes its files.
     let id = invoices["id"].as_str().unwrap();
     let (status, _) = call("DELETE", format!("/api/projects/{id}"), None).await;
