@@ -6,9 +6,14 @@ use super::theme;
 use eframe::egui;
 use eframe::egui::{pos2, vec2, Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, Ui};
 
-/// Series colours, validated as a pair (light surface, colour-blind safe): Claude, Codex.
-pub const CLAUDE: Color32 = Color32::from_rgb(0xeb, 0x68, 0x34);
-pub const CODEX: Color32 = Color32::from_rgb(0x00, 0x9a, 0xa8);
+/// Series colours, validated as a pair on each scheme's surface (colour-blind safe).
+pub fn claude() -> Color32 {
+    theme::palette().claude
+}
+
+pub fn codex() -> Color32 {
+    theme::palette().codex
+}
 
 pub struct Column {
     /// `YYYY-MM-DD`.
@@ -51,7 +56,7 @@ fn nice(x: f64) -> f64 {
 pub fn legend(ui: &mut Ui, color: Color32, name: &str) {
     let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(2), color);
-    ui.label(egui::RichText::new(name).size(11.0).color(theme::TEXT));
+    ui.label(egui::RichText::new(name).size(11.0).color(theme::text()));
     ui.add_space(8.0);
 }
 
@@ -76,9 +81,9 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
     while v <= top + 0.5 {
         let yy = y(v).round() + 0.5;
         let stroke = if v == 0.0 {
-            Stroke::new(1.0, theme::MUTED.gamma_multiply(0.6))
+            Stroke::new(1.0, theme::muted().gamma_multiply(0.6))
         } else {
-            Stroke::new(1.0, theme::LINE)
+            Stroke::new(1.0, theme::line())
         };
         painter.hline(plot.x_range(), yy, stroke);
         painter.text(
@@ -86,7 +91,7 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
             Align2::RIGHT_CENTER,
             tokens(v as u64),
             small.clone(),
-            theme::MUTED,
+            theme::muted(),
         );
         v += step;
     }
@@ -103,7 +108,7 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
         painter.rect_filled(
             Rect::from_min_max(pos2(x, plot.top()), pos2(x + slot, plot.bottom())),
             CornerRadius::ZERO,
-            theme::SURFACE,
+            theme::surface(),
         );
     }
     let peak = cols
@@ -134,7 +139,7 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
             painter.rect_filled(
                 Rect::from_min_max(pos2(x0, base - h1.max(1.0)), pos2(x1, base)),
                 round,
-                CLAUDE,
+                claude(),
             );
         }
         if c.codex > 0 {
@@ -148,7 +153,7 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
                     sw: 0,
                     se: 0,
                 },
-                CODEX,
+                codex(),
             );
         }
         if peak == Some(i) {
@@ -165,7 +170,7 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
                 Align2::CENTER_BOTTOM,
                 tokens(c.claude + c.codex),
                 small.clone(),
-                theme::INK,
+                theme::ink(),
             );
         }
         // Dates: the first, the last, and evenly between them (never crowding the last).
@@ -176,7 +181,7 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
                 Align2::CENTER_TOP,
                 short_date(&c.date),
                 small.clone(),
-                theme::MUTED,
+                theme::muted(),
             );
         }
     }
@@ -186,9 +191,11 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
             ui.label(
                 egui::RichText::new(short_date(&c.date))
                     .size(11.0)
-                    .color(theme::MUTED),
+                    .color(theme::muted()),
             );
-            for (color, name, value) in [(CODEX, "codex", c.codex), (CLAUDE, "claude", c.claude)] {
+            for (color, name, value) in
+                [(codex(), "codex", c.codex), (claude(), "claude", c.claude)]
+            {
                 ui.horizontal(|ui| {
                     let (r, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
                     ui.painter()
@@ -196,15 +203,15 @@ pub fn daily(ui: &mut Ui, cols: &[Column], height: f32) {
                     ui.label(
                         egui::RichText::new(tokens(value))
                             .strong()
-                            .color(theme::INK),
+                            .color(theme::ink()),
                     );
-                    ui.label(egui::RichText::new(name).size(11.0).color(theme::MUTED));
+                    ui.label(egui::RichText::new(name).size(11.0).color(theme::muted()));
                 });
             }
             ui.label(
                 egui::RichText::new(format!("{} prompts", c.prompts))
                     .size(11.0)
-                    .color(theme::TEXT),
+                    .color(theme::text()),
             );
         });
     }
@@ -232,7 +239,7 @@ pub fn share(ui: &mut Ui, claude: u64, codex: u64, scale: u64, width: f32) {
         painter.rect_filled(
             Rect::from_x_y_ranges(rect.left()..=rect.left() + w1.max(1.0), y),
             round,
-            CLAUDE,
+            self::claude(),
         );
     }
     if codex > 0 {
@@ -245,7 +252,7 @@ pub fn share(ui: &mut Ui, claude: u64, codex: u64, scale: u64, width: f32) {
                 sw: 0,
                 se: 3,
             },
-            CODEX,
+            self::codex(),
         );
     }
 }

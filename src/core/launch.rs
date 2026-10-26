@@ -52,6 +52,20 @@ pub fn credentials_file(provider: Provider) -> &'static str {
     }
 }
 
+/// The account a Claude config (`.claude.json` in the config home) is signed in with: its
+/// email, or `Some("")` when signed in without one. On macOS Claude keeps the credentials in
+/// the Keychain, so this record is the sign of a login that works on every system.
+pub fn claude_login(config_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(config_json).ok()?;
+    let account = v.get("oauthAccount").filter(|a| a.is_object())?;
+    Some(
+        account["emailAddress"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
 /// Command that signs an account in (run in a kimo terminal with the account's env).
 pub fn login_command(provider: Provider) -> Vec<String> {
     match provider {
@@ -188,6 +202,7 @@ mod tests {
             command: None,
             started_once: false,
             conversation: None,
+            resume_on_start: false,
             extra: Map::new(),
         }
     }

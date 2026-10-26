@@ -55,6 +55,16 @@ export class Kimo {
   createProject(project) { return this.request('POST', '/projects', project); }
   /** Forget a project (its files stay). */
   deleteProject(id) { return this.request('DELETE', `/projects/${enc(id)}`); }
+  /** Rename a project or change its colour: `{name?, color?: '#rrggbb' | ''}`. */
+  updateProject(id, changes) { return this.request('PATCH', `/projects/${enc(id)}`, changes); }
+  /**
+   * A git worktree of the project (a branch in its own folder) with an optional agent in it:
+   * `{name, agent?: 'claude'|'codex'|'shell'}`; returns {worktree, session}. Projects list
+   * their worktrees in `worktrees` (the project's folder first, `primary: true`).
+   */
+  addWorktree(id, worktree) { return this.request('POST', `/projects/${enc(id)}/worktrees`, worktree); }
+  /** Remove a worktree (refused with uncommitted changes or running agents; the branch stays). */
+  removeWorktree(id, path) { return this.request('DELETE', `/projects/${enc(id)}/worktrees?path=${enc(path)}`); }
   /** Earlier Claude and Codex conversations in a folder, newest first (`session` set when attached). */
   conversations(path) { return this.request('GET', `/conversations?path=${enc(path)}`); }
   /** Continue a conversation as a session: `{agent, cwd, id, name?, start? = true}`. */
@@ -109,6 +119,16 @@ export class Kimo {
   /** @param {{name: string, origins: string[], scope?: 'read'|'control'}} app returns the app with its token (shown once). */
   createClient(app) { return this.request('POST', '/clients', app); }
   deleteClient(id) { return this.request('DELETE', `/clients/${enc(id)}`); }
+
+  // Owner only: settings and updates
+  settings() { return this.request('GET', '/settings'); }
+  saveSettings(settings) { return this.request('PUT', '/settings', settings); }
+  /** The latest kimo release: {current, latest, available, url, notes, manual, error}. */
+  release(force = false) { return this.request('GET', `/update${force ? '?force=true' : ''}`); }
+  /** Install the latest release over this kimo's binary; returns {installed}. */
+  installUpdate() { return this.request('POST', '/update'); }
+  /** Restart kimo on the installed version; running sessions continue once it is back. */
+  restartKimo() { return this.request('POST', '/update/restart'); }
 
   // Owner only: devices and network
   network() { return this.request('GET', '/network'); }

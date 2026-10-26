@@ -14,4 +14,5 @@ pub mod procfs;
 pub mod replies;
 pub mod scrollback;
 pub mod skills;
+pub mod update;
 pub mod usage;

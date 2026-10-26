@@ -74,6 +74,9 @@ pub struct SessionSpec {
     /// restart never picks up another agent's conversation in the same folder.
     #[serde(default)]
     pub conversation: Option<String>,
+    /// Running when kimo restarted for an update: started again (continuing) once it is back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resume_on_start: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -108,6 +111,9 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub path: String,
+    /// Colour of the project's mark in the sidebar (`#rrggbb`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -229,8 +235,21 @@ pub struct Settings {
     pub terminal: TerminalSettings,
     #[serde(default)]
     pub quick_commands: Vec<QuickCommand>,
+    /// Light or dark colours for the window and the web client.
+    #[serde(default)]
+    pub theme: Theme,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Colour scheme: the system's, or always light or dark.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 /// Another kimo this one is paired with (both directions): its agents are reachable as `name/id`.

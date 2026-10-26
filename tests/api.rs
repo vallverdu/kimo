@@ -539,6 +539,127 @@ async fn projects_new_existing_clone_and_browse() {
 }
 
 #[tokio::test]
+async fn project_settings_and_worktrees() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), None);
+    let call = |m: &'static str, uri: String, body: Option<String>| {
+        let app = app.clone();
+        async move {
+            let res = app
+                .oneshot(local(req(m, &uri, None, None, body.as_deref())))
+                .await
+                .unwrap();
+            (res.status(), json(res).await)
+        }
+    };
+    // A repository with one commit.
+    let repo = tmp.path().join("home/dev/app");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("README.md"), "app").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "first"]);
+    let body = format!(r#"{{"mode":"existing","path":"{}"}}"#, repo.display());
+    let (status, made) = call("POST", "/api/projects".into(), Some(body.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    let id = made["project"]["id"].as_str().unwrap().to_string();
+    assert_eq!(made["reopened"], false);
+
+    // Adding it again opens it instead of failing.
+    let (status, again) = call("POST", "/api/projects".into(), Some(body)).await;
+    assert_eq!(
+        (status, &again["reopened"]),
+        (StatusCode::OK, &serde_json::json!(true))
+    );
+
+    // Rename and colour; bad colours are refused.
+    let (status, p) = call(
+        "PATCH",
+        format!("/api/projects/{id}"),
+        Some(r##"{"name":"The App","color":"#12939A"}"##.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{p}");
+    assert_eq!(
+        (p["name"].as_str(), p["color"].as_str()),
+        (Some("The App"), Some("#12939a"))
+    );
+    let (status, _) = call(
+        "PATCH",
+        format!("/api/projects/{id}"),
+        Some(r#"{"color":"red"}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A worktree with a shell in it.
+    let (status, wt) = call(
+        "POST",
+        format!("/api/projects/{id}/worktrees"),
+        Some(r#"{"name":"Fix Login","agent":"shell"}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{wt}");
+    let path = wt["worktree"]["path"].as_str().unwrap().to_string();
+    assert!(path.ends_with("worktrees/app/fix-login"), "{path}");
+    assert_eq!(wt["worktree"]["branch"], "fix-login");
+    assert_eq!(wt["session"]["cwd"], path);
+    assert!(std::path::Path::new(&path).join("README.md").is_file());
+    let (_, list) = call("GET", "/api/projects".into(), None).await;
+    let trees = list[0]["worktrees"].as_array().unwrap();
+    assert_eq!(trees.len(), 2);
+    assert_eq!(
+        (trees[0]["primary"].as_bool(), trees[0]["branch"].as_str()),
+        (Some(true), Some("main"))
+    );
+    assert_eq!(
+        (trees[1]["path"].as_str(), trees[1]["branch"].as_str()),
+        (Some(path.as_str()), Some("fix-login"))
+    );
+
+    // Not while an agent works in it; then it goes, with its stopped sessions.
+    let uri = format!("/api/projects/{id}/worktrees?path={path}");
+    let (status, refused) = call("DELETE", uri.clone(), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("stop the agents"));
+    let sid = wt["session"]["id"].as_str().unwrap();
+    let (status, _) = call(
+        "POST",
+        format!("/api/sessions/{sid}/action"),
+        Some(r#"{"action":"stop"}"#.into()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, removed) = call("DELETE", uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["sessions_removed"], 1);
+    assert!(!std::path::Path::new(&path).exists());
+    let (_, list) = call("GET", "/api/projects".into(), None).await;
+    assert_eq!(list[0]["worktrees"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn settings_and_skills() {
     let tmp = tempfile::tempdir().unwrap();
     let app = router(tmp.path(), None);

@@ -62,6 +62,9 @@ pub struct AccountInfo {
     #[serde(flatten)]
     pub account: Account,
     pub signed_in: bool,
+    /// The email the account is signed in with, when the CLI records it (Claude).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
     pub sessions: usize,
 }
 
@@ -114,6 +117,8 @@ pub struct Manager {
     changes: watch::Sender<u64>,
     /// One-time pairing codes and when they expire (memory only).
     pub(crate) pairing: Mutex<HashMap<String, Instant>>,
+    /// Asked to restart (after an update): `kimo serve` stops and starts the new binary.
+    restart: tokio::sync::Notify,
 }
 
 /// A folder path with symlinks resolved (macOS `/var` → `/private/var`), so paths written by
@@ -214,6 +219,7 @@ impl Manager {
             exits,
             changes: watch::channel(0).0,
             pairing: Mutex::new(HashMap::new()),
+            restart: tokio::sync::Notify::new(),
         });
         let weak = Arc::downgrade(&manager);
         tokio::spawn(async move {
@@ -308,15 +314,19 @@ impl Manager {
             .state
             .accounts
             .iter()
-            .map(|a| AccountInfo {
-                account: a.clone(),
-                signed_in: accounts::is_signed_in(&self.cfg.data_dir, a),
-                sessions: inner
-                    .state
-                    .sessions
-                    .iter()
-                    .filter(|s| s.account.as_deref() == Some(&a.id))
-                    .count(),
+            .map(|a| {
+                let (signed_in, email) = accounts::login(&self.cfg.data_dir, a);
+                AccountInfo {
+                    account: a.clone(),
+                    signed_in,
+                    email,
+                    sessions: inner
+                        .state
+                        .sessions
+                        .iter()
+                        .filter(|s| s.account.as_deref() == Some(&a.id))
+                        .count(),
+                }
             })
             .collect()
     }
@@ -346,6 +356,7 @@ impl Manager {
             command: new.command.filter(|c| !c.is_empty()),
             started_once: false,
             conversation: None,
+            resume_on_start: false,
             extra: Default::default(),
         };
         if spec.kind == SessionKind::Claude && spec.command.is_none() {
@@ -1069,6 +1080,57 @@ impl Manager {
             bail!("unknown app: {id}");
         }
         self.save(&inner)
+    }
+
+    /// Restart kimo (to run a newly installed version): the running sessions are marked to
+    /// start again, continuing their conversations, once the new kimo is up.
+    pub fn request_restart(&self) -> Result<()> {
+        let mut inner = self.lock();
+        let running: Vec<String> = inner
+            .live
+            .iter()
+            .filter(|(_, l)| l.runtime.is_some())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for spec in inner.state.sessions.iter_mut() {
+            spec.resume_on_start = running.contains(&spec.id);
+        }
+        self.save(&inner)?;
+        drop(inner);
+        self.restart.notify_one();
+        Ok(())
+    }
+
+    /// Resolves when a restart was requested.
+    pub async fn restart_requested(&self) {
+        self.restart.notified().await
+    }
+
+    /// Start the sessions that were running before a restart (they continue their
+    /// conversations). Returns how many.
+    pub fn resume_after_restart(&self) -> usize {
+        let ids: Vec<String> = {
+            let mut inner = self.lock();
+            let ids = inner
+                .state
+                .sessions
+                .iter()
+                .filter(|s| s.resume_on_start)
+                .map(|s| s.id.clone())
+                .collect();
+            for spec in inner.state.sessions.iter_mut() {
+                spec.resume_on_start = false;
+            }
+            let _ = self.save(&inner);
+            ids
+        };
+        ids.iter()
+            .filter(|id| {
+                self.start(id)
+                    .map_err(|e| tracing::warn!("cannot start {id} again: {e:#}"))
+                    .is_ok()
+            })
+            .count()
     }
 
     /// Stop every session (on shutdown) so no agent is left orphaned.

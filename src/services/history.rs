@@ -203,16 +203,15 @@ impl Manager {
         Ok(self.session(&session.spec.id).unwrap_or(session))
     }
 
-    /// When a folder becomes a project: continue its latest Claude and latest Codex
-    /// conversation (the newest of them starts, the other waits for "continue").
+    /// When a folder becomes a project (or is added again): continue its latest Claude and
+    /// latest Codex conversation (the newest of them starts, the other waits for "continue").
     pub fn continue_latest(&self, project: &str, folder: &str) -> Vec<SessionInfo> {
         let conversations = self.conversations(folder);
         let mut picked: Vec<&Conversation> = vec![];
+        // The latest of each agent, also when a kimo session is already attached to it
+        // (that session is reused and opened, not duplicated).
         for kind in [SessionKind::Claude, SessionKind::Codex] {
-            if let Some(c) = conversations
-                .iter()
-                .find(|c| c.agent == kind && c.session.is_none())
-            {
+            if let Some(c) = conversations.iter().find(|c| c.agent == kind) {
                 picked.push(c);
             }
         }

@@ -1,4 +1,5 @@
-//! Reading a repository's current branch from `.git/HEAD` (no git process needed).
+//! Reading a repository's current branch from `.git/HEAD` (no git process needed), and naming
+//! worktree branches.
 
 /// Branch name, or the short commit for a detached HEAD.
 pub fn parse_head(head: &str) -> Option<String> {
@@ -12,9 +13,41 @@ pub fn parse_head(head: &str) -> Option<String> {
     }
 }
 
+/// A branch (and folder) name from what the user typed: `Fix login bug` → `fix-login-bug`.
+/// Slashes are kept (`feat/login`), anything git refuses is replaced or dropped.
+pub fn branch_name(text: &str) -> String {
+    let mut out = String::new();
+    for part in text.trim().split('/') {
+        let word: String = part
+            .to_lowercase()
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'))
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let word = word.trim_matches(['.', '-']).replace("..", ".");
+        if word.is_empty() || word.ends_with(".lock") {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('/');
+        }
+        out.push_str(&word);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branch_names() {
+        assert_eq!(branch_name("Fix login bug"), "fix-login-bug");
+        assert_eq!(branch_name("feat/New API"), "feat/new-api");
+        assert_eq!(branch_name(" ../..//x.. "), "x");
+        assert_eq!(branch_name("a..b"), "a.b");
+        assert_eq!(branch_name("///"), "");
+    }
 
     #[test]
     fn branch_or_short_commit() {

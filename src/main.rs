@@ -97,6 +97,7 @@ fn app(_: &Config) -> Result<()> {
 }
 
 async fn serve(cfg: Config) -> Result<()> {
+    kimo::services::update::remember_exe();
     let target = parse_bind(&cfg.bind).map_err(anyhow::Error::msg)?;
     let ip = kimo::services::network::resolve(&target)?;
     let manager = Manager::new(ManagerConfig {
@@ -145,12 +146,29 @@ async fn serve(cfg: Config) -> Result<()> {
             bound: ip,
         },
     );
+    let resumed = manager.resume_after_restart();
+    if resumed > 0 {
+        println!("  continued {resumed} sessions that were running before the restart");
+    }
     // Open terminal websockets never close by themselves, so stop on a signal instead of draining.
+    let mut restart = false;
     tokio::select! {
         result = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()) => result?,
         _ = shutdown_signal() => tracing::info!("stopping sessions"),
+        _ = manager.restart_requested() => {
+            tracing::info!("restarting: stopping sessions");
+            restart = true;
+        }
     }
     manager.shutdown().await;
+    if restart {
+        // The same process (pid, service manager, log) runs the newly installed binary.
+        let exe = kimo::services::update::exe()?;
+        let err = std::os::unix::process::CommandExt::exec(
+            std::process::Command::new(&exe).args(std::env::args_os().skip(1)),
+        );
+        return Err(anyhow!("cannot restart {}: {err}", exe.display()));
+    }
     Ok(())
 }
 

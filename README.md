@@ -18,7 +18,9 @@ and gives you, and the agents themselves, the controls for that.
 
 - **Projects and terminals.** Drop a folder on the window to make it a project (or create
   one, or clone a repository). Start Claude Code, Codex or a shell in it with one click. Real
-  terminals, with tabs, selection and copy.
+  terminals, with tabs, selection and copy; drop files on a terminal to type their paths.
+- **Worktrees.** *+* on a project creates a git worktree (a branch in its own folder) with an
+  agent in it, so several agents work on the same repository without stepping on each other.
 - **Pick up where you left off.** When a folder becomes a project, kimo finds the Claude Code
   and Codex conversations that already happened there and continues the latest ones, so you
   are back in your work at once. Every project has a *history* of its earlier conversations,
@@ -47,6 +49,8 @@ and gives you, and the agents themselves, the controls for that.
   and an embeddable `<kimo-terminal>`.
 - **Skills and settings.** See and manage your agents' skills (install from GitHub, a git URL
   or a folder); set permissions, model and arguments per agent; save quick commands.
+- **Light or dark, always current.** Dark mode for the window and the phone; kimo tells you
+  when a new version is out and updates itself in one click.
 - **Light.** One binary. The server uses about 10 MB of memory; the agents are what you pay for.
 
 ## Install

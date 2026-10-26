@@ -7,7 +7,14 @@
 - [x] Projects sidebar with drag-and-drop of folders, + claude / + codex / + shell per project.
 - [x] Subscriptions, Skills, Settings and Devices (QR pairing) views.
 - [x] Text selection and copy in the terminal (drag, double-click, Ctrl+C with a selection, Ctrl+Shift+C, right-click).
-- [ ] Mouse reporting for TUIs that use the mouse.
+- [x] Mouse wheel for full-screen programs (SGR / X10 wheel reports, arrows in the alternate screen).
+- [ ] Mouse reporting of clicks and drags for TUIs that use the mouse.
+- [x] Dark mode (Settings → Appearance, window and web client).
+- [x] Resizing settles before the agent is told; *redraw* reloads a garbled terminal.
+- [x] Drop files on the terminal to type their paths (macOS reads the drop position from CoreGraphics; Linux uses the last pointer position).
+- [ ] Drop position on Linux (X11/Wayland report no pointer moves while dragging).
+- [x] Update check and one-click update with restart (agents continue).
+- [ ] Signed release builds for macOS (notarized app bundle) so updates and first runs need no Gatekeeper prompt.
 - [x] Symbol fallback fonts (DejaVu Sans Mono, Noto Sans Symbols 2) so agent icons and box drawing render.
 - [ ] Emoji font, and the few symbols still missing (⎿).
 - [ ] Split panes (several terminals side by side) and keyboard shortcuts to switch tabs.
@@ -35,7 +42,9 @@
 - [x] Usage tab: tokens per day, project (or repository) and subscription for every agent conversation on the machine (window, phone, `kimo usage`, API).
 - [x] Folder picker on the server for new sessions and projects.
 - [ ] Project templates (start a project from a starter folder) and per-project default agent/account.
-- [ ] Worktrees: create a git worktree per agent from a project.
+- [x] Worktrees: create a git worktree per agent from a project (window + / phone, API, SDK); remove it when clean.
+- [x] Projects like Orca: collapse, ··· menu, project settings (name, colour), open the latest agent.
+- [ ] Worktree base branch choice and "create PR" from a worktree.
 
 ## Account & Subscription Management
 

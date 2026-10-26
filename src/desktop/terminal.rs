@@ -17,6 +17,7 @@ use eframe::egui;
 use eframe::egui::{Align2, Color32, FontId, Rect, Sense, Stroke, Ui, Vec2};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Terminal replies (device attributes, cursor position…) go back to the program.
 #[derive(Clone)]
@@ -40,11 +41,17 @@ pub struct TerminalView {
     parser: Processor,
     link: TerminalLink,
     size: (u16, u16),
+    /// A new size waiting to settle (dragging a window edge sends dozens): applied once it
+    /// stays the same for [`SETTLE`], so the agent redraws once instead of on every frame.
+    pending: Option<((u16, u16), Instant)>,
+    /// Redraw request: shrink by a row now, restore the size at this time (two SIGWINCHes,
+    /// far enough apart for the program to see both).
+    nudge_back: Option<Instant>,
+    redraw_asked: bool,
     scroll_rest: f32,
 }
 
-/// Selection highlight (light teal, readable under any text colour).
-const SELECTION: Color32 = Color32::from_rgb(0xcf, 0xe8, 0xe9);
+const SETTLE: Duration = Duration::from_millis(180);
 
 /// Grid cell under a position, with the half of the cell it is in.
 pub fn cell_at(
@@ -85,16 +92,17 @@ pub fn resolve(color: Color, colors: &Colors) -> Color32 {
 
 fn named(n: NamedColor) -> Color32 {
     match n {
-        NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::Cursor => theme::INK,
-        NamedColor::Background => theme::BACKGROUND,
-        NamedColor::DimForeground => theme::MUTED,
+        NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::Cursor => theme::ink(),
+        NamedColor::Background => theme::background(),
+        NamedColor::DimForeground => theme::muted(),
         other => {
             let i = other as usize;
             if i < 16 {
-                theme::ANSI[i]
+                theme::palette().ansi[i]
             } else {
                 // Dim colours: the normal colour, lighter.
-                let base = theme::ANSI[(i.saturating_sub(NamedColor::DimBlack as usize)) % 8];
+                let base =
+                    theme::palette().ansi[(i.saturating_sub(NamedColor::DimBlack as usize)) % 8];
                 base.gamma_multiply(0.7)
             }
         }
@@ -104,7 +112,7 @@ fn named(n: NamedColor) -> Color32 {
 /// xterm 256-colour palette.
 pub fn indexed(i: u8) -> Color32 {
     match i {
-        0..=15 => theme::ANSI[i as usize],
+        0..=15 => theme::palette().ansi[i as usize],
         16..=231 => {
             let i = i - 16;
             let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
@@ -134,8 +142,24 @@ impl TerminalView {
             parser: Processor::new(),
             link,
             size: (0, 0),
+            pending: None,
+            nudge_back: None,
+            redraw_asked: false,
             scroll_rest: 0.0,
         }
+    }
+
+    /// Ask the program to draw its screen again (after a garbled resize): kimo changes the
+    /// terminal size by one row and back, which full-screen programs answer with a redraw.
+    pub fn redraw(&mut self) {
+        self.redraw_asked = true;
+    }
+
+    fn apply_size(&mut self, cols: u16, rows: u16) {
+        self.size = (cols, rows);
+        self.term
+            .resize(TermSize::new(cols as usize, rows as usize));
+        let _ = self.link.tx.send(TermOut::Resize { cols, rows });
     }
 
     fn reset(&mut self) {
@@ -184,14 +208,45 @@ impl TerminalView {
             response.request_focus();
         }
 
-        // Size the grid to the space.
+        // Size the grid to the space: at once the first time, then once the size settles.
         let cols = ((rect.width() - 8.0) / cw).floor().max(10.0) as u16;
         let rows = ((rect.height() - 8.0) / rh).floor().max(4.0) as u16;
-        if (cols, rows) != self.size {
-            self.size = (cols, rows);
-            self.term
-                .resize(TermSize::new(cols as usize, rows as usize));
-            let _ = self.link.tx.send(TermOut::Resize { cols, rows });
+        if self.size == (0, 0) {
+            self.apply_size(cols, rows);
+        } else if (cols, rows) != self.size {
+            match self.pending {
+                Some((size, since)) if size == (cols, rows) => {
+                    if since.elapsed() >= SETTLE {
+                        self.pending = None;
+                        self.apply_size(cols, rows);
+                    } else {
+                        ui.ctx().request_repaint_after(SETTLE - since.elapsed());
+                    }
+                }
+                _ => {
+                    self.pending = Some(((cols, rows), Instant::now()));
+                    ui.ctx().request_repaint_after(SETTLE);
+                }
+            }
+        } else {
+            self.pending = None;
+        }
+        if std::mem::take(&mut self.redraw_asked) && self.nudge_back.is_none() {
+            let (cols, rows) = self.size;
+            let _ = self.link.tx.send(TermOut::Resize {
+                cols,
+                rows: rows.saturating_sub(1).max(2),
+            });
+            self.nudge_back = Some(Instant::now() + Duration::from_millis(150));
+        }
+        if let Some(at) = self.nudge_back {
+            if Instant::now() >= at {
+                self.nudge_back = None;
+                let (cols, rows) = self.size;
+                let _ = self.link.tx.send(TermOut::Resize { cols, rows });
+            } else {
+                ui.ctx().request_repaint_after(at - Instant::now());
+            }
         }
 
         // Selection: drag selects, double-click selects a word, right-click copies.
@@ -262,7 +317,27 @@ impl TerminalView {
             let lines = self.scroll_rest.trunc() as i32;
             if lines != 0 {
                 self.scroll_rest -= lines as f32;
-                self.term.scroll_display(Scroll::Delta(lines));
+                // Full-screen programs (Codex, less, vim) get the wheel; others scroll back.
+                let mode = *self.term.mode();
+                let how = if mode.intersects(TermMode::MOUSE_MODE) {
+                    input::Wheel::Report {
+                        sgr: mode.contains(TermMode::SGR_MOUSE),
+                    }
+                } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+                    input::Wheel::Arrows {
+                        app_cursor: mode.contains(TermMode::APP_CURSOR),
+                    }
+                } else {
+                    input::Wheel::Scrollback
+                };
+                if how == input::Wheel::Scrollback {
+                    self.term.scroll_display(Scroll::Delta(lines));
+                } else if let Some(pos) = response.hover_pos() {
+                    let (point, _) = cell_at(pos, origin, cw, rh, cols_n, rows_n, 0);
+                    let bytes =
+                        input::wheel(lines, point.column.0, point.line.0.max(0) as usize, how);
+                    let _ = self.link.tx.send(TermOut::Bytes(bytes));
+                }
             }
         }
 
@@ -282,7 +357,7 @@ impl TerminalView {
 
     fn paint(&self, ui: &Ui, rect: Rect, font: &FontId, cw: f32, rh: f32, focused: bool) {
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, theme::BACKGROUND);
+        painter.rect_filled(rect, 0.0, theme::background());
         let origin = rect.min + Vec2::splat(4.0);
         let content = self.term.renderable_content();
         let selection = content.selection;
@@ -326,7 +401,7 @@ impl TerminalView {
                 std::mem::swap(&mut fg, &mut bg);
             }
             if selection.is_some_and(|r| r.contains(indexed.point)) {
-                bg = SELECTION;
+                bg = theme::palette().selection;
             }
             if cell.flags.intersects(Flags::DIM) {
                 fg = fg.gamma_multiply(0.65);
@@ -336,7 +411,7 @@ impl TerminalView {
             } else {
                 1
             };
-            if bg != theme::BACKGROUND {
+            if bg != theme::background() {
                 painter.rect_filled(cell_rect(col, row, width), 0.0, bg);
             }
             let hidden = cell.flags.contains(Flags::HIDDEN);
@@ -373,12 +448,12 @@ impl TerminalView {
             let p = content.cursor.point;
             let r = cell_rect(p.column.0, p.line.0, 1);
             if focused {
-                painter.rect_filled(r, 0.0, theme::INK.gamma_multiply(0.85));
+                painter.rect_filled(r, 0.0, theme::ink().gamma_multiply(0.85));
             } else {
                 painter.rect_stroke(
                     r,
                     0.0,
-                    Stroke::new(1.0, theme::INK),
+                    Stroke::new(1.0, theme::ink()),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -389,7 +464,7 @@ impl TerminalView {
                 Align2::RIGHT_TOP,
                 format!("↑ {offset} lines"),
                 FontId::monospace(11.0),
-                theme::MUTED,
+                theme::muted(),
             );
         }
         let _ = self.term.grid().columns();
@@ -433,14 +508,14 @@ mod tests {
 
     #[test]
     fn palette() {
-        assert_eq!(indexed(1), theme::BAD);
+        assert_eq!(indexed(1), theme::LIGHT.ansi[1]);
         assert_eq!(indexed(16), Color32::from_rgb(0, 0, 0));
         assert_eq!(indexed(231), Color32::from_rgb(255, 255, 255));
         assert_eq!(indexed(232), Color32::from_rgb(8, 8, 8));
         let colors = Colors::default();
         assert_eq!(
             resolve(Color::Named(NamedColor::Foreground), &colors),
-            theme::INK
+            theme::LIGHT.ink
         );
         assert_eq!(
             resolve(Color::Spec(Rgb { r: 1, g: 2, b: 3 }), &colors),

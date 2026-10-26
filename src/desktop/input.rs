@@ -1,4 +1,4 @@
-//! Keyboard and clipboard events → bytes for the terminal (xterm conventions).
+//! Keyboard, clipboard and mouse wheel events → bytes for the terminal (xterm conventions).
 
 use eframe::egui::{Event, Key, Modifiers};
 
@@ -103,9 +103,77 @@ pub fn encode(event: &Event, modes: Modes) -> Option<Vec<u8>> {
     }
 }
 
+/// How a program wants the mouse wheel (from its terminal modes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wheel {
+    /// Scroll kimo's own scrollback.
+    Scrollback,
+    /// The program reads mouse events (SGR encoding when `sgr`).
+    Report { sgr: bool },
+    /// Full-screen program without mouse reporting: the wheel sends arrow keys (xterm's
+    /// "alternate scroll"), so pagers and TUIs scroll.
+    Arrows { app_cursor: bool },
+}
+
+/// Bytes for `lines` wheel steps (positive = up) over cell `col`, `row` (0-based).
+pub fn wheel(lines: i32, col: usize, row: usize, how: Wheel) -> Vec<u8> {
+    let up = lines > 0;
+    let steps = lines.unsigned_abs().min(20) as usize;
+    let one: Vec<u8> = match how {
+        Wheel::Scrollback => return vec![],
+        Wheel::Report { sgr: true } => format!(
+            "\x1b[<{};{};{}M",
+            if up { 64 } else { 65 },
+            col + 1,
+            row + 1
+        )
+        .into_bytes(),
+        Wheel::Report { sgr: false } => {
+            let b = if up { 64u8 } else { 65 };
+            let pos = |v: usize| (32 + 1 + v.min(222)) as u8;
+            vec![0x1b, b'[', b'M', 32 + b, pos(col), pos(row)]
+        }
+        Wheel::Arrows { app_cursor } => {
+            let c = if up { 'A' } else { 'B' };
+            if app_cursor {
+                format!("\x1bO{c}")
+            } else {
+                format!("\x1b[{c}")
+            }
+            .into_bytes()
+        }
+    };
+    one.repeat(steps)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wheel_steps() {
+        assert_eq!(wheel(2, 0, 0, Wheel::Scrollback), b"");
+        assert_eq!(
+            wheel(1, 4, 2, Wheel::Report { sgr: true }),
+            b"\x1b[<64;5;3M"
+        );
+        assert_eq!(
+            wheel(-1, 0, 0, Wheel::Report { sgr: true }),
+            b"\x1b[<65;1;1M"
+        );
+        assert_eq!(
+            wheel(-1, 0, 0, Wheel::Report { sgr: false }),
+            vec![0x1b, b'[', b'M', 97, 33, 33]
+        );
+        assert_eq!(
+            wheel(2, 0, 0, Wheel::Arrows { app_cursor: false }),
+            b"\x1b[A\x1b[A"
+        );
+        assert_eq!(
+            wheel(-1, 0, 0, Wheel::Arrows { app_cursor: true }),
+            b"\x1bOB"
+        );
+    }
 
     fn key(key: Key, modifiers: Modifiers) -> Event {
         Event::Key {

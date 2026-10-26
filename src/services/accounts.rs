@@ -2,9 +2,9 @@
 //! links to the shared conversations/settings of the provider's default home.
 
 use crate::core::launch::{
-    account_home, conversations_dir, credentials_file, default_home, shared_entries,
+    account_home, claude_login, conversations_dir, credentials_file, default_home, shared_entries,
 };
-use crate::core::models::Account;
+use crate::core::models::{Account, Provider};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
@@ -28,10 +28,17 @@ pub fn ensure_home(data_dir: &Path, user_home: &Path, account: &Account) -> Resu
     Ok(())
 }
 
-pub fn is_signed_in(data_dir: &Path, account: &Account) -> bool {
-    account_home(data_dir, &account.id)
-        .join(credentials_file(account.provider))
-        .exists()
+/// Whether the account is signed in, and as whom (Claude records the email).
+pub fn login(data_dir: &Path, account: &Account) -> (bool, Option<String>) {
+    let home = account_home(data_dir, &account.id);
+    let email = match account.provider {
+        Provider::Claude => fs::read_to_string(home.join(".claude.json"))
+            .ok()
+            .and_then(|text| claude_login(&text)),
+        Provider::Codex => None,
+    };
+    let file = home.join(credentials_file(account.provider)).exists();
+    (file || email.is_some(), email.filter(|e| !e.is_empty()))
 }
 
 /// Remove the account home (its credentials). Links are removed, never their targets.
@@ -70,9 +77,17 @@ mod tests {
             .is_symlink());
         assert!(home.join("settings.json").exists());
         assert!(fs::symlink_metadata(home.join("skills")).is_err());
-        assert!(!is_signed_in(&data, &acc));
+        assert!(!login(&data, &acc).0);
         fs::write(home.join(".credentials.json"), "{}").unwrap();
-        assert!(is_signed_in(&data, &acc));
+        assert!(login(&data, &acc).0);
+        fs::remove_file(home.join(".credentials.json")).unwrap();
+        // macOS: credentials in the Keychain, the login recorded in .claude.json.
+        fs::write(
+            home.join(".claude.json"),
+            r#"{"oauthAccount":{"emailAddress":"me@example.com"}}"#,
+        )
+        .unwrap();
+        assert_eq!(login(&data, &acc), (true, Some("me@example.com".into())));
 
         remove_home(&data, "work").unwrap();
         assert!(!home.exists());

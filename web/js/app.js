@@ -52,7 +52,49 @@ function renderStats() {
   $('alerts').innerHTML = [
     waiting.length ? `<div class="ui-alert"><span>${waiting.length} agent${waiting.length === 1 ? ' needs' : 's need'} you: ${waiting.map(x => esc(x.name)).join(', ')}</span><button class="ui-button k-small" data-open-waiting="${esc(waiting[0].id)}">open</button></div>` : '',
     low ? `<div class="ui-alert"><span>Memory is low (${mb(s.mem_available_bytes)} free). Stop idle agents: they continue where they left off.</span></div>` : '',
+    updateAlert(),
   ].join('');
+}
+
+// A new kimo version: install it from here (running agents restart and continue).
+function updateAlert() {
+  const r = state.release;
+  if (!r?.available) return '';
+  const notes = r.url ? ` <a href="${esc(r.url)}" target="_blank" rel="noopener">release notes</a>` : '';
+  if (r.manual) return `<div class="ui-alert info"><span>kimo ${esc(r.latest)} is ready.${notes} ${esc(r.manual)}.</span></div>`;
+  return `<div class="ui-alert info"><span>kimo ${esc(r.latest)} is ready. Running agents restart and continue their conversations.${notes}</span>
+    ${state.updating ? `<span>${esc(state.updating)}</span>` : '<button class="ui-button k-small" data-do="update">update</button>'}</div>`;
+}
+
+async function installUpdate() {
+  state.updating = 'Downloading…';
+  render();
+  try {
+    await api.installUpdate();
+    state.updating = 'Restarting…';
+    render();
+    await api.restartKimo();
+    // The page reconnects to the new kimo by itself; reload once it answers.
+    for (let i = 0; i < 120; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const s = await api.status().catch(() => null);
+      if (s && s.version !== state.release.current) return location.reload();
+    }
+    throw new Error('the new kimo did not come back: see ~/.kimo/kimo.log');
+  } catch (e) {
+    state.updating = null;
+    render();
+    toast(e.message, true);
+  }
+}
+
+/** Light or dark, as chosen in Settings → Appearance (`system` follows the device). */
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
+  else delete root.dataset.theme;
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.content = getComputedStyle(root).getPropertyValue('--color-background').trim() || '#ffffff';
 }
 
 function sessionRow(s) {
@@ -92,10 +134,10 @@ function renderAccounts() {
   const rows = [...defaults, ...state.accounts].map(a => {
     const targets = [{ id: 'default', name: `default ${a.provider} login` }, ...state.accounts.filter(b => b.provider === a.provider)]
       .filter(b => !(b.id === a.id && a.id !== 'default') && !(a.id === 'default' && b.id === 'default'));
-    const signed = a.signed_in === null ? '' : `<span class="ui-badge ${a.signed_in ? 'running' : 'paused'}">${a.signed_in ? 'signed in' : 'not signed in'}</span>`;
+    const signed = a.signed_in === null ? '' : `<span class="ui-badge ${a.signed_in ? 'running' : 'paused'}" ${a.email ? `title="${esc(a.email)}"` : ''}>${a.signed_in ? 'signed in' : 'not signed in'}</span>`;
     return `<li data-account="${esc(a.id)}" data-provider="${a.provider}">
       <span class="k-name" style="cursor:default">${esc(a.name)}</span>${signed || '<span></span>'}
-      <div class="k-meta"><span>${a.provider}</span><span><span class="k-num">${a.sessions}</span> sessions</span>
+      <div class="k-meta"><span>${a.provider}</span>${a.email ? `<span>${esc(a.email)}</span>` : ''}<span><span class="k-num">${a.sessions}</span> sessions</span>
         <span class="k-usage">${esc(usageText(state.usage.find(u => (u.account ?? 'default') === a.id && u.provider === a.provider)))}</span></div>
       <div class="k-actions">
         ${a.id !== 'default' ? `<button class="ui-button ${a.signed_in ? 'ghost ' : ''}k-small" data-do="login">sign in</button>` : ''}
@@ -147,6 +189,9 @@ let unsubscribe = null;
 async function connect() {
   unsubscribe?.();
   if (!(await refresh())) return;
+  // Owner-only extras: the colour scheme and new versions (app keys get a 403, ignored).
+  api.settings().then(st => applyTheme(st.theme)).catch(() => {});
+  api.release().then(r => { state.release = r; render(); }).catch(() => {});
   unsubscribe = api.subscribe(({ sessions, accounts }) => {
     state.sessions = sessions;
     state.accounts = accounts;
@@ -186,6 +231,7 @@ addEventListener('hashchange', () => show(location.hash.slice(1)));
 // ----- session actions -----
 
 $('alerts').addEventListener('click', e => {
+  if (e.target.closest('[data-do=update]')) return installUpdate();
   const id = e.target.closest('[data-open-waiting]')?.dataset.openWaiting;
   const s = id && state.sessions.find(x => x.id === id);
   if (s) terminal.open(s);

@@ -16,7 +16,7 @@ as `?token=<key>` where headers are not possible (websockets, EventSource).
 | An app | an app key (`/clients`), only from its listed origins | `control`: sessions, projects, messages, terminals, account switching · `read`: GET only, no terminals, no folder listing |
 
 Owner only: `/clients`, `/devices`, `/pairing`, `/network`, `/qr`, `/settings`, `/peers`,
-installing or removing skills, adding, signing in or deleting accounts.
+`/update`, installing or removing skills, adding, signing in or deleting accounts.
 
 Requests from another web page (an `Origin` that is not kimo itself) need a key that lists
 that origin; kimo answers CORS preflights for listed origins.
@@ -55,9 +55,12 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 
 | Method | Path | |
 |---|---|---|
-| GET | `/projects` | list with `branch`, `exists`, `sessions`, `running` |
-| POST | `/projects` | `{mode: new \| existing \| clone, name?, path?, git?, url?, resume? = true}` → `{project, session, continued}`: `session` is the clone terminal; `continued` are the folder's latest Claude and Codex conversations, continued as sessions (the first one started) |
+| GET | `/projects` | list with `color`, `branch`, `exists`, `sessions`, `running` and `worktrees` (`[{path, branch, primary}]`, the project's folder first) |
+| POST | `/projects` | `{mode: new \| existing \| clone, name?, path?, git?, url?, resume? = true}` → `{project, session, continued, reopened}`: `session` is the clone terminal; `continued` are the folder's latest Claude and Codex conversations, continued as sessions (the first one started; sessions already attached to them are reused). Adding a folder that already is a project opens it: `reopened: true` |
+| PATCH | `/projects/{id}` | `{name?, color?}`: rename, or set the sidebar colour (`#rrggbb`, `""` for none) |
 | DELETE | `/projects/{id}` | forget (files stay) |
+| POST | `/projects/{id}/worktrees` | `{name, agent?: claude \| codex \| shell}` → `{worktree, session}`: `git worktree add` of branch `name` (made git-safe; an existing branch is checked out) in `~/.kimo/worktrees/<repository>/<branch>`, with an agent started in it |
+| DELETE | `/projects/{id}/worktrees?path=` | `git worktree remove` (refused with uncommitted changes, or while agents run there; the branch stays); its stopped sessions are removed → `{sessions_removed}` |
 | GET | `/fs?path=` | subfolders, for folder pickers |
 | GET | `/conversations?path=` | earlier Claude and Codex conversations in a folder, newest first: `agent`, `id`, `title`, `updated_at`, `messages` (your prompts), `session` (when attached) |
 | POST | `/conversations/continue` | `{agent, cwd, id, name?, start? = true}`: continue one as a session (an attached one is reused) |
@@ -66,7 +69,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 
 | Method | Path | |
 |---|---|---|
-| GET | `/accounts` | list with `signed_in` and `sessions` |
+| GET | `/accounts` | list with `signed_in`, `email` (the Claude login, when known) and `sessions` |
 | POST | `/accounts` | `{name, provider: claude \| codex}` |
 | DELETE | `/accounts/{id}` | refused while sessions use it |
 | POST | `/accounts/{id}/login` | start a sign-in terminal for it |
@@ -82,7 +85,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | POST | `/skills` | install `{source, skill?, agents, project?, replace?}` from `owner/repo/folder`, a git URL or a folder |
 | DELETE | `/skills?path=` | remove (moved to `~/.kimo/skill-backups`) |
 | POST | `/skills/kimo` | install the bundled `kimo-agents` skill `{agents?}` |
-| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]` |
+| GET, PUT | `/settings` | `agents.{claude,codex}.{enabled, permissions: manual \| yolo, model, args}`, `terminal.font_size`, `quick_commands[{name, text, project?}]`, `theme: system \| light \| dark` (window and web client) |
 | GET | `/agents` | agent CLIs found on the machine, with versions |
 
 ## Devices, network, other kimos
@@ -100,6 +103,14 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | DELETE | `/peers/{id}` | forget a paired kimo |
 | GET | `/peers/keys` | paired kimos with their keys (for the owner's own apps) |
 | POST | `/peers/accept` | used by another kimo during pairing |
+
+## Updates
+
+| Method | Path | |
+|---|---|---|
+| GET | `/update?force=` | the latest release on GitHub (checked at most every 6 hours, only when asked): `{current, latest, available, url, notes, manual, error}`; `manual` says why kimo cannot install it itself (built from source, a folder you cannot write) |
+| POST | `/update` | download the release for this machine, check its SHA-256 and put it in place of kimo's binary → `{installed}` |
+| POST | `/update/restart` | restart kimo on the installed version (same process); sessions running now start again, continuing their conversations, once it is back |
 
 ## App keys
 
@@ -126,14 +137,19 @@ kimo.message(id, text, from);       // like `kimo send`, signed with a sender se
 kimo.reply(id); kimo.screen(id, lines);
 kimo.waitFor(id, ['idle', 'waiting'], { timeout });   // resolves with the session
 kimo.subscribe(({ sessions, accounts }) => …);        // live updates; returns stop()
-kimo.projects(); kimo.createProject(p); kimo.deleteProject(id); kimo.browse(path);
+kimo.projects(); kimo.createProject(p); kimo.updateProject(id, { name, color });
+kimo.deleteProject(id); kimo.browse(path);
+kimo.addWorktree(id, { name, agent }); kimo.removeWorktree(id, path);
 kimo.conversations(path); kimo.continueConversation({ agent, cwd, id });
 kimo.accounts(); kimo.usage(); kimo.dailyUsage(days); kimo.moveSessions(from, to);
+kimo.settings(); kimo.saveSettings(s);                   // owner only
+kimo.release(force); kimo.installUpdate(); kimo.restartKimo();   // owner only
 quietFor(session);                  // seconds since its last output
 ```
 
 `/sdk/kimo-terminal.js` defines `<kimo-terminal session="…">`: set `element.kimo = kimo`
-(or `url` and `token` attributes); `send(text)` types into it; `readonly` watches only.
+(or `url` and `token` attributes); `send(text)` types into it; `readonly` watches only. Its
+colours follow the page's `--color-*` tokens and its light or dark scheme (`<html data-theme>`).
 
 ## CLI
 

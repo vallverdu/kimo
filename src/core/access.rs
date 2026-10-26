@@ -43,7 +43,9 @@ pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
     };
     let path = path.trim_end_matches('/');
     // Managing logins and app keys stays with the owner.
-    let admin_only = ["/clients", "/network", "/pairing", "/devices", "/qr", "/settings", "/peers"]
+    let admin_only = [
+        "/clients", "/network", "/pairing", "/devices", "/qr", "/settings", "/peers", "/update",
+    ]
         .iter()
         .any(|p| path.starts_with(p))
         // Installing or removing skills changes what every agent runs.

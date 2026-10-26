@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.2
+
+- Subscriptions: Claude accounts signed in on macOS showed as "not signed in" (Claude keeps
+  the login in the Keychain there); kimo now reads the login Claude records, and shows its email.
+- Terminal: resizing waits until the size settles before telling the agent (no more garbled
+  redraws while dragging); the mouse wheel scrolls full-screen programs (Codex, less, vim);
+  *redraw* reloads a garbled terminal and asks the program to draw itself again.
+- Dark mode: Settings → Appearance (like the system, light, dark), for the window and the
+  phone app; chart colours checked for both.
+- Drop files or folders on the terminal to type their paths (Claude Code and Codex read
+  images and files by path); drop a folder on the left to add it as a project.
+- Opening a project continues its latest conversations, also when kimo sessions are already
+  linked to them (they used to be skipped, so nothing opened); adding a known folder opens it.
+- Projects like Orca: collapse, a ··· menu (settings, earlier conversations, show in
+  Finder, remove) and + for a new git worktree with an agent in it; worktree cards group the
+  agents of each branch. Project settings: display name and colour.
+- Updates: the window shows when a new kimo is out; *Update* downloads it, checks it and
+  restarts kimo on it, and agents that were running continue their conversations.
+
 ## 0.1.1
 
 - macOS: `kimo serve` crashed at startup (stack overflow looking for the Tailscale CLI), so

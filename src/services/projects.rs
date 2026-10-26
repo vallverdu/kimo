@@ -1,7 +1,7 @@
 //! Projects: folders agents work in. Created empty (optionally `git init`), added from an
 //! existing folder or cloned (the clone runs in a visible terminal). Files are never deleted.
 
-use crate::core::git::parse_head;
+use crate::core::git::{branch_name, parse_head};
 use crate::core::models::{Project, SessionKind, SessionStatus};
 use crate::services::sessions::{slug, Manager, NewSession, SessionInfo};
 use anyhow::{anyhow, bail, Context, Result};
@@ -17,6 +17,42 @@ pub struct ProjectInfo {
     pub branch: Option<String>,
     pub sessions: usize,
     pub running: usize,
+    /// The project's folder first (`primary`), then its other git worktrees.
+    pub worktrees: Vec<Worktree>,
+}
+
+/// A git worktree: a checkout of another branch of the same repository in its own folder.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Worktree {
+    pub path: String,
+    pub branch: Option<String>,
+    /// The project's own folder.
+    pub primary: bool,
+}
+
+/// Changes to a project (`PATCH /projects/{id}`); missing fields stay as they are.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectChanges {
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `#rrggbb`, or an empty string for none.
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewWorktree {
+    /// Branch name (made safe for git); an existing branch is checked out.
+    pub name: String,
+    /// Start an agent in it: `claude`, `codex` or `shell`.
+    #[serde(default)]
+    pub agent: Option<SessionKind>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatedWorktree {
+    pub worktree: Worktree,
+    pub session: Option<SessionInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -58,6 +94,8 @@ pub struct CreatedProject {
     pub session: Option<SessionInfo>,
     /// Earlier conversations in the folder, continued as sessions (the first one is started).
     pub continued: Vec<SessionInfo>,
+    /// The folder already was a project: nothing was added, its conversations were opened.
+    pub reopened: bool,
 }
 
 /// Folder name for a project name: lowercase words joined by dashes.
@@ -79,21 +117,105 @@ fn repo_name(url: &str) -> String {
         .to_string()
 }
 
-/// Current branch; `.git` is a folder in a normal checkout and a `gitdir: …` file in a worktree.
-fn branch(path: &Path) -> Option<String> {
+/// The git directory of a checkout: `.git` is a folder in a normal checkout and a
+/// `gitdir: …` file in a worktree.
+fn git_dir(path: &Path) -> Option<PathBuf> {
     let git = path.join(".git");
-    let dir = if git.is_file() {
-        let pointer = std::fs::read_to_string(&git).ok()?;
-        let target = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
-        if target.is_absolute() {
-            target
-        } else {
-            path.join(target)
-        }
+    if git.is_dir() {
+        return Some(git);
+    }
+    let pointer = std::fs::read_to_string(&git).ok()?;
+    let target = PathBuf::from(pointer.trim().strip_prefix("gitdir:")?.trim());
+    Some(if target.is_absolute() {
+        target
     } else {
-        git
+        path.join(target)
+    })
+}
+
+/// Current branch of a checkout.
+fn branch(path: &Path) -> Option<String> {
+    parse_head(&std::fs::read_to_string(git_dir(path)?.join("HEAD")).ok()?)
+}
+
+/// The folder itself and the other worktrees of its repository, from the files git keeps in
+/// `.git/worktrees` (no git process: this runs on every project listing).
+fn worktrees(path: &Path) -> Vec<Worktree> {
+    let Some(dir) = git_dir(path) else {
+        return vec![];
     };
-    parse_head(&std::fs::read_to_string(dir.join("HEAD")).ok()?)
+    // A linked worktree points to the shared directory through `commondir`.
+    let common = match std::fs::read_to_string(dir.join("commondir")) {
+        Ok(c) => {
+            let c = PathBuf::from(c.trim());
+            if c.is_absolute() {
+                c
+            } else {
+                dir.join(c)
+            }
+        }
+        Err(_) => dir,
+    };
+    let mut list = vec![Worktree {
+        path: path.display().to_string(),
+        branch: branch(path),
+        primary: true,
+    }];
+    let mut others: Vec<Worktree> = std::fs::read_dir(common.join("worktrees"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let gitdir = std::fs::read_to_string(e.path().join("gitdir")).ok()?;
+            let folder = Path::new(gitdir.trim()).parent()?.to_path_buf();
+            (folder.is_dir() && folder != path).then(|| Worktree {
+                path: folder.display().to_string(),
+                branch: std::fs::read_to_string(e.path().join("HEAD"))
+                    .ok()
+                    .and_then(|h| parse_head(&h)),
+                primary: false,
+            })
+        })
+        .collect();
+    // The repository's main checkout, when the project is itself a linked worktree.
+    if let Some(main) = common
+        .file_name()
+        .filter(|n| *n == ".git")
+        .and(common.parent())
+    {
+        if main != path && main.is_dir() {
+            others.push(Worktree {
+                path: main.display().to_string(),
+                branch: branch(main),
+                primary: false,
+            });
+        }
+    }
+    others.sort_by(|a, b| a.path.cmp(&b.path));
+    list.extend(others);
+    list
+}
+
+/// Run git in `dir`; its error message when it fails.
+fn git(dir: &Path, args: &[&str]) -> Result<String> {
+    let out = crate::services::network::run_for(
+        Command::new("git").args(args).current_dir(dir),
+        std::time::Duration::from_secs(60),
+    )
+    .context("running git")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let line = err
+            .lines()
+            .map(|l| {
+                l.trim_start_matches("fatal: ")
+                    .trim_start_matches("error: ")
+            })
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("git failed");
+        bail!("{line}");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 impl Manager {
@@ -111,6 +233,7 @@ impl Manager {
                 ProjectInfo {
                     exists: path.is_dir(),
                     branch: branch(&path),
+                    worktrees: worktrees(&path),
                     sessions: inside.len(),
                     running: inside
                         .iter()
@@ -171,8 +294,29 @@ impl Manager {
             bail!("the project needs a name");
         }
         let path = dir.display().to_string();
-        if self.lock().state.projects.iter().any(|p| p.path == path) {
-            bail!("{path} is already a project");
+        let known = self
+            .lock()
+            .state
+            .projects
+            .iter()
+            .find(|p| p.path == path)
+            .cloned();
+        if let Some(project) = known {
+            if req.mode != ProjectMode::Existing {
+                bail!("{path} is already a project");
+            }
+            // Adding a project again opens it: its latest conversations continue.
+            let continued = if req.resume {
+                self.continue_latest(&project.name, &project.path)
+            } else {
+                vec![]
+            };
+            return Ok(CreatedProject {
+                project,
+                session: None,
+                continued,
+                reopened: true,
+            });
         }
         if req.mode == ProjectMode::Clone && url.is_none() {
             bail!("paste the git URL to clone");
@@ -197,6 +341,7 @@ impl Manager {
             id: slug(&name),
             name: name.clone(),
             path: path.clone(),
+            color: None,
             extra: Default::default(),
         };
         {
@@ -233,6 +378,7 @@ impl Manager {
             project,
             session,
             continued,
+            reopened: false,
         })
     }
 
@@ -245,6 +391,137 @@ impl Manager {
             return Err(anyhow!("unknown project: {id}"));
         }
         self.save(&inner)
+    }
+
+    /// Rename a project or change its colour (the folder stays where it is).
+    pub fn update_project(&self, id: &str, changes: ProjectChanges) -> Result<Project> {
+        let mut inner = self.lock();
+        let project = inner
+            .state
+            .projects
+            .iter_mut()
+            .find(|p| p.id == id)
+            .ok_or_else(|| anyhow!("unknown project: {id}"))?;
+        if let Some(name) = changes.name {
+            let name = name.trim();
+            if name.is_empty() {
+                bail!("the project needs a name");
+            }
+            project.name = name.to_string();
+        }
+        if let Some(color) = changes.color {
+            let color = color.trim().to_lowercase();
+            let valid = color.len() == 7
+                && color.starts_with('#')
+                && color[1..].bytes().all(|b| b.is_ascii_hexdigit());
+            if !color.is_empty() && !valid {
+                bail!("colours look like #12939a");
+            }
+            project.color = (!color.is_empty()).then_some(color);
+        }
+        let project = project.clone();
+        self.save(&inner)?;
+        Ok(project)
+    }
+
+    fn project(&self, id: &str) -> Result<Project> {
+        self.lock()
+            .state
+            .projects
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown project: {id}"))
+    }
+
+    /// A new git worktree of the project (a branch in its own folder, under
+    /// `~/.kimo/worktrees/<repository folder>/`), with an agent started in it when asked.
+    pub fn add_worktree(&self, id: &str, req: NewWorktree) -> Result<CreatedWorktree> {
+        let project = self.project(id)?;
+        let repo = PathBuf::from(&project.path);
+        if git_dir(&repo).is_none() {
+            bail!("{} is not a git repository", project.name);
+        }
+        let branch = branch_name(&req.name);
+        if branch.is_empty() {
+            bail!("the worktree needs a name");
+        }
+        let repo_folder = repo
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| project.id.clone());
+        let folder = self
+            .cfg
+            .data_dir
+            .join("worktrees")
+            .join(repo_folder)
+            .join(branch.replace('/', "-"));
+        if folder.exists() {
+            bail!("{} already exists", folder.display());
+        }
+        std::fs::create_dir_all(folder.parent().unwrap_or(&folder))?;
+        let target = folder.display().to_string();
+        let exists = git(
+            &repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .is_ok();
+        if exists {
+            git(&repo, &["worktree", "add", &target, &branch])?;
+        } else {
+            git(&repo, &["worktree", "add", "-b", &branch, &target])?;
+        }
+        let worktree = Worktree {
+            path: target.clone(),
+            branch: Some(branch.clone()),
+            primary: false,
+        };
+        let session = match req.agent {
+            Some(kind) => Some(self.create(
+                NewSession {
+                    name: format!("{} {branch}", project.name),
+                    kind,
+                    cwd: target,
+                    account: None,
+                    args: vec![],
+                    command: None,
+                },
+                true,
+            )?),
+            None => None,
+        };
+        Ok(CreatedWorktree { worktree, session })
+    }
+
+    /// Remove one of the project's worktrees with `git worktree remove`: git refuses when it
+    /// has uncommitted changes, and so does kimo while an agent runs in it. The branch stays.
+    pub fn remove_worktree(&self, id: &str, path: &str) -> Result<Vec<String>> {
+        let project = self.project(id)?;
+        let repo = PathBuf::from(&project.path);
+        let known = worktrees(&repo)
+            .into_iter()
+            .any(|w| !w.primary && w.path == path);
+        if !known {
+            bail!("{path} is not a worktree of {}", project.name);
+        }
+        let inside: Vec<SessionInfo> = self
+            .sessions()
+            .into_iter()
+            .filter(|s| Path::new(&s.spec.cwd).starts_with(path))
+            .collect();
+        if inside
+            .iter()
+            .any(|s| matches!(s.status, SessionStatus::Running | SessionStatus::Paused))
+        {
+            bail!("stop the agents working in this worktree first");
+        }
+        git(&repo, &["worktree", "remove", path])?;
+        Ok(inside.into_iter().map(|s| s.spec.id).collect())
     }
 
     /// Subfolders of `path` (default: the projects folder) for the folder picker.

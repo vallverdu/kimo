@@ -11,7 +11,12 @@ use crate::client::Client;
 use anyhow::{anyhow, Context, Result};
 use eframe::egui;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+/// This binary, found at start: after an update replaces the file, the window restarts on it.
+pub(crate) static EXE: OnceLock<PathBuf> = OnceLock::new();
 
 /// Start `kimo serve` detached (its own session), logging to `~/.kimo/kimo.log`.
 fn start_server(port: u16, data_dir: &std::path::Path) -> Result<()> {
@@ -37,6 +42,9 @@ fn start_server(port: u16, data_dir: &std::path::Path) -> Result<()> {
 }
 
 pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
+    if let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
+        let _ = EXE.set(exe);
+    }
     let client = Client::local(port);
     if client.call("GET", "/status", None).is_err() {
         start_server(port, data_dir)?;
@@ -75,12 +83,17 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
             })),
         ..Default::default()
     };
+    let prefs = data_dir.join("window.json");
     eframe::run_native(
         "kimo",
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(app::KimoApp::new(cc.egui_ctx.clone(), client)))
+            Ok(Box::new(app::KimoApp::new(
+                cc.egui_ctx.clone(),
+                client,
+                prefs,
+            )))
         }),
     )
     .map_err(|e| anyhow!("cannot open the window: {e}"))

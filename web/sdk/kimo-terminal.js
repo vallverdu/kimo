@@ -33,6 +33,26 @@ function loadLibrary() {
 
 const encoder = new TextEncoder();
 
+/** xterm colours from the page's tokens; ANSI colours tuned for a light or dark background. */
+function terminalTheme(el) {
+  const css = getComputedStyle(el);
+  const v = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+  const dark = v('color-scheme', '').includes('dark');
+  const ansi = dark
+    ? { black: '#3a3a3a', blue: '#6c9cf0', magenta: '#c084d6', white: '#c8c8c8', brightBlack: '#6e6e6e', brightRed: '#ff7a87',
+      brightGreen: '#72d48e', brightYellow: '#f0c068', brightBlue: '#8cb4ff', brightMagenta: '#d6a0ea', brightCyan: '#5fd4da', brightWhite: '#f0f0f0' }
+    // Darkened so agent output stays readable on white.
+    : { black: '#232323', blue: '#2b5fb4', magenta: '#8a3fa0', white: '#898989', brightBlack: '#666666', brightRed: '#e0495a',
+      brightGreen: '#3a9d5a', brightYellow: '#a8741c', brightBlue: '#3d6fc4', brightMagenta: '#9b52b1', brightCyan: '#1aa3aa', brightWhite: '#aaaaaa' };
+  return {
+    background: v('--color-background', '#ffffff'), foreground: v('--color-ink', '#232323'),
+    cursor: v('--color-ink', '#232323'), cursorAccent: v('--color-background', '#ffffff'),
+    selectionBackground: v('--color-line', '#e5e5e5'),
+    red: v('--color-bad', '#d63345'), green: v('--color-good', '#2f8f4e'), yellow: v('--color-warn', '#b7791f'), cyan: v('--color-teal', '#12939a'),
+    ...ansi,
+  };
+}
+
 class KimoTerminal extends HTMLElement {
   static observedAttributes = ['session', 'url', 'token'];
 
@@ -56,17 +76,13 @@ class KimoTerminal extends HTMLElement {
       scrollback: 5000,
       cursorBlink: !this.hasAttribute('readonly'),
       disableStdin: this.hasAttribute('readonly'),
-      theme: {
-        background: v('--color-background', '#ffffff'), foreground: v('--color-ink', '#232323'),
-        cursor: v('--color-ink', '#232323'), cursorAccent: v('--color-background', '#ffffff'),
-        selectionBackground: v('--color-line', '#e5e5e5'),
-        // ANSI colours darkened so agent output stays readable on white.
-        black: '#232323', red: v('--color-bad', '#d63345'), green: v('--color-good', '#2f8f4e'), yellow: v('--color-warn', '#b7791f'),
-        blue: '#2b5fb4', magenta: '#8a3fa0', cyan: v('--color-teal', '#12939a'), white: '#898989',
-        brightBlack: '#666666', brightRed: '#e0495a', brightGreen: '#3a9d5a', brightYellow: '#a8741c',
-        brightBlue: '#3d6fc4', brightMagenta: '#9b52b1', brightCyan: '#1aa3aa', brightWhite: '#aaaaaa',
-      },
+      theme: terminalTheme(this),
     });
+    // Follow the page's light/dark scheme (data-theme on <html>, or the system's).
+    this.themeWatch = new MutationObserver(() => this.retheme());
+    this.themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    this.schemeWatch = matchMedia('(prefers-color-scheme: dark)');
+    this.schemeWatch.addEventListener?.('change', this.retheme);
     this.fit = new window.FitAddon.FitAddon();
     this.term.loadAddon(this.fit);
     this.term.open(this);
@@ -76,7 +92,11 @@ class KimoTerminal extends HTMLElement {
     this.reconnect();
   }
 
+  retheme = () => { if (this.term) this.term.options.theme = terminalTheme(this); };
+
   disconnectedCallback() {
+    this.themeWatch?.disconnect();
+    this.schemeWatch?.removeEventListener?.('change', this.retheme);
     this.closeSocket();
     this.resizer?.disconnect();
     this.term?.dispose();

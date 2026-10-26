@@ -1,6 +1,6 @@
 /* kimo layer on top of app.css. Values come from tokens.css. Prefix: k-. */
 .k-tabbar { grid-template-columns: repeat(2, 1fr) !important; }
-.ui-sheet input:not([type=radio]):not([type=checkbox]) { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid #ccc; font-size: 1.6rem; background: var(--color-background); color: var(--color-ink); height: auto; font-family: inherit; }
+.ui-sheet input:not([type=radio]):not([type=checkbox]) { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid var(--color-field-line); font-size: 1.6rem; background: var(--color-background); color: var(--color-ink); height: auto; font-family: inherit; }
 .k-hint { font-size: 1.2rem; color: var(--color-muted); margin: 0; }
 .ui-stats { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
 
@@ -13,7 +13,7 @@
 .k-meta code { background: none; padding: 0; color: inherit; font-size: inherit; overflow-wrap: anywhere; }
 .k-meta .k-num { color: var(--color-ink); font-variant-numeric: tabular-nums; }
 .k-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; }
-.k-actions select { margin: 0; padding: .7rem .8rem; border: 1px solid #ccc; font-size: 1.3rem; height: auto; background: var(--color-background); width: auto; max-width: 100%; }
+.k-actions select { margin: 0; padding: .7rem .8rem; border: 1px solid var(--color-field-line); font-size: 1.3rem; height: auto; background: var(--color-background); width: auto; max-width: 100%; }
 .ui-button.k-small { padding: .7rem 1.2rem; font-size: 1.2rem; }
 .ui-button.k-danger { border-color: var(--color-bad); background: var(--color-background); color: var(--color-bad); }
 .ui-button.k-danger:hover { background: var(--color-bad); color: var(--color-background); }
@@ -36,7 +36,7 @@
 .k-keys button { flex: 1 0 auto; min-width: 44px; margin: 0; padding: 1rem .8rem; border: 0; background: var(--color-surface); color: var(--color-ink); font-family: inherit; font-size: 1.3rem; cursor: pointer; }
 .k-keys button:active { background: var(--color-line); }
 .k-compose { display: flex; gap: .8rem; padding: .8rem; margin: 0; border-top: 1px solid var(--color-line); }
-.k-compose textarea { flex: 1; margin: 0; padding: .8rem; border: 1px solid #ccc; font-size: 1.6rem; font-family: inherit; resize: none; min-height: 0; height: auto; max-height: 30vh; color: var(--color-ink); }
+.k-compose textarea { flex: 1; margin: 0; padding: .8rem; border: 1px solid var(--color-field-line); font-size: 1.6rem; font-family: inherit; resize: none; min-height: 0; height: auto; max-height: 30vh; color: var(--color-ink); }
 .k-compose .ui-button { flex: none; }
 @media (min-width: 961px) { .k-keys { display: none; } }
 .k-sessions { padding-bottom: 8rem; }
@@ -73,7 +73,7 @@
 .k-folders small { color: var(--color-teal); margin-left: .6rem; }
 .k-pair { display: flex; flex-wrap: wrap; gap: 1.6rem; align-items: end; margin-bottom: 3rem; }
 .k-pair > label { flex: 1 1 280px; font-size: 1.2rem; color: var(--color-muted); margin: 0; }
-.k-pair select { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid #ccc; font-size: 1.4rem; height: auto; background: var(--color-background); }
+.k-pair select { display: block; width: 100%; margin: .6rem 0 0; padding: 1rem; border: 1px solid var(--color-field-line); font-size: 1.4rem; height: auto; background: var(--color-background); }
 .k-pair-box { flex: 1 1 100%; display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 2.4rem; align-items: center; padding: 2.4rem; background: var(--color-surface); }
 .k-qr { width: 240px; height: 240px; background: var(--color-background); }
 .k-qr svg { display: block; width: 100%; height: 100%; }
@@ -111,7 +111,23 @@
 .k-history .ui-button { flex: none; }
 
 /* Usage: series colours validated as a pair (colour-blind safe on white) */
-:root { --k-claude: #eb6834; --k-codex: #009aa8; }
+/* Tokens kimo adds, and the dark scheme: the system's, or chosen in the window's Settings →
+   Appearance (<html data-theme="light|dark">). Chart pairs are validated on each surface. */
+:root { --k-claude: #eb6834; --k-codex: #009aa8; --color-field-line: #cccccc; --color-code: #f3f3f3; color-scheme: light; }
+:root[data-theme="dark"] {
+  --color-background: #1c1c1c; --color-surface: #242424; --color-ink: #ececec; --color-text: #b8b8b8;
+  --color-muted: #8c8c8c; --color-line: #363636; --color-teal: #3fb8bf; --color-good: #55b872;
+  --color-warn: #e0a84a; --color-bad: #f25f6e; --color-info-surface: #1b2e30; --color-alert-surface: #3a2125;
+  --color-field-line: #4a4a4a; --color-code: #2a2a2a; --k-claude: #e0612e; --k-codex: #009aa8; color-scheme: dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+  --color-background: #1c1c1c; --color-surface: #242424; --color-ink: #ececec; --color-text: #b8b8b8;
+  --color-muted: #8c8c8c; --color-line: #363636; --color-teal: #3fb8bf; --color-good: #55b872;
+  --color-warn: #e0a84a; --color-bad: #f25f6e; --color-info-surface: #1b2e30; --color-alert-surface: #3a2125;
+  --color-field-line: #4a4a4a; --color-code: #2a2a2a; --k-claude: #e0612e; --k-codex: #009aa8; color-scheme: dark;
+  }
+}
 .k-range { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem 1.6rem; margin: 0 0 2.4rem; font-size: 1.3rem; color: var(--color-muted); }
 .k-range button { background: none; border: 0; border-bottom: 1px solid transparent; padding: .4rem 0; margin: 0; font: inherit; color: var(--color-muted); cursor: pointer; height: auto; line-height: 1.4; letter-spacing: 0; text-transform: none; }
 .k-range button.active { color: var(--color-ink); border-bottom-color: var(--color-ink); }
@@ -150,3 +166,10 @@
 @media (min-width: 760px) { .k-usage-stats { grid-template-columns: repeat(4, 1fr); } }
 .k-usage-stats .ui-stat { padding: 1.4rem 1.6rem; }
 .k-usage-stats .ui-stat small { line-height: 1.5; }
+
+/* Projects: colour mark and worktrees */
+.k-mark { display: inline-block; width: 1rem; height: 1rem; border-radius: 2px; margin-right: .8rem; vertical-align: -.05em; }
+.k-tree { grid-column: 1 / -1; display: grid; gap: .8rem; margin: .4rem 0 0; padding: .2rem 0 .2rem 1.2rem; border-left: 2px solid var(--color-line); }
+/* The logo is drawn in ink: lighten it on dark backgrounds. */
+:root[data-theme="dark"] .k-logo { filter: invert(.92); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .k-logo { filter: invert(.92); } }

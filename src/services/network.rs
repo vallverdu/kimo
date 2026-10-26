@@ -18,6 +18,11 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 /// Run a command with a time limit (a stuck CLI, such as the Tailscale app's on macOS when its
 /// app is not running, must never block kimo). Returns its output.
 fn run(cmd: &mut Command) -> Result<std::process::Output> {
+    run_for(cmd, COMMAND_TIMEOUT)
+}
+
+/// [`run`] with another time limit (git, downloads).
+pub(crate) fn run_for(cmd: &mut Command, limit: Duration) -> Result<std::process::Output> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -36,7 +41,7 @@ fn run(cmd: &mut Command) -> Result<std::process::Output> {
         let _ = err.read_to_end(&mut b);
         b
     });
-    let deadline = Instant::now() + COMMAND_TIMEOUT;
+    let deadline = Instant::now() + limit;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -44,7 +49,7 @@ fn run(cmd: &mut Command) -> Result<std::process::Output> {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("timed out after {} s", COMMAND_TIMEOUT.as_secs());
+            bail!("timed out after {} s", limit.as_secs());
         }
         std::thread::sleep(Duration::from_millis(20));
     };

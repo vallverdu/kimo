@@ -501,7 +501,72 @@ async fn adding_a_folder_continues_its_earlier_conversations() {
         .continue_conversation(SessionKind::Claude, &path, "claude-earlier", None, true)
         .unwrap();
     assert_eq!(again.spec.id, claude.spec.id);
+
+    // Adding the folder again opens the sessions already linked to its latest conversations
+    // (it used to skip them, so nothing opened).
+    m.act(&claude.spec.id, Action::Stop).await.unwrap();
+    let reopened = m
+        .create_project(kimo::services::projects::NewProject {
+            name: String::new(),
+            mode: kimo::services::projects::ProjectMode::Existing,
+            path: Some(path.clone()),
+            git: false,
+            url: None,
+            resume: true,
+        })
+        .unwrap();
+    assert!(reopened.reopened);
+    let ids: Vec<&str> = reopened
+        .continued
+        .iter()
+        .map(|s| s.spec.id.as_str())
+        .collect();
+    assert_eq!(ids, vec![claude.spec.id.as_str(), codex.spec.id.as_str()]);
+    assert_eq!(m.sessions().len(), 2, "no duplicate sessions");
+    assert_eq!(
+        m.session(&claude.spec.id).unwrap().status,
+        SessionStatus::Running,
+        "the latest one runs again"
+    );
     for s in [&claude.spec.id, &codex.spec.id] {
         m.delete(s).await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn sessions_running_at_an_update_restart_start_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    let m = manager(tmp.path());
+    let new = |name: &str| NewSession {
+        name: name.into(),
+        kind: SessionKind::Shell,
+        cwd: tmp.path().display().to_string(),
+        account: None,
+        args: vec![],
+        command: None,
+    };
+    let running = m.create(new("running"), true).unwrap();
+    let stopped = m.create(new("stopped"), false).unwrap();
+
+    m.request_restart().unwrap();
+    tokio::time::timeout(Duration::from_secs(1), m.restart_requested())
+        .await
+        .expect("the server is told to restart");
+    m.shutdown().await;
+    drop(m);
+
+    // The new kimo starts what was running, and only that, once.
+    let m = manager(tmp.path());
+    assert_eq!(m.resume_after_restart(), 1);
+    assert_eq!(
+        m.session(&running.spec.id).unwrap().status,
+        SessionStatus::Running
+    );
+    assert_eq!(
+        m.session(&stopped.spec.id).unwrap().status,
+        SessionStatus::Stopped
+    );
+    assert_eq!(m.resume_after_restart(), 0, "the mark is cleared");
+    m.shutdown().await;
 }

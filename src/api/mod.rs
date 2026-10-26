@@ -101,7 +101,14 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/clients", get(list_clients).post(create_client))
         .route("/clients/{id}", axum::routing::delete(delete_client))
         .route("/projects", get(list_projects).post(create_project))
-        .route("/projects/{id}", axum::routing::delete(delete_project))
+        .route(
+            "/projects/{id}",
+            axum::routing::delete(delete_project).patch(update_project),
+        )
+        .route(
+            "/projects/{id}/worktrees",
+            post(add_worktree).delete(remove_worktree),
+        )
         .route("/conversations", get(list_conversations))
         .route("/conversations/continue", post(continue_conversation))
         .route("/fs", get(browse))
@@ -115,6 +122,8 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/agents", get(agents))
         .route("/usage", get(usage))
         .route("/usage/daily", get(daily_usage))
+        .route("/update", get(check_update).post(install_update))
+        .route("/update/restart", post(restart))
         .route(
             "/skills",
             get(list_skills).post(install_skill).delete(remove_skill),
@@ -653,6 +662,71 @@ async fn delete_project(
     Path(id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
     app.manager.delete_project(&id)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn update_project(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(body): Json<crate::services::projects::ProjectChanges>,
+) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(app.manager.update_project(&id, body)?)))
+}
+
+async fn add_worktree(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(body): Json<crate::services::projects::NewWorktree>,
+) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let made = tokio::task::spawn_blocking(move || manager.add_worktree(&id, body))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!(made)))
+}
+
+/// `?path=`: remove a worktree (git refuses when it has uncommitted changes) and the stopped
+/// sessions that worked in it.
+async fn remove_worktree(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    let path = q.get("path").cloned().ok_or_else(|| not_found("path"))?;
+    let manager = app.manager.clone();
+    let sessions = tokio::task::spawn_blocking(move || manager.remove_worktree(&id, &path))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    for s in &sessions {
+        app.manager.delete(s).await?;
+    }
+    Ok(Json(
+        json!({ "ok": true, "sessions_removed": sessions.len() }),
+    ))
+}
+
+/// The latest kimo release (`?force=true` asks GitHub now instead of the 6-hour cache).
+async fn check_update(Query(q): Query<HashMap<String, String>>) -> ApiResult<serde_json::Value> {
+    let force = q.get("force").is_some_and(|v| v == "true" || v == "1");
+    let release = tokio::task::spawn_blocking(move || crate::services::update::check(force))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(release)))
+}
+
+/// Install the latest release over this kimo's binary (it runs after a restart).
+async fn install_update(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let data = app.manager.cfg.data_dir.clone();
+    let version = tokio::task::spawn_blocking(move || crate::services::update::install(&data))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(json!({ "installed": version })))
+}
+
+/// Restart kimo (after an update): running sessions stop and start again, continuing their
+/// conversations, once the new kimo is up.
+async fn restart(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    app.manager.request_restart()?;
     Ok(Json(json!({ "ok": true })))
 }
 

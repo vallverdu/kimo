@@ -124,6 +124,7 @@ impl Client {
             ("POST", Some(b)) => with_auth!(self.agent.post(&url)).send_json(b),
             ("POST", None) => with_auth!(self.agent.post(&url)).send_empty(),
             ("PUT", Some(b)) => with_auth!(self.agent.put(&url)).send_json(b),
+            ("PATCH", Some(b)) => with_auth!(self.agent.patch(&url)).send_json(b),
             _ => bail!("unsupported call {method} {path}"),
         }
         .map_err(|e| anyhow!("cannot reach kimo at {}: {e}", self.base))?;
@@ -140,6 +141,10 @@ impl Client {
 
     pub fn put(&self, path: &str, body: Value) -> Result<Value> {
         self.call("PUT", path, Some(&body))
+    }
+
+    pub fn patch(&self, path: &str, body: Value) -> Result<Value> {
+        self.call("PATCH", path, Some(&body))
     }
 
     pub fn delete(&self, path: &str) -> Result<Value> {

@@ -18,7 +18,7 @@ a:hover { color: var(--color-accent); }
 strong { font-weight: var(--font-weight-regular); }
 ul, ol { margin: 0 0 2rem; padding-left: 2rem; }
 code, pre { font-family: var(--font-family); }
-code { font-size: .92em; background: #f3f3f3; padding: .1rem .4rem; }
+code { font-size: .92em; background: var(--color-code); padding: .1rem .4rem; }
 button, input, select, textarea { font: inherit; color: inherit; }
 input, select, textarea { border-radius: var(--radius-none); }
 label { display: block; font-size: 1.2rem; color: var(--color-text); margin-bottom: .8rem; }
