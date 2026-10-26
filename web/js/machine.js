@@ -17,10 +17,6 @@ const awakeLabel = mode => ({ on: 'on', agents: 'while agents work', off: 'off' 
 function usageOf(state, account) {
   return state.usage.find(u => u.provider === account.provider && (account.system ? !u.account : u.account === account.id));
 }
-/** The limit closest to running out. */
-function worst(u) {
-  return (u?.limits?.limits || []).reduce((w, l) => (!w || l.used_percent > w.used_percent ? l : w), null);
-}
 /** Sessions grouped by the project whose folder holds them, then "not in a project". */
 function byProject(state) {
   const groups = state.projects.map(p => ({ name: p.name, sessions: [] }));
@@ -47,8 +43,13 @@ export function initMachine({ api, state, openSession, switchHost }) {
     for (const provider of ['claude', 'codex']) {
       const active = state.accounts.find(a => a.provider === provider && a.active)
         || state.accounts.find(a => a.provider === provider && a.system);
-      const l = active && worst(usageOf(state, active));
-      if (l) out.push(['usage', `${provider === 'claude' ? 'Claude' : 'Codex'} ${Math.round(l.used_percent)}% · ${until(l.resets_at)}`, `${active.name}: ${l.name}`]);
+      const limits = (active && usageOf(state, active)?.limits?.limits) || [];
+      // Every limit, short: "4% 4 h 29 min · 41% 3 d 7 h · 15% Fable".
+      const text = limits.map(l => {
+        const model = l.name.split(' ').slice(1).join(' ');
+        return `${Math.round(l.used_percent)}% ${model || until(l.resets_at)}`;
+      }).join(' · ');
+      if (text) out.push(['usage', `${provider === 'claude' ? 'Claude' : 'Codex'} ${text}`, `${active.name}: ${limits.map(l => l.name).join(', ')}`]);
     }
     const awake = state.status?.awake;
     if (awake?.supported) out.push(['awake', `${awake.active ? '●' : '○'} awake: ${awakeLabel(awake.mode)}`, 'keep this computer awake']);
@@ -63,9 +64,11 @@ export function initMachine({ api, state, openSession, switchHost }) {
   function body(kind) {
     if (kind === 'usage') {
       const rows = state.accounts.map(a => {
-        const l = worst(usageOf(state, a));
-        return `<li><span><strong>${esc(a.name)}</strong>${a.active ? ' <small class="ui-badge">active</small>' : ''}<small>${esc(a.provider)}${l ? ` · ${esc(l.name)}` : ''}</small></span>
-          <span>${l ? `${Math.round(l.used_percent)}% · ${esc(until(l.resets_at))}` : '<small>no limits known</small>'}</span></li>`;
+        const u = usageOf(state, a);
+        const limits = u?.limits?.limits || [];
+        const lines = limits.map(l => `${esc(l.name)} ${Math.round(l.used_percent)}% · resets in ${esc(until(l.resets_at))}`).join('<br>')
+          || esc(u?.limits_note || 'no limits known yet');
+        return `<li><span><strong>${esc(a.name)}</strong>${a.active ? ' <small class="ui-badge">active</small>' : ''}<small>${esc(a.provider)}</small><small>${lines}</small></span></li>`;
       }).join('');
       return ['Subscriptions', `<ul class="k-machine-list">${rows}</ul>
         <p><a href="#usage" data-close>usage details</a> · <a href="#accounts" data-close>manage subscriptions</a></p>`];

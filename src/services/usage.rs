@@ -67,6 +67,84 @@ fn claude_token(config_dir: Option<&Path>, user_home: &Path) -> Option<String> {
         .and_then(|t| claude_access_token(&t))
 }
 
+/// Codex's plan limits per account home, asked at most every two minutes.
+type CodexCache = HashMap<PathBuf, (std::time::Instant, Result<Limits, String>)>;
+static CODEX_PLAN: std::sync::Mutex<Option<CodexCache>> = std::sync::Mutex::new(None);
+
+/// Codex's plan limits of a login, from Codex itself (`codex app-server`, the way its own
+/// apps ask): kimo never reads Codex's credentials.
+fn codex_plan(home: PathBuf, now: u64) -> Result<Limits, String> {
+    let mut cache = CODEX_PLAN.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((at, found)) = cache.get(&home) {
+        if at.elapsed() < std::time::Duration::from_secs(120) {
+            return found.clone();
+        }
+    }
+    let found = ask_codex(&home, now);
+    if let Err(e) = &found {
+        tracing::info!("codex plan limits ({}): {e}", home.display());
+    }
+    cache.insert(home, (std::time::Instant::now(), found.clone()));
+    found
+}
+
+fn ask_codex(home: &Path, now: u64) -> Result<Limits, String> {
+    use std::io::{BufRead, Write};
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("codex")
+        .arg("app-server")
+        .env("CODEX_HOME", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("cannot run codex: {e}"))?;
+    let requests = [
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "clientInfo": { "name": "kimo", "version": env!("CARGO_PKG_VERSION") } } }),
+        serde_json::json!({ "jsonrpc": "2.0", "method": "initialized" }),
+        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read" }),
+    ];
+    if let Some(mut stdin) = child.stdin.take() {
+        for r in &requests {
+            let _ = writeln!(stdin, "{r}");
+        }
+        // stdin stays open until the answer: Codex stops when it closes.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stdout = child.stdout.take();
+        std::thread::spawn(move || {
+            let Some(out) = stdout else { return };
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                    continue;
+                };
+                if v["id"] == 2 {
+                    let _ = tx.send(v);
+                    return;
+                }
+            }
+        });
+        let answer = rx.recv_timeout(std::time::Duration::from_secs(15));
+        drop(stdin);
+        let _ = child.kill();
+        let _ = child.wait();
+        let v = answer.map_err(|_| "Codex did not answer".to_string())?;
+        if let Some(e) = v["error"]["message"].as_str() {
+            return Err(if e.contains("auth") || e.contains("login") {
+                "sign in to see its plan limits".into()
+            } else {
+                format!("Codex: {e}")
+            });
+        }
+        return crate::core::usage::codex_app_server_limits(&v["result"], now)
+            .ok_or_else(|| "Codex sent no plan limits".into());
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err("cannot talk to codex".into())
+}
+
 /// Claude's 5-hour and weekly use of a login, from Claude's usage API.
 fn claude_plan(config_dir: Option<PathBuf>, user_home: &Path, now: u64) -> Result<Limits, String> {
     let mut cache = PLAN.lock().unwrap_or_else(|e| e.into_inner());
@@ -265,15 +343,25 @@ impl Manager {
             }
         }
 
-        // Claude: plan limits from Claude's API (when allowed in the settings).
-        let claude_limits_on = self.settings().claude_limits;
+        // Plan limits from Claude's API and from Codex itself (when on in the settings).
+        let limits_on = self.settings().claude_limits;
         let now_secs = now / 1000;
         for ((provider, account), u) in out.iter_mut() {
-            if *provider != Provider::Claude {
+            if !limits_on {
+                u.limits_note = Some("plan limits are off (show plan limits, below)".into());
                 continue;
             }
-            if !claude_limits_on {
-                u.limits_note = Some("plan limits are off (show plan limits, below)".into());
+            if *provider == Provider::Codex {
+                let home = account.as_ref().map_or_else(
+                    || default_home(Provider::Codex, &self.cfg.user_home),
+                    |id| crate::core::launch::account_home(&self.cfg.data_dir, id),
+                );
+                // Live from Codex; its logs are the fallback.
+                match codex_plan(home, now) {
+                    Ok(l) => u.limits = Some(l),
+                    Err(e) if u.limits.is_none() => u.limits_note = Some(e),
+                    Err(_) => {}
+                }
                 continue;
             }
             let dir = account
@@ -291,5 +379,23 @@ impl Manager {
         let mut list: Vec<AccountUsage> = out.into_values().collect();
         list.sort_by(|a, b| (a.account.is_some(), &a.name).cmp(&(b.account.is_some(), &b.name)));
         list
+    }
+}
+
+#[cfg(test)]
+mod live {
+    /// Asks a real Codex login (`KIMO_TEST_CODEX_HOME`); run by hand with `--ignored`.
+    #[test]
+    #[ignore]
+    fn codex_answers_its_plan_limits() {
+        let home = std::env::var("KIMO_TEST_CODEX_HOME").expect("KIMO_TEST_CODEX_HOME");
+        let l = super::ask_codex(std::path::Path::new(&home), 1).unwrap();
+        for limit in &l.limits {
+            println!(
+                "{} {}% resets {}",
+                limit.name, limit.used_percent, limit.resets_at
+            );
+        }
+        assert!(!l.limits.is_empty());
     }
 }

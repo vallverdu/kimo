@@ -257,9 +257,10 @@ pub struct Settings {
     /// The subscription new agents use, per provider (`None` = this computer's own login).
     #[serde(default)]
     pub active_accounts: ActiveAccounts,
-    /// Read Claude's plan limits (5-hour and weekly use) from Claude's API. On macOS this asks
-    /// once to read Claude's login from the Keychain, so it waits for a yes there.
-    #[serde(default = "claude_limits_default")]
+    /// Show plan limits (5-hour and weekly use): Claude's from its usage API (on macOS the
+    /// Keychain asks once to let kimo read Claude's login), Codex's from Codex itself. On by
+    /// default; the older opt-in `claude_limits` stays in `extra`.
+    #[serde(rename = "plan_limits", default = "yes")]
     pub claude_limits: bool,
     #[serde(default)]
     pub updates: UpdateSettings,
@@ -294,10 +295,6 @@ impl Default for Settings {
     fn default() -> Self {
         serde_json::from_str("{}").expect("every settings field has a default")
     }
-}
-
-fn claude_limits_default() -> bool {
-    !cfg!(target_os = "macos")
 }
 
 /// The subscription new agents start on, per provider.

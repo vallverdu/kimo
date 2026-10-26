@@ -1209,10 +1209,10 @@ impl KimoApp {
                     .iter()
                     .find(|a| s(a, "provider") == provider && a["active"] == true)
                     .or_else(|| accounts.iter().find(|a| s(a, "provider") == provider && a["system"] == true));
-                if let Some(l) = active.and_then(|a| usage_of(&self.usage, a)).and_then(worst_limit) {
-                    let used = l["used_percent"].as_f64().unwrap_or(0.0);
+                let text = active.and_then(|a| usage_of(&self.usage, a)).map(|u| limits_short(u, now));
+                if let Some(text) = text.filter(|t| !t.is_empty()) {
                     let label = if provider == "claude" { "Claude" } else { "Codex" };
-                    chips.push(format!("{label} {used:.0}% {}", until(l["resets_at"].as_u64().unwrap_or(0), now)));
+                    chips.push(format!("{label} {text}"));
                 }
             }
             let text = if chips.is_empty() { "Used".to_string() } else { format!("Used   {}", chips.join("   ")) };
@@ -1228,21 +1228,35 @@ impl KimoApp {
                     ui.label(RichText::new(if provider == "claude" { "CLAUDE" } else { "CODEX" }).size(10.5).color(theme::muted()));
                     for a in list {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(s(a, "name")).color(theme::ink()));
+                            ui.add(egui::Label::new(RichText::new(s(a, "name")).color(theme::ink())).truncate());
                             if a["active"] == true {
                                 ui.label(RichText::new("active").size(10.5).color(theme::teal()));
                             }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                match usage_of(&self.usage, a).and_then(worst_limit) {
-                                    Some(l) => ui.label(RichText::new(format!(
-                                        "{:.0}% · {}",
-                                        l["used_percent"].as_f64().unwrap_or(0.0),
-                                        until(l["resets_at"].as_u64().unwrap_or(0), now)
-                                    )).size(12.0)),
-                                    None => ui.label(RichText::new("no limits known").size(11.0).color(theme::muted())),
-                                };
-                            });
                         });
+                        // Each limit on its own line under the name: use, reset.
+                        let u = usage_of(&self.usage, a);
+                        let limits = u.and_then(|u| u["limits"]["limits"].as_array()).cloned().unwrap_or_default();
+                        if limits.is_empty() {
+                            let why = u.and_then(|u| u["limits_note"].as_str()).unwrap_or("no limits known yet");
+                            ui.label(RichText::new(why).size(11.0).color(theme::muted()));
+                        }
+                        for l in &limits {
+                            let used = l["used_percent"].as_f64().unwrap_or(0.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(60.0, 5.0), egui::Sense::hover());
+                                ui.painter().rect_filled(rect, 2.0, theme::line());
+                                let mut done = rect;
+                                done.set_width(rect.width() * (used / 100.0).clamp(0.0, 1.0) as f32);
+                                ui.painter().rect_filled(done, 2.0, if used >= 90.0 { theme::bad() } else if used >= 70.0 { theme::warn() } else { theme::teal() });
+                                ui.label(RichText::new(format!(
+                                    "{} {used:.0}% · resets in {}",
+                                    s(l, "name"),
+                                    until(l["resets_at"].as_u64().unwrap_or(0), now)
+                                )).size(11.5).color(theme::text()));
+                            });
+                        }
+                        ui.add_space(2.0);
                     }
                 }
                 ui.separator();
@@ -2465,7 +2479,7 @@ impl KimoApp {
             }
             self.job(|c| {
                 let mut current: Value = c.get("/settings")?;
-                current["claude_limits"] = json!(true);
+                current["plan_limits"] = json!(true);
                 c.put("/settings", current)?;
                 Ok(Msg::Usage(c.get("/usage")?))
             });
@@ -4344,12 +4358,26 @@ fn usage_of<'a>(usage: &'a [Value], account: &Value) -> Option<&'a Value> {
     })
 }
 
-/// The plan limit closest to running out.
-fn worst_limit(usage: &Value) -> Option<&Value> {
-    usage["limits"]["limits"].as_array()?.iter().max_by(|a, b| {
-        let p = |l: &Value| l["used_percent"].as_f64().unwrap_or(0.0);
-        p(a).total_cmp(&p(b))
-    })
+/// Every plan limit of a login, short, as in the bottom bar: "4% 4h 29m · 41% 3d 7h · 15% Fable"
+/// (the 5-hour and weekly ones with their reset, a model's own by its name).
+fn limits_short(usage: &Value, now: u64) -> String {
+    usage["limits"]["limits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|l| {
+            let used = l["used_percent"].as_f64().unwrap_or(0.0);
+            let name = s(l, "name");
+            match name.split_once(' ') {
+                Some((_, model)) => format!("{used:.0}% {model}"),
+                None => format!(
+                    "{used:.0}% {}",
+                    until(l["resets_at"].as_u64().unwrap_or(0), now)
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// One listening port; true when clicked (to open it in the browser).
@@ -5092,6 +5120,20 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(tmp.path().join("window.json")).unwrap())
                 .unwrap();
         assert_eq!(prefs["sidebar"], true);
+    }
+
+    #[test]
+    fn limits_in_the_bottom_bar() {
+        let u = json!({ "limits": { "limits": [
+            { "name": "5-hour", "used_percent": 4.2, "resets_at": 1000 + 4 * 3600 + 29 * 60 },
+            { "name": "weekly", "used_percent": 41.0, "resets_at": 1000 + 3 * 86_400 + 7 * 3600 },
+            { "name": "weekly Fable", "used_percent": 15.0, "resets_at": 99 },
+        ] } });
+        assert_eq!(
+            limits_short(&u, 1000),
+            "4% 4 h 29 min · 41% 3 d 7 h · 15% Fable"
+        );
+        assert_eq!(limits_short(&json!({}), 1000), "");
     }
 
     #[test]

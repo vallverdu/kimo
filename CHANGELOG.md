@@ -5,6 +5,11 @@ version, and that section becomes the GitHub release notes.
 
 ## Unreleased
 
+- Plan limits are on by default and shown like Orca: every limit of the active subscriptions
+  in the bottom bar ("Claude 4% 4 h 29 min · 41% 3 d 7 h · 15% Fable"), and each account's
+  limits with bars in its panel. Codex's come live from Codex itself (`codex app-server`),
+  not only from its logs; Claude's from Claude's usage API (macOS asks once to let kimo read
+  Claude's login). The setting is now `plan_limits`.
 - Each release's GitHub page carries its notes from this changelog (the in-app update card
   links to them).
 

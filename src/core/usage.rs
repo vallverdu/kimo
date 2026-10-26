@@ -254,6 +254,61 @@ pub fn codex_limits(line: &str) -> Option<Limits> {
     })
 }
 
+/// A limit window's name: "5-hour", "weekly", else its length.
+fn window_name(minutes: u64) -> String {
+    match minutes {
+        300 => "5-hour".into(),
+        10_080 => "weekly".into(),
+        m if m % 1440 == 0 => format!("{}-day", m / 1440),
+        m if m % 60 == 0 => format!("{}-hour", m / 60),
+        m => format!("{m}-minute"),
+    }
+}
+
+/// Codex's plan limits from its app server (`account/rateLimits/read`), read at `at` (ms).
+/// Limits of a particular model carry its name ("weekly gpt-6.1").
+pub fn codex_app_server_limits(result: &Value, at: u64) -> Option<Limits> {
+    let by_id = result["rateLimitsByLimitId"].as_object();
+    let entries: Vec<&Value> = match by_id {
+        Some(map) if !map.is_empty() => map.values().collect(),
+        _ => vec![&result["rateLimits"]],
+    };
+    let mut limits = Vec::new();
+    let (mut plan, mut reached) = (None, None);
+    for e in entries.into_iter().filter(|e| e.is_object()) {
+        plan = plan.or_else(|| e["planType"].as_str().map(String::from));
+        reached = reached.or_else(|| e["rateLimitReachedType"].as_str().map(String::from));
+        let model = e["limitName"]
+            .as_str()
+            .or(e["normalModelSlug"].as_str())
+            .filter(|_| e["limitId"] != "codex");
+        for which in ["primary", "secondary"] {
+            let l = &e[which];
+            let Some(used) = l["usedPercent"].as_f64() else {
+                continue;
+            };
+            let minutes = l["windowDurationMins"].as_u64().unwrap_or(0);
+            let name = match model {
+                Some(m) => format!("{} {m}", window_name(minutes)),
+                None => window_name(minutes),
+            };
+            limits.push(Limit {
+                name,
+                used_percent: used,
+                window_minutes: minutes,
+                resets_at: l["resetsAt"].as_u64().unwrap_or(0),
+                pace: None,
+            });
+        }
+    }
+    (!limits.is_empty()).then_some(Limits {
+        at,
+        plan,
+        limits,
+        reached,
+    })
+}
+
 /// `(cwd, started)` from the first line of a Codex session log.
 pub fn codex_meta(line: &str) -> Option<(String, u64)> {
     let v: Value = serde_json::from_str(line).ok()?;
@@ -298,6 +353,33 @@ pub fn codex_run_for<'a>(runs: &'a [Run], cwd: &str, started: u64) -> Option<&'a
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_app_server() {
+        let v: Value = serde_json::from_str(r#"{"ordinaryUsageAllowed":true,
+            "rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":4,"windowDurationMins":10080,"resetsAt":1793606504},"secondary":null,"planType":"self_serve_business_prolite","rateLimitReachedType":null},
+            "rateLimitsByLimitId":{
+              "codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":4,"windowDurationMins":10080,"resetsAt":1793606504},"secondary":{"usedPercent":12.5,"windowDurationMins":300,"resetsAt":1793000000},"planType":"pro"},
+              "gpt-6.1":{"limitId":"gpt-6.1","limitName":"gpt-6.1","primary":{"usedPercent":15,"windowDurationMins":10080,"resetsAt":1793606504}}}}"#).unwrap();
+        let l = codex_app_server_limits(&v, 7).unwrap();
+        let mut got: Vec<(String, f64)> = l
+            .limits
+            .iter()
+            .map(|l| (l.name.clone(), l.used_percent))
+            .collect();
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            got,
+            [
+                ("5-hour".into(), 12.5),
+                ("weekly".into(), 4.0),
+                ("weekly gpt-6.1".into(), 15.0)
+            ]
+        );
+        assert_eq!((l.at, l.plan.as_deref()), (7, Some("pro")));
+        assert_eq!(window_name(1440 * 3), "3-day");
+        assert!(codex_app_server_limits(&serde_json::json!({}), 1).is_none());
+    }
+
     use super::*;
 
     fn run(

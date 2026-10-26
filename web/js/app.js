@@ -222,7 +222,7 @@ function renderAccounts() {
           ${!a.system && !a.sessions ? '<button class="ui-button k-small k-danger" data-do="delete-account">remove</button>' : ''}
         </div></li>`;
     });
-    const limitsOff = provider === 'claude' && list.length && state.settings && !state.settings.claude_limits;
+    const limitsOff = provider === 'claude' && list.length && state.settings && !state.settings.plan_limits;
     return `<h3 class="ui-section-title">${title}</h3><ul class="k-sessions">${rows.join('') || `<li class="ui-empty">Not signed in to ${title} on this computer. Tap + to add an account.</li>`}</ul>
       ${limitsOff ? `<div class="ui-alert info"><span>See each Claude subscription's 5-hour and weekly use, and when it runs out at this pace.${navigator.platform.startsWith('Mac') ? '' : ' On a Mac, macOS asks once on the kimo machine to let kimo read Claude\'s login.'}</span><button class="ui-button k-small" data-do="claude-limits">show plan limits</button></div>` : ''}`;
   }).join('');
@@ -366,7 +366,7 @@ $('account-list').addEventListener('click', async e => {
   if (e.target.closest('[data-do=claude-limits]')) {
     const st = await api.settings().catch(() => null);
     if (!st) return;
-    state.settings = await run(api.saveSettings({ ...st, claude_limits: true }), 'Claude plan limits on') || st;
+    state.settings = await run(api.saveSettings({ ...st, plan_limits: true }), 'Claude plan limits on') || st;
     state.usage = await api.usage().catch(() => state.usage);
     return renderAccounts();
   }
