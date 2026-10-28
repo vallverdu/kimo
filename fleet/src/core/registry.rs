@@ -34,6 +34,25 @@ pub struct Device {
     /// Watts when idle: cheaper machines are chosen first.
     #[serde(default)]
     pub cost: f64,
+    /// Its hardware model (`nuc-11-extreme`, `rpi5`… see `kimo-fleet models`): the map draws it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// What it does in the fleet (`gpu-worker`, `agent-host`…); also one of its labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+impl Device {
+    /// Its labels, with its role.
+    pub fn all_labels(&self) -> Vec<String> {
+        let mut l = self.labels.clone();
+        if let Some(r) = &self.role {
+            if !l.contains(r) {
+                l.push(r.clone());
+            }
+        }
+        l
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +224,30 @@ pub fn parse(text: &str) -> Result<Registry, String> {
     Ok(r)
 }
 
+/// `devices.yaml` with the machines added from the Fleet tab (`devices.d/<id>.yaml`, one
+/// each, so the hand-written file is never rewritten). A machine in both is a mistake.
+pub fn merge(main: &str, added: &[(String, String)]) -> Result<Registry, String> {
+    let mut r = parse(main)?;
+    for (file, text) in added {
+        let extra = parse(text).map_err(|e| e.replace("devices.yaml", file))?;
+        for (id, d) in extra.devices {
+            if r.devices.contains_key(&id) {
+                return Err(format!("{file}: {id} is already in devices.yaml"));
+            }
+            r.devices.insert(id, d);
+        }
+    }
+    Ok(r)
+}
+
+/// The file for a machine added from the Fleet tab.
+pub fn render_added(id: &str, d: &Device, note: &str) -> String {
+    let mut one = Registry::default();
+    one.devices.insert(id.to_string(), d.clone());
+    let body = serde_yaml_ng::to_string(&one).unwrap_or_default();
+    format!("# {note}\n# Edit freely; `kimo-fleet reload` reads it again. Removing the machine deletes this file.\n{body}")
+}
+
 /// The registry new installs start from (commented, with the doc's example).
 pub const EXAMPLE: &str = r#"# Machines this coordinator manages. Edit by hand, then `kimo-fleet reload` (or restart).
 # Pair each one after adding it: on the machine, `kimo pair` shows a code; here,
@@ -230,6 +273,30 @@ devices: {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn added_machines_merge_with_the_hand_written_file() {
+        let main = "devices:\n  nuc:\n    kimo: http://10.0.0.2:7777\n";
+        let d = Device {
+            kimo: "http://10.0.0.3:7777".into(),
+            mac: None,
+            broadcast: None,
+            power: PowerPolicy::default(),
+            labels: vec!["arm64".into()],
+            resources: Resources::default(),
+            cost: 3.0,
+            model: Some("rpi5".into()),
+            role: Some("agent-host".into()),
+        };
+        let text = render_added("pi5", &d, "Added from the Fleet tab");
+        assert!(text.starts_with("# Added from the Fleet tab"));
+        let r = merge(main, &[("devices.d/pi5.yaml".into(), text.clone())]).unwrap();
+        assert_eq!(r.devices.len(), 2);
+        assert_eq!(r.devices["pi5"], d);
+        assert_eq!(r.devices["pi5"].all_labels(), ["arm64", "agent-host"]);
+        let twice = merge(main, &[("a".into(), text.clone()), ("b".into(), text)]);
+        assert!(twice.unwrap_err().contains("already"));
+    }
 
     #[test]
     fn the_example_from_the_design() {

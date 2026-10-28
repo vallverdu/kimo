@@ -46,6 +46,27 @@ version, and that section becomes the GitHub release notes.
   `jobFileUrl()`, `deleteJob()`, `node()`, `power()`, `powerOff()`, and `kimo.fleet.*`
   (`devices`, `wake`, `shutdown`, `hold`, `pair`, `events`, `samples`, `submit`,
   `submitWorkflow`, `log`, `approve`, `reject`, `cancel`, `artifactUrl`, `registry`).
+- **Adding machines without sitting at them.** The coordinator finds the machines on your
+  Tailscale and ZeroTier networks: *find machines* in the Fleet tab, or `kimo-fleet
+  discover`. For each one it says whether kimo and SSH answer, and which hardware model it
+  looks like. *Add* then works over SSH (your keys or Tailscale SSH, never a password):
+  - it installs kimo (the coordinator's release) and runs it as a service on that network;
+  - it pairs one way with a code made on the machine itself;
+  - it gives the machine its model and role, and its Wake-on-LAN card when it has one on
+    the coordinator's network.
+
+  A machine whose kimo already runs can join with a pairing code. Added machines get a file
+  of their own in `devices.d/`, and *remove* takes them out again, with their keys on both
+  sides.
+- Hardware models (NUC 11 Extreme and Enthusiast, Jetson Orin Nano, Raspberry Pi 5 with or
+  without Hailo, Pi 4, MacBook Air, Mac mini, Linux PC with or without a GPU) and roles
+  (control plane, agent host, GPU worker, build worker, edge target, Apple builder, spare).
+  Each model sets the labels, power policy, slots and idle watts, and the map draws it. A
+  role is also a label jobs can ask for. `model:` and `role:` can be set in `devices.yaml`.
+- `/api/node` lists the network cards (MAC, address, broadcast, wired or not), and a fleet
+  key can forget itself (`DELETE /api/fleet-key`).
+- Pairing a coordinator with a kimo too old for fleet keys no longer leaves an owner key
+  behind: the coordinator revokes it and asks you to update kimo there.
 - Releases include `kimo-fleet` next to `kimo`; the install script installs both.
 
 ## 0.1.14

@@ -177,6 +177,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         )
         .route("/power", get(power))
         .route("/power/shutdown", post(power_off))
+        .route("/fleet-key", axum::routing::delete(forget_fleet_key))
         .route("/awake", get(awake).post(set_awake))
         .route("/update/restart", post(restart))
         .route(
@@ -1089,6 +1090,24 @@ async fn delete_job(
     blocking(&app, move |m| m.delete_job(&id))
         .await
         .map_err(unknown_job)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// A coordinator that removes this machine from its fleet drops its own key here.
+async fn forget_fleet_key(
+    State(app): State<App>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<serde_json::Value> {
+    let device = principal
+        .0
+        .and_then(|t| app.manager.fleet_by_token(&t))
+        .ok_or_else(|| {
+            ApiError(
+                StatusCode::BAD_REQUEST,
+                "only a fleet key can forget itself".into(),
+            )
+        })?;
+    app.manager.delete_device(&device.id)?;
     Ok(Json(json!({ "ok": true })))
 }
 

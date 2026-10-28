@@ -239,3 +239,5 @@
 .k-log { margin: 0; max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 1.2rem; line-height: 1.5; background: var(--color-background); border: 1px solid var(--color-line); padding: 1.2rem; }
 .k-events li small { color: var(--color-muted); white-space: nowrap; }
 .k-meta .k-link { margin-right: 1.2rem; }
+.k-find .k-field-row { grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); margin-top: .8rem; }
+.k-find select { width: 100%; }

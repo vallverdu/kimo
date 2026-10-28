@@ -2,7 +2,7 @@
 //! accelerators, toolchains, load, disk, who is logged in and what kimo runs. What a machine
 //! has rarely changes and is looked up once every ten minutes; load and GPU memory on each call.
 
-use crate::core::node::{self, Found, Gpu, Login};
+use crate::core::node::{self, Found, Gpu, Login, Nic};
 use crate::services::network::run_for;
 use crate::services::sessions::Manager;
 use serde::Serialize;
@@ -69,6 +69,8 @@ pub struct Node {
     pub mem_available_bytes: u64,
     pub disk: Option<Disk>,
     pub gpus: Vec<Gpu>,
+    /// Network cards with an IPv4 address (MAC and broadcast address for Wake-on-LAN).
+    pub nics: Vec<Nic>,
     pub sessions: SessionCounts,
     /// People logged in to the machine (a desktop, a console, SSH).
     pub logins: Vec<Login>,
@@ -262,6 +264,40 @@ pub fn disk(path: &Path) -> Option<Disk> {
     })
 }
 
+/// Network cards with an address: `ip` and /sys on Linux, `ifconfig` on macOS.
+pub fn nics() -> Vec<Nic> {
+    if cfg!(target_os = "macos") {
+        let mut list = output("ifconfig", &[])
+            .map(|t| node::parse_ifconfig_nics(&t))
+            .unwrap_or_default();
+        // A Mac's wired ports: the hardware ports `networksetup` calls Ethernet or Thunderbolt.
+        let ports = output("networksetup", &["-listallhardwareports"]).unwrap_or_default();
+        for n in &mut list {
+            n.wired = ports.split("\n\n").any(|block| {
+                block.contains(&format!("Device: {}", n.name)) && !block.contains("Wi-Fi")
+            });
+        }
+        return list;
+    }
+    let text = output("ip", &["-o", "-4", "addr"]).unwrap_or_default();
+    node::parse_ip_addr(&text)
+        .into_iter()
+        .filter_map(|(name, ip, prefix)| {
+            let sys = Path::new("/sys/class/net").join(&name);
+            let mac = read_trimmed(sys.join("address").to_str()?)?;
+            Some(Nic {
+                vpn: node::is_vpn(&name),
+                wired: !sys.join("wireless").exists() && sys.join("device").exists(),
+                broadcast: node::broadcast(ip, prefix).to_string(),
+                name,
+                mac,
+                ipv4: ip.to_string(),
+                prefix,
+            })
+        })
+        .collect()
+}
+
 /// People logged in to the machine right now.
 pub fn logins() -> Vec<Login> {
     output("who", &[])
@@ -302,6 +338,7 @@ impl Manager {
             mem_available_bytes,
             disk: disk(&self.cfg.user_home),
             gpus: gpus(),
+            nics: nics(),
             sessions: self.session_counts(),
             logins,
             awake: crate::services::awake::status(self.settings().keep_awake),

@@ -47,6 +47,18 @@ pub struct Config {
     pub look_fast_ms: u64,
     /// Ping a machine whose kimo does not answer (tells "booting" from "off").
     pub ping: bool,
+    /// The port kimo answers on, on machines found on the network.
+    pub kimo_port: u16,
+    /// The SSH program for adding machines (keys or Tailscale SSH; never passwords).
+    pub ssh: String,
+    /// Programs that list the networks' machines (default: found on the PATH).
+    pub tailscale: Option<String>,
+    pub zerotier_cli: Option<String>,
+    /// Look for machines on ZeroTier too.
+    pub zerotier: bool,
+    /// Where new machines get kimo from, and which release (default: this coordinator's).
+    pub install_url: String,
+    pub kimo_version: Option<String>,
 }
 
 impl Config {
@@ -57,6 +69,13 @@ impl Config {
             look_every_ms: 30_000,
             look_fast_ms: 5_000,
             ping: true,
+            kimo_port: 7777,
+            ssh: "ssh".into(),
+            tailscale: None,
+            zerotier_cli: None,
+            zerotier: true,
+            install_url: crate::core::setup::INSTALL_URL.into(),
+            kimo_version: Some(format!("v{}", env!("CARGO_PKG_VERSION"))),
         }
     }
 }
@@ -167,6 +186,8 @@ pub struct DeviceView {
     pub facts: Option<Value>,
     /// Jobs placed on it.
     pub jobs: Vec<String>,
+    /// Added from the Fleet tab (`devices.d/`): it can be removed from there too.
+    pub added: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -206,7 +227,14 @@ pub struct Fleet {
     db: Db,
     keys: Keys,
     inner: Mutex<Inner>,
+    /// Machines being added (installing, pairing), and how that went.
+    adoptions: Mutex<BTreeMap<String, adopt::Adoption>>,
 }
+
+#[path = "adopt.rs"]
+pub mod adopt;
+#[path = "discover.rs"]
+pub mod discover;
 
 fn policy(d: &Device) -> Policy {
     Policy {
@@ -329,6 +357,7 @@ impl Fleet {
             db,
             keys,
             inner: Mutex::new(inner),
+            adoptions: Mutex::new(BTreeMap::new()),
         });
         fleet.reload()?;
         Ok(fleet)
@@ -342,11 +371,30 @@ impl Fleet {
         self.cfg.data_dir.join("devices.yaml")
     }
 
-    /// Read `devices.yaml` again. On a mistake the machines stay as they were.
+    /// Machines added from the Fleet tab, one file each.
+    pub fn added_dir(&self) -> PathBuf {
+        self.cfg.data_dir.join("devices.d")
+    }
+
+    /// Read `devices.yaml` (and `devices.d/`) again. On a mistake the machines stay as they were.
     pub fn reload(&self) -> Result<()> {
         let text = std::fs::read_to_string(self.registry_path()).unwrap_or_default();
+        let mut added: Vec<(String, String)> = std::fs::read_dir(self.added_dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "yaml"))
+            .filter_map(|p| {
+                Some((
+                    format!("devices.d/{}", p.file_name()?.to_string_lossy()),
+                    std::fs::read_to_string(&p).ok()?,
+                ))
+            })
+            .collect();
+        added.sort();
         let mut inner = self.lock();
-        match registry::parse(&text) {
+        match registry::merge(&text, &added) {
             Ok(r) => {
                 inner.registry = r;
                 inner.registry_error = None;
@@ -413,7 +461,7 @@ impl Fleet {
     fn view(inner: &Inner, id: &str, d: &Device, now: u64) -> DeviceView {
         let st = inner.states.get(id).cloned().unwrap_or_default();
         let facts = inner.facts.get(id).cloned();
-        let mut labels = d.labels.clone();
+        let mut labels = d.all_labels();
         if let Some(f) = &facts {
             for l in f["labels"].as_array().into_iter().flatten() {
                 if let Some(l) = l.as_str() {
@@ -451,6 +499,7 @@ impl Fleet {
                 .filter(|j| j.state.on_device() && j.device.as_deref() == Some(id))
                 .map(|j| j.id.clone())
                 .collect(),
+            added: false,
         }
     }
 
@@ -461,8 +510,13 @@ impl Fleet {
             .registry
             .devices
             .iter()
-            .map(|(id, d)| Self::view(&inner, id, d, now))
+            .map(|(id, d)| self.mark_added(Self::view(&inner, id, d, now)))
             .collect()
+    }
+
+    fn mark_added(&self, mut v: DeviceView) -> DeviceView {
+        v.added = self.added_dir().join(format!("{}.yaml", v.id)).exists();
+        v
     }
 
     pub fn device(&self, id: &str) -> Result<DeviceView> {
@@ -472,7 +526,7 @@ impl Fleet {
             .devices
             .get(id)
             .ok_or_else(|| anyhow!("unknown machine: {id}"))?;
-        Ok(Self::view(&inner, id, d, now_ms()))
+        Ok(self.mark_added(Self::view(&inner, id, d, now_ms())))
     }
 
     fn device_of(&self, id: &str) -> Result<(Device, Option<String>)> {
@@ -490,22 +544,44 @@ impl Fleet {
     /// a fleet key (facts, jobs, power); that kimo gets nothing for the coordinator.
     pub fn pair(&self, id: &str, code: &str) -> Result<()> {
         let (d, _) = self.device_of(id)?;
-        let answer = net::kimo(&d.kimo, None)
-            .call_timeout(
-                "POST",
-                "/pair",
-                Some(&json!({
-                    "code": code.trim(),
-                    "name": format!("{} (fleet)", self.cfg.host_name),
-                    "role": "fleet",
-                })),
-                10,
-            )
+        let token = self
+            .pair_at(&d.kimo, code)
             .with_context(|| format!("pairing with {id} at {}", d.kimo))?;
+        self.keep_key(id, token)
+    }
+
+    /// Trade a pairing code shown by the kimo at `url` for a fleet key. A kimo too old to know
+    /// fleet keys would make an owner key of it: that key revokes itself and pairing stops.
+    fn pair_at(&self, url: &str, code: &str) -> Result<String> {
+        let answer = net::kimo(url, None).call_timeout(
+            "POST",
+            "/pair",
+            Some(&json!({
+                "code": code.trim(),
+                "name": format!("{} (fleet)", self.cfg.host_name),
+                "role": "fleet",
+            })),
+            10,
+        )?;
         let token = answer["token"]
             .as_str()
-            .ok_or_else(|| anyhow!("{id} did not give a key"))?
+            .ok_or_else(|| anyhow!("its kimo did not give a key"))?
             .to_string();
+        if !token.starts_with("kimo_fleet_") {
+            if let Some(device) = answer["id"].as_str() {
+                let _ = net::kimo(url, Some(&token)).call_timeout(
+                    "DELETE",
+                    &format!("/devices/{device}"),
+                    None,
+                    10,
+                );
+            }
+            bail!("its kimo is too old for fleet keys: update kimo there (0.1.15 or later) and pair again");
+        }
+        Ok(token)
+    }
+
+    fn keep_key(&self, id: &str, token: String) -> Result<()> {
         let mut inner = self.lock();
         inner.keys.insert(id.to_string(), token);
         self.keys.save(&inner.keys)?;
@@ -838,7 +914,7 @@ impl Fleet {
             .map(|(id, d)| {
                 let st = inner.states.get(id).cloned().unwrap_or_default();
                 let facts = inner.facts.get(id);
-                let mut labels = d.labels.clone();
+                let mut labels = d.all_labels();
                 if let Some(f) = facts {
                     for l in f["labels"].as_array().into_iter().flatten() {
                         if let Some(l) = l.as_str() {

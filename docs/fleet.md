@@ -70,6 +70,70 @@ Revoke the key in the machine's Devices list; it stops working at once.
    Other setups can set `KIMO_SHUTDOWN_COMMAND`. Test it once from the Fleet tab:
    *switch off*.
 
+## Adding machines from the network
+
+The coordinator lists the machines on your Tailscale network (`tailscale status`) and on
+ZeroTier. For ZeroTier it uses Central's member list when the data folder has a
+`zerotier-token` file or `KIMO_FLEET_ZEROTIER_TOKEN` is set; otherwise it looks at the hosts
+of its ZeroTier network (a /24 at most) where kimo or SSH answers.
+
+Each machine shows:
+
+- whether its kimo answers and whether SSH does;
+- the hardware model it looks like, and the role that model suggests.
+
+Tap **find machines** in the Fleet tab, or run `kimo-fleet discover`.
+
+**Adding** a machine (*add* there, or `kimo-fleet add <address>`) goes like this:
+
+1. **Over SSH**, with your keys or Tailscale SSH, never a password, the coordinator runs a
+   short script on the machine:
+   - it installs kimo (the coordinator's own release) if it is missing;
+   - it runs kimo as a service bound to the network the machine was found on (systemd user
+     service on Linux, LaunchAgent on macOS);
+   - it gets a pairing code from that kimo. A machine is its own kimo's owner, so this needs
+     no typing.
+
+   A machine whose kimo already runs can join with a pairing code instead of SSH.
+2. It **pairs one way** and reads the machine's facts.
+3. It gives the machine its **hardware model**: the one you chose, or the one the facts
+   point to. It also gives it a **role**, and for machines it can wake, the wired card on
+   the coordinator's own network.
+4. It writes the entry to `devices.d/<id>.yaml`. Your `devices.yaml` is never rewritten.
+   *remove* deletes that file, and the key on both sides.
+
+To let the coordinator in over SSH, do one of these once:
+
+- `ssh-copy-id <user>@<machine>` from the coordinator (*find machines* shows its key);
+- turn on Tailscale SSH on the machine: `tailscale set --ssh`.
+
+On Linux, the script asks for `loginctl enable-linger` so kimo keeps running after you log
+out; it tells you when that needs `sudo`.
+
+A kimo older than 0.1.15 knows no fleet keys and would hand out an owner key. The coordinator
+notices, revokes that key and stops, so update kimo there first.
+
+### Hardware models and roles
+
+| Model | Role | Power | Notes |
+|---|---|---|---|
+| `nuc-11-extreme` | gpu-worker | woken, off when idle | BIOS: Wake-on-LAN from S5 |
+| `nuc-11-enthusiast` | build-worker | woken, off when idle | same BIOS settings |
+| `linux-gpu-pc` | gpu-worker | woken, off when idle | `ethtool -s <card> wol g` |
+| `jetson-orin-nano` | edge-target | always on | no Wake-on-LAN |
+| `rpi5`, `rpi5-hailo` | agent-host | always on | about 3 W |
+| `rpi4` | control-plane | always on | takes no jobs |
+| `macbook-air`, `mac-mini`, `mac` | apple-builder | never woken | used when awake |
+| `linux-pc` | build-worker | left on | set Wake-on-LAN once it works |
+
+- **Roles:** control-plane, agent-host, gpu-worker, build-worker, edge-target,
+  apple-builder, spare. A role is also a label, so a job can ask for `gpu-worker`.
+- **The entry.** The model gives the labels, power policy, slots and idle watts. The
+  machine's own facts fill in GPU memory, total memory and the Wake-on-LAN card.
+- **Without a card.** A machine with no wired card on the coordinator's network is never
+  switched off, since it could not be woken again.
+- **The map** draws each machine from its model (`kind`). `kimo-fleet models` lists them.
+
 ## devices.yaml
 
 ```yaml
@@ -83,6 +147,8 @@ devices:
     labels: [x86_64, linux, cuda]
     resources: { gpu: 1, vram_gb: 12, cpu_slots: 4, memory_gb: 32 }
     cost: 40                                # idle watts: cheaper machines are chosen first
+    model: nuc-11-extreme                   # hardware model (optional; the map draws it)
+    role: gpu-worker                        # also a label (optional)
   macbook-air:
     kimo: http://10.147.17.30:7777
     power: { wake: never, sleep: never }    # used when awake, never woken
@@ -196,6 +262,10 @@ Run them with `kimo-fleet run file.yaml`, from the Fleet tab (+), or through the
 ```text
 kimo-fleet serve                 the coordinator (default)
 kimo-fleet devices               machines, states, labels, GPUs, problems
+kimo-fleet discover              machines on Tailscale and ZeroTier (kimo? SSH? model)
+kimo-fleet add <address> [--model m --role r --user u --id id --code CODE --reinstall]
+kimo-fleet remove <id>           a machine added with `add` (entry and keys)
+kimo-fleet models                hardware models and roles
 kimo-fleet pair <id> <code>      pair with a machine (code from `kimo pair` there)
 kimo-fleet wake <id>             Wake-on-LAN
 kimo-fleet shutdown <id>         switch off (refused while work runs there)
@@ -220,6 +290,11 @@ All calls are under `/api` on the coordinator, and under `/api/fleet` on its kim
 | POST | `/devices/{id}/wake`, `/shutdown` | wake it; switch it off |
 | POST | `/devices/{id}/hold` | `{hours?, never?, manual?}` |
 | POST | `/devices/{id}/pair` | `{code}`; DELETE `/devices/{id}/key` forgets the key |
+| GET | `/hardware` | hardware models and roles |
+| GET | `/discover` | machines on Tailscale and ZeroTier: `{tailscale, zerotier, notes, machines: [{name, address, network, os, online, self, can_run_kimo, id, in_fleet, kimo, ssh, model, role}]}` |
+| POST | `/adopt` | `{address, id?, model?, role?, ssh_user?, network?, code?, reinstall?}` → 202; follow with GET `/adoptions/{id}` (`{state, steps, notes, error}`) |
+| DELETE | `/devices/{id}` | remove a machine added from the Fleet tab |
+| GET | `/ssh-key` | the coordinator's public SSH key |
 | GET | `/devices/{id}/samples?hours=` | its facts every 30 s (kept 14 days) |
 | GET | `/events?device=&job=&limit=` | wakes, shutdowns, state changes, jobs, approvals (kept 14 days) |
 | GET, POST | `/jobs` | jobs; queue one (JSON or YAML) |

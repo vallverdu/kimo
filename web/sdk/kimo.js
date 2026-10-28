@@ -369,6 +369,26 @@ export class KimoFleet {
     return this.kimo.urlWithToken(`/api/fleet/jobs/${enc(id)}/artifacts/${path.split('/').map(enc).join('/')}`);
   }
 
+  /** Hardware models (`{id, name, kind, role, labels, wake, sleep, cost, notes}`) and roles machines are added with. */
+  hardware() { return this.call('GET', '/hardware'); }
+  /**
+   * Machines on Tailscale and ZeroTier that could join: `{tailscale, zerotier, notes, machines:
+   * [{name, address, network, os, online, self, can_run_kimo, id, in_fleet, kimo: answers|paired|no|unknown, ssh, model, role}]}`.
+   */
+  discover() { return this.call('GET', '/discover'); }
+  /**
+   * Add a machine without sitting at it: over SSH (install kimo, run it as a service, pair one
+   * way) or with a `code` its kimo shows. `{address, id?, model?, role?, ssh_user?, network?, code?, reinstall?}`;
+   * follow it with `adoption(id)` → `{state: running|done|failed, steps, notes, error}`.
+   */
+  add(machine) { return this.call('POST', '/adopt', machine); }
+  adoption(id) { return this.call('GET', `/adoptions/${enc(id)}`); }
+  adoptions() { return this.call('GET', '/adoptions'); }
+  /** Remove a machine added with `add` (its entry, and its key on both sides). */
+  remove(id) { return this.call('DELETE', `/devices/${enc(id)}`); }
+  /** The coordinator's public SSH key, to put on machines it should set up: `{key}`. */
+  sshKey() { return this.call('GET', '/ssh-key'); }
+
   workflows() { return this.call('GET', '/workflows'); }
   /** The run and its jobs (one per step). */
   workflow(id) { return this.call('GET', `/workflows/${enc(id)}`); }

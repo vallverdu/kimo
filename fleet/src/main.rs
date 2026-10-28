@@ -26,6 +26,48 @@ fn main() -> Result<()> {
     match cfg.command.clone().unwrap_or(Command::Serve) {
         Command::Serve => serve(&cfg),
         Command::Devices => devices(&client()),
+        Command::Discover => discover(&client()),
+        Command::Add {
+            address,
+            id,
+            model,
+            role,
+            user,
+            network,
+            code,
+            reinstall,
+        } => add(
+            &client(),
+            json!({
+                "address": address, "id": id, "model": model, "role": role,
+                "ssh_user": user, "network": network, "code": code, "reinstall": reinstall,
+            }),
+        ),
+        Command::Remove { device } => {
+            client().call("DELETE", &format!("/devices/{device}"), None)?;
+            println!("{device} is out of the fleet");
+            Ok(())
+        }
+        Command::Models => {
+            let h = client().call("GET", "/hardware", None)?;
+            for m in h["models"].as_array().into_iter().flatten() {
+                println!(
+                    "{:<20} {:<14} {}",
+                    m["id"].as_str().unwrap_or(""),
+                    m["role"].as_str().unwrap_or(""),
+                    m["name"].as_str().unwrap_or("")
+                );
+            }
+            println!();
+            for r in h["roles"].as_array().into_iter().flatten() {
+                println!(
+                    "{:<14} {}",
+                    r["id"].as_str().unwrap_or(""),
+                    r["what"].as_str().unwrap_or("")
+                );
+            }
+            Ok(())
+        }
         Command::Pair { device, code } => {
             client().call(
                 "POST",
@@ -121,7 +163,12 @@ fn main() -> Result<()> {
 }
 
 fn serve(cfg: &Config) -> Result<()> {
-    let fleet = Fleet::open(fleet::Config::new(cfg.data_dir(), cfg.host_name()))?;
+    let mut config = fleet::Config::new(cfg.data_dir(), cfg.host_name());
+    config.ssh = cfg.ssh.clone();
+    config.tailscale = cfg.tailscale.clone();
+    config.zerotier = cfg.zerotier;
+    config.kimo_port = cfg.kimo_port;
+    let fleet = Fleet::open(config)?;
     if let Some(e) = fleet.registry_error() {
         eprintln!("{e}");
     }
@@ -210,6 +257,66 @@ fn devices(c: &Client) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn discover(c: &Client) -> Result<()> {
+    let d = c.call_timeout("GET", "/discover", None, 120)?;
+    for n in d["notes"].as_array().into_iter().flatten() {
+        println!("note: {}", n.as_str().unwrap_or(""));
+    }
+    for m in d["machines"].as_array().into_iter().flatten() {
+        let state = if let Some(id) = m["in_fleet"].as_str() {
+            format!("in the fleet as {id}")
+        } else if m["can_run_kimo"] == false {
+            "not for kimo".into()
+        } else if m["online"] == false {
+            "offline".into()
+        } else {
+            let kimo = match m["kimo"].as_str() {
+                Some("answers") => "kimo runs",
+                Some("paired") => "paired",
+                _ => "no kimo",
+            };
+            format!("{kimo}{}", if m["ssh"] == true { ", ssh" } else { "" })
+        };
+        println!(
+            "{:<22} {:<16} {:<9} {:<8} {:<26} {}",
+            m["name"].as_str().unwrap_or(""),
+            m["address"].as_str().unwrap_or(""),
+            m["network"].as_str().unwrap_or(""),
+            m["os"].as_str().unwrap_or(""),
+            state,
+            m["model"].as_str().unwrap_or(""),
+        );
+    }
+    Ok(())
+}
+
+/// Start adding a machine and print its steps until it is in (or not).
+fn add(c: &Client, body: Value) -> Result<()> {
+    let a = c.call_timeout("POST", "/adopt", Some(&body), 30)?;
+    let id = a["id"].as_str().unwrap_or_default().to_string();
+    let mut shown = 0;
+    loop {
+        std::thread::sleep(Duration::from_millis(700));
+        let a = c.call("GET", &format!("/adoptions/{id}"), None)?;
+        let steps = a["steps"].as_array().cloned().unwrap_or_default();
+        for s in steps.iter().skip(shown) {
+            println!("  {}", s.as_str().unwrap_or(""));
+        }
+        shown = steps.len();
+        match a["state"].as_str() {
+            Some("done") => {
+                for n in a["notes"].as_array().into_iter().flatten() {
+                    println!("note: {}", n.as_str().unwrap_or(""));
+                }
+                println!("{id} is in the fleet");
+                return Ok(());
+            }
+            Some("failed") => anyhow::bail!("{}", a["error"].as_str().unwrap_or("failed")),
+            _ => {}
+        }
+    }
 }
 
 fn run(c: &Client, file: &std::path::Path) -> Result<()> {

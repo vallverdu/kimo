@@ -119,6 +119,101 @@ pub fn parse_who(text: &str) -> Vec<Login> {
         .collect()
 }
 
+/// A network card: what Wake-on-LAN needs (its MAC and its LAN's broadcast address).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Nic {
+    pub name: String,
+    pub mac: String,
+    pub ipv4: String,
+    pub prefix: u8,
+    pub broadcast: String,
+    /// A cable, not Wi-Fi (Wake-on-LAN usually works only over a cable).
+    pub wired: bool,
+    /// A VPN's (Tailscale, ZeroTier, WireGuard): never woken through.
+    pub vpn: bool,
+}
+
+/// VPN interfaces by name: `tailscale0`, `zt…`, `utun…`, `wg…`, `tun…`.
+pub fn is_vpn(name: &str) -> bool {
+    ["tailscale", "zt", "utun", "wg", "tun", "ts"]
+        .iter()
+        .any(|p| name.starts_with(p))
+}
+
+/// The broadcast address of `ip`/`prefix`.
+pub fn broadcast(ip: std::net::Ipv4Addr, prefix: u8) -> std::net::Ipv4Addr {
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - u32::from(prefix.min(32)))
+    };
+    std::net::Ipv4Addr::from(u32::from(ip) | !mask)
+}
+
+/// `ip -o -4 addr` lines → (interface, address, prefix). Loopback is left out.
+pub fn parse_ip_addr(text: &str) -> Vec<(String, std::net::Ipv4Addr, u8)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut w = line.split_whitespace();
+            let _index = w.next()?;
+            let name = w.next()?.trim_end_matches(':').to_string();
+            if w.next()? != "inet" {
+                return None;
+            }
+            let (ip, prefix) = w.next()?.split_once('/')?;
+            let ip: std::net::Ipv4Addr = ip.parse().ok()?;
+            (!ip.is_loopback()).then_some((name, ip, prefix.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Cards from macOS `ifconfig`: name, `ether`, `inet … netmask 0x… broadcast …`.
+pub fn parse_ifconfig_nics(text: &str) -> Vec<Nic> {
+    let mut out = Vec::new();
+    let mut name = String::new();
+    let mut mac = String::new();
+    for line in text.lines() {
+        if !line.starts_with(['\t', ' ']) {
+            name = line.split(':').next().unwrap_or_default().to_string();
+            mac.clear();
+            continue;
+        }
+        let mut w = line.split_whitespace();
+        match w.next() {
+            Some("ether") => mac = w.next().unwrap_or_default().to_string(),
+            Some("inet") => {
+                let Some(ip) = w.next().and_then(|i| i.parse::<std::net::Ipv4Addr>().ok()) else {
+                    continue;
+                };
+                let rest: Vec<&str> = w.collect();
+                let after = |k: &str| {
+                    rest.iter()
+                        .position(|x| *x == k)
+                        .and_then(|i| rest.get(i + 1))
+                };
+                let prefix = after("netmask")
+                    .and_then(|m| u32::from_str_radix(m.trim_start_matches("0x"), 16).ok())
+                    .map_or(24, |m| m.count_ones() as u8);
+                if ip.is_loopback() || mac.is_empty() {
+                    continue;
+                }
+                out.push(Nic {
+                    name: name.clone(),
+                    mac: mac.clone(),
+                    ipv4: ip.to_string(),
+                    prefix,
+                    broadcast: after("broadcast")
+                        .map_or_else(|| broadcast(ip, prefix).to_string(), |b| b.to_string()),
+                    wired: false,
+                    vpn: is_vpn(&name),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The accelerators and toolchains found, as [`labels`] reads them.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Found {
@@ -228,6 +323,29 @@ mod tests {
         assert_eq!(l[1].from.as_deref(), Some("10.147.17.5"));
         assert_eq!(l[2].line, "console");
         assert!(parse_who("").is_empty());
+    }
+
+    #[test]
+    fn network_cards() {
+        let ip = "1: lo    inet 127.0.0.1/8 scope host lo\n2: enp3s0    inet 192.168.1.20/24 brd 192.168.1.255 scope global enp3s0\n5: ztabc    inet 10.147.17.21/24 brd 10.147.17.255 scope global ztabc\n";
+        let a = parse_ip_addr(ip);
+        assert_eq!(a.len(), 2);
+        assert_eq!(a[0], ("enp3s0".into(), "192.168.1.20".parse().unwrap(), 24));
+        assert_eq!(
+            broadcast("192.168.1.20".parse().unwrap(), 24).to_string(),
+            "192.168.1.255"
+        );
+        assert_eq!(
+            broadcast("10.0.5.9".parse().unwrap(), 16).to_string(),
+            "10.0.255.255"
+        );
+        assert!(is_vpn("ztabc") && is_vpn("tailscale0") && is_vpn("utun3") && !is_vpn("en0"));
+        let mac = "lo0: flags=8049<UP,LOOPBACK> mtu 16384\n\tinet 127.0.0.1 netmask 0xff000000\nen0: flags=8863<UP,BROADCAST> mtu 1500\n\tether d6:e9:92:f5:8c:8c\n\tinet 192.168.1.150 netmask 0xffffff00 broadcast 192.168.1.255\nutun3: flags=8051<UP> mtu 1380\n\tinet 100.101.1.2 --> 100.101.1.2 netmask 0xffffffff\n";
+        let n = parse_ifconfig_nics(mac);
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].mac, "d6:e9:92:f5:8c:8c");
+        assert_eq!(n[0].prefix, 24);
+        assert_eq!(n[0].broadcast, "192.168.1.255");
     }
 
     #[test]

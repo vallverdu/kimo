@@ -82,10 +82,11 @@ export function initFleet({ api, state, run }) {
         ? '<button class="ui-button ghost k-small" data-do="release">let it sleep</button>'
         : '<button class="ui-button ghost k-small" data-do="keep">keep on 2 h</button>') : '',
       `<button class="ui-button ghost k-small" data-do="${d.manual ? 'auto' : 'manual'}">${d.manual ? 'automatic' : 'manual'}</button>`,
+      d.added ? '<button class="ui-button ghost k-small k-danger" data-do="remove">remove</button>' : '',
     ].join('');
     return `<li data-device="${esc(d.id)}">
       <span class="k-name" style="cursor:default">${esc(d.id)}</span><span class="ui-badge ${STATE_BADGE[d.state] || 'stopped'}">${esc(words(d.state))}</span>
-      <div class="k-meta"><span>${esc(d.labels.join(' · '))}</span>${d.facts?.model ? `<span>${esc(d.facts.model)}</span>` : ''}</div>
+      <div class="k-meta">${d.registry.role ? `<span>${esc(d.registry.role)}</span>` : ''}<span>${esc(d.labels.filter(l => l !== d.registry.role).join(' · '))}</span>${d.facts?.model ? `<span>${esc(d.facts.model)}</span>` : ''}</div>
       ${factsLine(d) ? `<div class="k-meta"><span>${esc(factsLine(d))}</span></div>` : ''}
       ${note.length ? `<div class="k-meta"><span>${esc(note.join(' · '))}</span></div>` : ''}
       ${error ? `<div class="k-meta"><span class="k-warn">${esc(error)}</span></div>` : ''}
@@ -111,9 +112,17 @@ export function initFleet({ api, state, run }) {
 
   function render() {
     const st = data.status;
+    if (!$('fleet-find')) {
+      const b = document.createElement('button');
+      b.id = 'fleet-find';
+      b.className = 'ui-button k-small';
+      b.textContent = 'find machines';
+      b.addEventListener('click', openFinder);
+      $('fleet-devices').before(b);
+    }
     $('fleet-alerts').innerHTML = [
       st?.registry_error ? `<div class="ui-alert"><span>${esc(st.registry_error)}</span></div>` : '',
-      !data.devices.length ? `<div class="ui-alert info"><span>No machines yet. Add them to ${esc(st?.registry || 'devices.yaml')} on the coordinator, then pair each one with the code its kimo shows (kimo pair).</span></div>` : '',
+      !data.devices.length ? `<div class="ui-alert info"><span>No machines yet. Find them on Tailscale or ZeroTier and add them from here, or write them in ${esc(st?.registry || 'devices.yaml')} on the coordinator.</span></div>` : '',
     ].join('');
     $('fleet-devices').innerHTML = data.devices.map(deviceRow).join('') || '<li class="ui-empty">No machines.</li>';
     const waiting = data.jobs.filter(j => j.state === 'awaiting_approval');
@@ -148,6 +157,10 @@ export function initFleet({ api, state, run }) {
     if (what === 'release') return act(fleet.hold(id, { hours: 0, never: false }), `${id} switches off when idle`);
     if (what === 'manual') return act(fleet.hold(id, { manual: true }), `${id}: nothing automatic until you give it back`);
     if (what === 'auto') return act(fleet.hold(id, { manual: false }), `${id} is automatic again`);
+    if (what === 'remove') {
+      if (!confirm(`Remove ${id} from the fleet? Its entry and its key go; kimo stays installed there.`)) return;
+      return act(fleet.remove(id), `${id} is out of the fleet`);
+    }
     if (what === 'pair') {
       const code = prompt(`Pairing code shown by kimo on ${id} (run kimo pair there, or Devices → show QR code):`);
       if (code) return act(fleet.pair(id, code), `Paired with ${id}`);
@@ -222,10 +235,98 @@ export function initFleet({ api, state, run }) {
     if (await done) { jobSheet.close(); load(); }
   });
 
+  // Finding machines on Tailscale and ZeroTier and adding them without sitting at them.
+  const finder = document.createElement('dialog');
+  finder.className = 'ui-sheet';
+  finder.id = 'sheet-fleet-find';
+  finder.innerHTML = `<form method="dialog">
+    <h3>Add machines</h3>
+    <p class="k-hint">Machines on your Tailscale and ZeroTier networks. Adding one installs kimo there over SSH (your keys or Tailscale SSH, never a password), runs it as a service, pairs it one way and gives it a model and a role. If kimo already runs there, a pairing code from it is enough.</p>
+    <div class="k-find-notes"></div>
+    <ul class="k-sessions k-find"></ul>
+    <details class="k-table"><summary>the coordinator's SSH key</summary><pre class="k-log k-ssh-key"></pre><p class="k-hint">Put it in ~/.ssh/authorized_keys on a machine (ssh-copy-id), or turn on Tailscale SSH there: tailscale set --ssh.</p></details>
+    <button type="button" class="ui-button ghost k-small" value="cancel">close</button>
+  </form>`;
+  document.body.append(finder);
+  finder.querySelector('[value=cancel]').addEventListener('click', () => finder.close());
+  let hardware = null, found = [], adding = {}, addTimer = null;
+  // What was typed or chosen per machine, kept when the list is drawn again.
+  const drafts = {};
+  finder.addEventListener('input', e => {
+    const li = e.target.closest('li[data-id]'), f = e.target.dataset.f;
+    if (li && f) (drafts[li.dataset.id] ||= {})[f] = e.target.value;
+  });
+
+  const options = (list, chosen) => list.map(x => `<option value="${esc(x.id)}" ${x.id === chosen ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  function renderFinder() {
+    const list = finder.querySelector('.k-find');
+    list.innerHTML = found.map(m => {
+      const a = adding[m.id];
+      const state = m.in_fleet ? `in the fleet as ${m.in_fleet}` : !m.can_run_kimo ? `${m.os}: not for kimo`
+        : !m.online ? 'offline' : [m.kimo === 'answers' ? 'kimo runs' : m.kimo === 'paired' ? 'paired' : 'no kimo yet', m.ssh ? 'SSH answers' : 'no SSH'].join(' · ');
+      const can = !m.in_fleet && m.can_run_kimo && m.online && !m.self;
+      const d = drafts[m.id] || {};
+      const form = can && hardware && a?.state !== 'done' ? `<div class="k-field-row">
+          <label>Model<select data-f="model">${options(hardware.models, d.model || m.model)}</select></label>
+          <label>Role<select data-f="role">${options(hardware.roles, d.role || m.role)}</select></label></div>
+        <div class="k-field-row">
+          <label>Id<input data-f="id" value="${esc(d.id ?? m.id)}" autocomplete="off"></label>
+          ${m.ssh ? `<label>SSH user<input data-f="user" value="${esc(d.user || '')}" placeholder="yours" autocomplete="off"></label>` : ''}
+          ${m.kimo === 'answers' ? `<label>Pairing code<input data-f="code" value="${esc(d.code || '')}" placeholder="if no SSH" autocomplete="off"></label>` : ''}</div>` : '';
+      const progress = a ? `<div class="k-meta">${a.steps.map(s => `<span>${esc(s)}</span>`).join('')}</div>
+        ${a.error ? `<div class="k-meta"><span class="k-warn">${esc(a.error)}</span></div>` : ''}
+        ${a.state === 'done' ? `<div class="k-meta">${a.notes.map(n => `<span>${esc(n)}</span>`).join('')}</div>` : ''}` : '';
+      const busy = a?.state === 'running';
+      return `<li data-address="${esc(m.address)}" data-id="${esc(m.id)}">
+        <span class="k-name" style="cursor:default">${esc(m.name)}</span><span class="ui-badge ${m.in_fleet || a?.state === 'done' ? 'running' : m.online ? 'paused' : 'stopped'}">${esc(a ? a.state : m.network)}</span>
+        <div class="k-meta"><span>${esc(m.address)}</span><span>${esc(m.network)}</span><span>${esc(state)}</span></div>
+        ${form}${progress}
+        ${can && a?.state !== 'done' ? `<div class="k-actions"><button type="button" class="ui-button k-small" data-do="add" ${busy || (!m.ssh && m.kimo !== 'answers') ? 'disabled' : ''}>${busy ? 'adding…' : 'add'}</button></div>` : ''}</li>`;
+    }).join('') || '<li class="ui-empty">Looking…</li>';
+  }
+
+  async function openFinder() {
+    found = [];
+    finder.querySelector('.k-find-notes').innerHTML = '';
+    renderFinder();
+    finder.showModal();
+    try {
+      const [h, d, key] = await Promise.all([hardware || fleet.hardware(), fleet.discover(), fleet.sshKey().catch(() => ({}))]);
+      hardware = h;
+      found = d.machines;
+      finder.querySelector('.k-find-notes').innerHTML = d.notes.map(n => `<p class="k-hint">${esc(n)}</p>`).join('');
+      finder.querySelector('.k-ssh-key').textContent = key.key || 'no key yet: run ssh-keygen -t ed25519 on the coordinator';
+      renderFinder();
+    } catch (e) { finder.querySelector('.k-find-notes').innerHTML = `<p class="k-hint k-warn">${esc(e.message)}</p>`; }
+  }
+
+  async function follow() {
+    clearTimeout(addTimer);
+    const running = Object.values(adding).filter(a => a.state === 'running');
+    for (const a of running) adding[a.id] = await fleet.adoption(a.id).catch(() => a);
+    renderFinder();
+    if (Object.values(adding).some(a => a.state === 'running') && finder.open) addTimer = setTimeout(follow, 1000);
+    else load();
+  }
+
+  finder.addEventListener('click', async e => {
+    if (!e.target.closest('[data-do=add]')) return;
+    const li = e.target.closest('li[data-address]');
+    const val = f => li.querySelector(`[data-f=${f}]`)?.value.trim() || undefined;
+    try {
+      const a = await fleet.add({ address: li.dataset.address, id: val('id'), model: val('model'), role: val('role'), ssh_user: val('user'), code: val('code') });
+      adding[a.id] = a;
+      // The machine's row is keyed by its first id.
+      if (a.id !== li.dataset.id) adding[li.dataset.id] = a;
+      follow();
+    } catch (err) { toast(err.message, true); }
+  });
+  finder.addEventListener('close', () => clearTimeout(addTimer));
+
   function openNew() {
     syncMode();
     jobSheet.showModal();
   }
 
-  return { load, start, stop, available, openNew };
+  return { load, start, stop, available, openNew, openFinder };
 }

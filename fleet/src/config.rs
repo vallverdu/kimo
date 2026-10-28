@@ -33,6 +33,22 @@ pub struct Config {
     /// This coordinator's name on the machines (default: the hostname).
     #[arg(long, env = "KIMO_FLEET_NAME")]
     pub name: Option<String>,
+
+    /// The SSH program used to set machines up (default: ssh).
+    #[arg(long, env = "KIMO_FLEET_SSH", default_value = "ssh")]
+    pub ssh: String,
+
+    /// The Tailscale program (default: found on the PATH or in Tailscale.app).
+    #[arg(long, env = "KIMO_FLEET_TAILSCALE")]
+    pub tailscale: Option<String>,
+
+    /// The port kimo listens on, on the machines (looked for, and used when setting one up).
+    #[arg(long, env = "KIMO_FLEET_KIMO_PORT", default_value_t = 7777)]
+    pub kimo_port: u16,
+
+    /// Look for machines on ZeroTier too.
+    #[arg(long, env = "KIMO_FLEET_ZEROTIER", default_value_t = true, action = clap::ArgAction::Set)]
+    pub zerotier: bool,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -41,6 +57,39 @@ pub enum Command {
     Serve,
     /// The machines, their state and what they run.
     Devices,
+    /// Machines on Tailscale and ZeroTier that could join (is kimo there? SSH?).
+    Discover,
+    /// Add a machine without sitting at it: install kimo over SSH (or use --code), pair one
+    /// way, and give it a hardware model and a role.
+    Add {
+        /// Its address on Tailscale or ZeroTier.
+        address: String,
+        /// Its id in the fleet (default: from its name).
+        #[arg(long)]
+        id: Option<String>,
+        /// Hardware model (`kimo-fleet models`); default: guessed from the machine.
+        #[arg(long)]
+        model: Option<String>,
+        /// Role (default: the model's).
+        #[arg(long)]
+        role: Option<String>,
+        /// SSH user (default: yours).
+        #[arg(long)]
+        user: Option<String>,
+        /// Where its kimo listens: tailscale, zerotier or an address (default: its network).
+        #[arg(long)]
+        network: Option<String>,
+        /// Join with a pairing code its kimo shows instead of SSH.
+        #[arg(long)]
+        code: Option<String>,
+        /// Install kimo again even if it is there.
+        #[arg(long)]
+        reinstall: bool,
+    },
+    /// Remove a machine added with `add` (its entry and its key).
+    Remove { device: String },
+    /// Hardware models and roles.
+    Models,
     /// Pair with a machine of the registry using a code shown there (`kimo pair`).
     Pair { device: String, code: String },
     /// Wake a machine (Wake-on-LAN).

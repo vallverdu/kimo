@@ -75,7 +75,13 @@ pub fn router(fleet: Arc<Fleet>, token: Option<String>) -> Router {
         .route("/reload", post(reload))
         .route("/registry", get(get_registry).put(put_registry))
         .route("/devices", get(devices))
-        .route("/devices/{id}", get(device))
+        .route("/devices/{id}", get(device).delete(remove))
+        .route("/hardware", get(hardware))
+        .route("/discover", get(discover))
+        .route("/adopt", post(adopt))
+        .route("/adoptions", get(adoptions))
+        .route("/adoptions/{id}", get(adoption))
+        .route("/ssh-key", get(ssh_key))
         .route("/devices/{id}/wake", post(wake))
         .route("/devices/{id}/shutdown", post(shutdown))
         .route("/devices/{id}/hold", post(hold))
@@ -168,6 +174,53 @@ async fn devices(State(app): State<App>) -> Json<Value> {
 
 async fn device(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!(app.fleet.device(&id)?)))
+}
+
+/// Remove a machine added from the Fleet tab (its entry and its key).
+async fn remove(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    blocking(&app, move |f| {
+        f.remove(&id)?;
+        Ok(json!({ "ok": true }))
+    })
+    .await
+}
+
+/// The hardware models and roles machines are added with.
+async fn hardware() -> Json<Value> {
+    Json(json!({
+        "models": crate::core::hardware::MODELS,
+        "roles": crate::core::hardware::ROLES,
+    }))
+}
+
+/// Machines on Tailscale and ZeroTier, checked for kimo and SSH (a few seconds).
+async fn discover(State(app): State<App>) -> ApiResult {
+    blocking(&app, |f| Ok(f.discover())).await
+}
+
+/// Add a machine: over SSH (install, service, pairing) or with a code its kimo shows.
+async fn adopt(
+    State(app): State<App>,
+    Json(req): Json<crate::services::fleet::adopt::Adopt>,
+) -> Result<Response, ApiError> {
+    let fleet = app.fleet.clone();
+    let a = tokio::task::spawn_blocking(move || fleet.adopt(req))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok((StatusCode::ACCEPTED, Json(json!(a))).into_response())
+}
+
+async fn adoptions(State(app): State<App>) -> Json<Value> {
+    Json(json!(app.fleet.adoptions()))
+}
+
+async fn adoption(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    Ok(Json(json!(app.fleet.adoption(&id)?)))
+}
+
+/// The coordinator's public SSH key, to put on machines it should set up.
+async fn ssh_key(State(app): State<App>) -> Json<Value> {
+    Json(json!({ "key": app.fleet.ssh_key() }))
 }
 
 async fn wake(State(app): State<App>, Path(id): Path<String>) -> ApiResult {

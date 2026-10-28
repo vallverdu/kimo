@@ -100,7 +100,10 @@ pub fn cross_origin_allowed(caller: &Caller, origin: &str, admin_origins: &[Stri
 /// What a fleet coordinator may call: the machine's status and facts, jobs, power.
 fn fleet_permits(method: &str, path: &str) -> bool {
     let under = |p: &str| path == p || path.starts_with(&format!("{p}/"));
-    (method == "GET" && (path == "/status" || path == "/node")) || under("/jobs") || under("/power")
+    (method == "GET" && (path == "/status" || path == "/node"))
+        || (method == "DELETE" && path == "/fleet-key")
+        || under("/jobs")
+        || under("/power")
 }
 
 /// May `caller` call `method path` (path relative to `/api`)?
@@ -197,6 +200,7 @@ mod tests {
             ("POST", "/jobs"),
             ("GET", "/jobs/j1/log"),
             ("POST", "/jobs/j1/cancel"),
+            ("DELETE", "/fleet-key"),
         ] {
             assert!(permits(&fleet, m, p), "{m} {p}");
         }

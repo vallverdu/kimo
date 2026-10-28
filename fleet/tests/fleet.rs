@@ -656,3 +656,269 @@ async fn the_phone_reaches_the_fleet_through_its_kimo() {
         StatusCode::FORBIDDEN
     );
 }
+
+/// A stand-in program: a shell script in `dir`.
+fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let p = dir.join(name);
+    std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+fn fleet_with(tmp: &Path, registry: &str, change: impl FnOnce(&mut Config)) -> Arc<Fleet> {
+    let dir = tmp.join("fleet");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("devices.yaml"), registry).unwrap();
+    let mut cfg = Config::new(dir, "pi4".into());
+    cfg.look_every_ms = 300;
+    cfg.look_fast_ms = 200;
+    cfg.ping = false;
+    cfg.zerotier = false;
+    change(&mut cfg);
+    Fleet::open(cfg).unwrap()
+}
+
+async fn adopted(fleet: &Arc<Fleet>, id: &str) -> kimo_fleet::services::fleet::adopt::Adoption {
+    use kimo_fleet::services::fleet::adopt::State;
+    for _ in 0..200 {
+        let a = fleet.adoption(id).unwrap();
+        if a.state != State::Running {
+            return a;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("adding {id} did not end");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_machine_joins_the_fleet_without_anyone_at_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut newbox = Machine::new(tmp.path(), "newbox");
+    newbox.on().await;
+    // A stand-in `ssh`: keeps the script it is given and answers as the script would on the
+    // machine (the code comes from the machine's kimo, as the script gets it there).
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let code_file = tmp.path().join("code");
+    let ssh = script(
+        &bin,
+        "ssh",
+        &format!(
+            "echo \"$@\" > '{args}'\ncat > '{got}'\necho 'kimo-step: installing kimo'\necho 'kimo-step: starting kimo as a service'\necho 'kimo-note: linger is off'\necho \"KIMO_PAIRING_CODE=$(cat '{code}')\"\n",
+            args = tmp.path().join("ssh-args").display(),
+            got = tmp.path().join("ssh-script").display(),
+            code = code_file.display(),
+        ),
+    );
+    let port = newbox.port;
+    let fleet = fleet_with(tmp.path(), "devices: {}\n", |c| {
+        c.ssh = ssh.display().to_string();
+        c.kimo_port = port;
+        c.kimo_version = Some("v9.9.9".into());
+    });
+    std::fs::write(&code_file, newbox.pairing_code()).unwrap();
+    let a = fleet
+        .adopt(
+            serde_json::from_value(json!({
+                "address": "127.0.0.1", "id": "newbox", "model": "nuc-11-extreme", "ssh_user": "jordi",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(a.state, kimo_fleet::services::fleet::adopt::State::Running);
+    let a = adopted(&fleet, "newbox").await;
+    assert_eq!(a.error, None, "{a:#?}");
+    assert!(a.steps.iter().any(|s| s == "installing kimo"), "{a:#?}");
+    assert!(a.notes.iter().any(|n| n == "linger is off"));
+    assert!(
+        a.notes.iter().any(|n| n.contains("BIOS")),
+        "the model's notes"
+    );
+    // SSH without prompts, as the user given; the script installs this coordinator's version
+    // and runs kimo bound to the address it was found on.
+    let args = std::fs::read_to_string(tmp.path().join("ssh-args")).unwrap();
+    assert!(
+        args.contains("BatchMode=yes") && args.contains("jordi@127.0.0.1 sh -s"),
+        "{args}"
+    );
+    let sent = std::fs::read_to_string(tmp.path().join("ssh-script")).unwrap();
+    assert!(sent.contains("KIMO_VERSION='v9.9.9'"));
+    assert!(sent.contains("Environment=KIMO_BIND=127.0.0.1"));
+    assert!(sent.contains("Environment=KIMO_NAME=newbox"));
+    // Its entry, in a file of its own, from the model and its facts.
+    let file = tmp.path().join("fleet/devices.d/newbox.yaml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("# newbox: Intel NUC 11 Extreme"), "{text}");
+    let d = fleet.device("newbox").unwrap();
+    assert_eq!(d.registry.model.as_deref(), Some("nuc-11-extreme"));
+    assert_eq!(d.registry.role.as_deref(), Some("gpu-worker"));
+    assert!(d.labels.contains(&"gpu-worker".to_string()));
+    assert!(d.paired);
+    // The machine lists the coordinator as a fleet key, nothing more.
+    let keys = newbox.manager.devices();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].role, kimo::services::devices::Role::Fleet);
+    // The hand-written registry was not touched.
+    assert_eq!(
+        std::fs::read_to_string(tmp.path().join("fleet/devices.yaml")).unwrap(),
+        "devices: {}\n"
+    );
+    until(&fleet, 10, "the new machine up", |f| {
+        f.device("newbox").is_ok_and(|d| d.facts.is_some())
+    })
+    .await;
+    // Twice: no.
+    assert!(fleet
+        .adopt(serde_json::from_value(json!({ "address": "127.0.0.1", "id": "newbox" })).unwrap())
+        .is_err());
+
+    // Removed: its entry and its key go, on the machine too.
+    let f = fleet.clone();
+    blocking(move || f.remove("newbox")).await.unwrap();
+    assert!(!file.exists());
+    assert!(fleet.device("newbox").is_err());
+    assert!(
+        newbox.manager.devices().is_empty(),
+        "the machine forgot the key"
+    );
+    // Only machines added this way are removed this way.
+    assert!(fleet.remove("nothing").is_err());
+
+    // With a code its kimo shows (no SSH), guessing the model from its facts.
+    let code = newbox.pairing_code();
+    fleet
+        .adopt(
+            serde_json::from_value(json!({ "address": "127.0.0.1", "id": "again", "code": code }))
+                .unwrap(),
+        )
+        .unwrap();
+    let a = adopted(&fleet, "again").await;
+    assert_eq!(a.error, None, "{a:#?}");
+    assert!(a.model.is_some() && a.role.is_some());
+    newbox.off().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn adding_says_what_to_fix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    // SSH refuses: the coordinator's key is not on the machine.
+    let ssh = script(
+        &bin,
+        "ssh",
+        "cat >/dev/null\necho 'jordi@100.64.0.9: Permission denied (publickey).' >&2\nexit 255\n",
+    );
+    let fleet = fleet_with(tmp.path(), "devices: {}\n", |c| {
+        c.ssh = ssh.display().to_string()
+    });
+    fleet
+        .adopt(serde_json::from_value(json!({ "address": "100.64.0.9", "id": "nuc" })).unwrap())
+        .unwrap();
+    let a = adopted(&fleet, "nuc").await;
+    let e = a.error.unwrap();
+    assert!(
+        e.contains("Permission denied")
+            && e.contains("ssh-copy-id")
+            && e.contains("tailscale set --ssh"),
+        "{e}"
+    );
+    assert!(!tmp.path().join("fleet/devices.d/nuc.yaml").exists());
+    // Bad input never reaches a shell.
+    for bad in [
+        json!({ "address": "1.2.3.4; rm -rf ~" }),
+        json!({ "address": "1.2.3.4", "ssh_user": "a b" }),
+        json!({ "address": "1.2.3.4", "model": "toaster" }),
+    ] {
+        assert!(
+            fleet
+                .adopt(serde_json::from_value(bad.clone()).unwrap())
+                .is_err(),
+            "{bad}"
+        );
+    }
+
+    // A kimo too old for fleet keys hands out an owner key: it is revoked, and pairing stops.
+    let revoked = Arc::new(std::sync::Mutex::new(vec![]));
+    let seen = revoked.clone();
+    let old = axum::Router::new()
+        .route(
+            "/api/pair",
+            axum::routing::post(|| async {
+                axum::Json(json!({ "id": "pi4-fleet", "token": "kimo_dev_old" }))
+            }),
+        )
+        .route(
+            "/api/devices/{id}",
+            axum::routing::delete(
+                move |axum::extract::Path(id): axum::extract::Path<String>| {
+                    let seen = seen.clone();
+                    async move {
+                        seen.lock().unwrap().push(id);
+                        axum::Json(json!({ "ok": true }))
+                    }
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, old).await.unwrap() });
+    let fleet2 = fleet_with(&tmp.path().join("2"), "devices: {}\n", |c| {
+        c.kimo_port = port
+    });
+    fleet2
+        .adopt(
+            serde_json::from_value(
+                json!({ "address": "127.0.0.1", "id": "oldbox", "code": "AAAA-BBBB" }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let a = adopted(&fleet2, "oldbox").await;
+    assert!(a.error.unwrap().contains("too old"));
+    assert_eq!(*revoked.lock().unwrap(), ["pi4-fleet"]);
+    assert!(fleet2.device("oldbox").is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn machines_on_tailscale_are_found_with_what_answers_there() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut nuc = Machine::new(tmp.path(), "nuc");
+    nuc.on().await;
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let status = r#"{
+      "Self": {"HostName": "pi4", "DNSName": "pi4.tail.ts.net.", "OS": "linux", "TailscaleIPs": ["100.64.0.1"]},
+      "Peer": {
+        "a": {"HostName": "nuc-extreme", "DNSName": "nuc-extreme.tail.ts.net.", "OS": "linux", "TailscaleIPs": ["127.0.0.1"], "Online": true},
+        "b": {"HostName": "iPhone", "DNSName": "iphone.tail.ts.net.", "OS": "iOS", "TailscaleIPs": ["100.64.0.3"], "Online": true},
+        "c": {"HostName": "jetson", "DNSName": "jetson.tail.ts.net.", "OS": "linux", "TailscaleIPs": ["100.64.0.4"], "Online": false}
+      }}"#;
+    let tailscale = script(
+        &bin,
+        "tailscale",
+        &format!(
+            "[ \"$1\" = version ] && {{ echo 1.90.0; exit 0; }}\ncat <<'JSON'\n{status}\nJSON\n"
+        ),
+    );
+    let port = nuc.port;
+    let fleet = fleet_with(tmp.path(), "devices: {}\n", |c| {
+        c.tailscale = Some(tailscale.display().to_string());
+        c.kimo_port = port;
+    });
+    let f = fleet.clone();
+    let d = blocking(move || f.discover()).await;
+    assert!(d.tailscale && !d.zerotier);
+    let by = |name: &str| d.machines.iter().find(|m| m.seen.name == name).unwrap();
+    let nuc_found = by("nuc-extreme");
+    assert_eq!(nuc_found.kimo, "answers");
+    assert_eq!(nuc_found.model, "nuc-11-extreme");
+    assert_eq!(nuc_found.role, "gpu-worker");
+    assert_eq!(nuc_found.id, "nuc-extreme");
+    assert!(!by("iphone").seen.can_run_kimo);
+    assert_eq!(by("jetson").model, "jetson-orin-nano");
+    assert_eq!(by("jetson").kimo, "unknown");
+    assert!(by("pi4").seen.this);
+    nuc.off().await;
+}
