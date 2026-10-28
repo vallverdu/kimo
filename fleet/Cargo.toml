@@ -25,7 +25,9 @@ serde_yaml_ng = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ureq = { version = "3", default-features = false, features = ["json"] }
+# TLS (certificate-checked, webpki roots): ntfy and ZeroTier Central are HTTPS; kimo itself
+# needs none.
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]

@@ -130,6 +130,40 @@ pub struct Job {
     /// Its outputs: path → artifact.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub artifacts: BTreeMap<String, Artifact>,
+    /// The current attempt reached its machine (the next try is a new attempt).
+    #[serde(default)]
+    pub attempt_started: bool,
+    /// You cancelled it; its machine has not confirmed the run ended yet (its lease stays).
+    #[serde(default)]
+    pub cancel_requested: bool,
+    /// Earlier runs that may still be alive on their machines (a machine that stopped
+    /// answering, an answer that never came): cancelled when their machine answers, their
+    /// GPU and slots held until then.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub orphans: Vec<Orphan>,
+    /// What an approval shows (`show:`): the earlier steps' outputs it names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<Evidence>,
+}
+
+/// An output of an earlier step, shown with an approval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Evidence {
+    pub path: String,
+    /// The step and job that made it (`None`: no step made it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+}
+
+/// A run of a job that may still be alive on a machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Orphan {
+    pub device: String,
+    pub worker_job: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +248,8 @@ struct Inner {
     looking: std::collections::BTreeSet<String>,
     /// Jobs being followed right now.
     following: std::collections::BTreeSet<String>,
+    /// Jobs being sent to their machine right now (their outcome is not known yet).
+    dispatching: std::collections::BTreeSet<String>,
     sampled: BTreeMap<String, u64>,
     errors: BTreeMap<String, String>,
     keys: BTreeMap<String, String>,
@@ -224,7 +260,7 @@ struct Inner {
 
 pub struct Fleet {
     pub cfg: Config,
-    db: Db,
+    db: Arc<Db>,
     keys: Keys,
     inner: Mutex<Inner>,
     /// Machines being added (installing, pairing), and how that went.
@@ -235,6 +271,8 @@ pub struct Fleet {
 pub mod adopt;
 #[path = "discover.rs"]
 pub mod discover;
+#[path = "runs.rs"]
+mod runs;
 
 fn policy(d: &Device) -> Policy {
     Policy {
@@ -332,7 +370,7 @@ impl Fleet {
         if !registry_path.exists() {
             std::fs::write(&registry_path, registry::EXAMPLE)?;
         }
-        let db = Db::open(&cfg.data_dir.join("fleet.db"))?;
+        let db = Arc::new(Db::open(&cfg.data_dir.join("fleet.db"))?);
         let keys = Keys::new(&cfg.data_dir);
         let mut inner = Inner {
             keys: keys.load(),
@@ -342,8 +380,9 @@ impl Fleet {
             inner.states.insert(id, state);
         }
         for mut job in db.jobs::<Job>() {
-            // Being sent when the coordinator stopped: placed again.
-            if job.state == JobState::Dispatched {
+            // About to be sent when the coordinator stopped (no run written down yet): placed
+            // again. One with a run written down is checked with its machine (runs.rs).
+            if job.state == JobState::Dispatched && job.worker_job.is_none() {
                 job.state = JobState::Ready;
                 job.device = None;
             }
@@ -424,13 +463,29 @@ impl Fleet {
 
     fn notify(&self, device: Option<&str>, job: Option<&str>, text: &str) {
         self.event(device, job, "notice", text);
-        let ntfy = self.lock().registry.ntfy.clone();
+        let Some(url) = self.lock().registry.ntfy.clone() else {
+            return;
+        };
         let title = match (device, job) {
             (Some(d), _) => format!("kimo fleet: {d}"),
             (None, Some(j)) => format!("kimo fleet: {j}"),
             _ => "kimo fleet".into(),
         };
-        net::notify(ntfy, title, text.to_string());
+        // In the background; a notification that did not arrive is recorded as an event.
+        let (db, text) = (self.db.clone(), text.to_string());
+        let (device, job) = (device.map(str::to_string), job.map(str::to_string));
+        std::thread::spawn(move || {
+            if let Err(e) = net::notify(&url, &title, &text) {
+                tracing::warn!("notification not delivered: {e:#}");
+                db.event(
+                    now_ms(),
+                    device.as_deref(),
+                    job.as_deref(),
+                    "notice",
+                    &format!("notification not delivered: {e:#}"),
+                );
+            }
+        });
     }
 
     pub fn events(&self, device: Option<&str>, job: Option<&str>, limit: usize) -> Vec<Event> {
@@ -922,11 +977,17 @@ impl Fleet {
                         }
                     }
                 }
-                let on: Vec<&Job> = inner
+                // Its jobs, and earlier runs that may still be alive there (each holds what its
+                // job asked for until its machine confirms it ended).
+                let mut on: Vec<&Job> = inner
                     .jobs
                     .values()
                     .filter(|j| j.state.on_device() && j.device.as_deref() == Some(id.as_str()))
                     .collect();
+                for j in inner.jobs.values() {
+                    let n = j.orphans.iter().filter(|o| o.device == *id).count();
+                    on.extend(std::iter::repeat_n(j, n));
+                }
                 Candidate {
                     id: id.clone(),
                     labels,
@@ -996,6 +1057,10 @@ impl Fleet {
             unreachable_since: None,
             result: None,
             artifacts: BTreeMap::new(),
+            attempt_started: false,
+            cancel_requested: false,
+            orphans: vec![],
+            evidence: vec![],
         }
     }
 
@@ -1095,35 +1160,6 @@ impl Fleet {
         drop(inner);
         self.save_job(&job);
         Some(job)
-    }
-
-    /// Cancel a job (on its machine too) or a whole workflow's remaining steps.
-    pub fn cancel(&self, id: &str) -> Result<Job> {
-        let job = self.job(id)?;
-        if job.state.finished() {
-            return Ok(job);
-        }
-        if job.state.on_device() {
-            if let (Some(dev), Some(wid)) = (&job.device, &job.worker_job) {
-                if let Ok((d, Some(key))) = self.device_of(dev) {
-                    let _ = net::kimo(&d.kimo, Some(&key)).call_timeout(
-                        "POST",
-                        &format!("/jobs/{wid}/cancel"),
-                        None,
-                        net::CALL_SECS,
-                    );
-                }
-            }
-        }
-        let job = self
-            .update_job(id, |j| {
-                j.state = JobState::Cancelled;
-                j.ended_at = Some(now_ms());
-                j.reason = Some("cancelled".into());
-            })
-            .ok_or_else(|| anyhow!("unknown job: {id}"))?;
-        self.event(job.device.as_deref(), Some(id), "job", "cancelled");
-        Ok(job)
     }
 
     pub fn cancel_workflow(&self, id: &str) -> Result<WorkflowRun> {
@@ -1242,14 +1278,32 @@ impl Fleet {
                     if next == JobState::Blocked {
                         continue;
                     }
+                    let missing = (next == JobState::Ready)
+                        .then(|| Self::missing_input(&inner, &run, jid))
+                        .flatten();
+                    let evidence = Self::evidence(&inner, &run, jid);
                     let j = inner.jobs.get_mut(jid).expect("job");
                     j.updated_at = now;
                     if next == JobState::Skipped {
                         j.state = JobState::Skipped;
                         j.ended_at = Some(now);
                         j.reason = Some("a step it needs did not succeed".into());
+                    } else if let Some(missing) = missing {
+                        // Never run without what it needs (audit F3).
+                        j.state = JobState::Failed;
+                        j.ended_at = Some(now);
+                        j.reason = Some(missing);
+                        notices.push((
+                            j.id.clone(),
+                            format!(
+                                "{} failed: {}",
+                                j.spec.task,
+                                j.reason.clone().unwrap_or_default()
+                            ),
+                        ));
                     } else if j.spec.runner == Runner::Approval {
                         j.state = JobState::AwaitingApproval;
+                        j.evidence = evidence.clone();
                         notices.push((
                             j.id.clone(),
                             format!("{} waits for your approval", j.spec.task),
@@ -1302,6 +1356,54 @@ impl Fleet {
                 &format!("workflow {} {:?}", w.name, w.state).to_lowercase(),
             );
         }
+    }
+
+    /// What an approval names in `show:`, found among the outputs of the workflow's steps
+    /// (the latest step that made a path wins).
+    fn evidence(inner: &Inner, run: &WorkflowRun, jid: &str) -> Vec<Evidence> {
+        let Some(job) = inner.jobs.get(jid) else {
+            return vec![];
+        };
+        job.spec
+            .show
+            .iter()
+            .map(|path| {
+                let made = run.steps.iter().rev().find_map(|(task, id)| {
+                    let j = inner.jobs.get(id)?;
+                    j.artifacts
+                        .get(path)
+                        .map(|a| (task.clone(), id.clone(), a.bytes))
+                });
+                Evidence {
+                    path: path.clone(),
+                    step: made.as_ref().map(|m| m.0.clone()),
+                    job: made.as_ref().map(|m| m.1.clone()),
+                    bytes: made.map(|m| m.2),
+                }
+            })
+            .collect()
+    }
+
+    /// The first input of a step that its producer did not leave, in plain words.
+    fn missing_input(inner: &Inner, run: &WorkflowRun, jid: &str) -> Option<String> {
+        let job = inner.jobs.get(jid)?;
+        job.spec.inputs.values().find_map(|from| {
+            let (step, path) = from.split_once('/')?;
+            let producer = run
+                .steps
+                .iter()
+                .find(|(t, _)| t == step)
+                .and_then(|(_, id)| inner.jobs.get(id));
+            match producer {
+                Some(p) if p.artifacts.contains_key(path) => None,
+                Some(p) if p.state != JobState::Succeeded => Some(format!(
+                    "its input {from} is not available: {step} did not succeed"
+                )),
+                _ => Some(format!(
+                    "its input {from} is not available: {step} did not make it"
+                )),
+            }
+        })
     }
 
     /// Place ready jobs: send them to a machine that is up, or wake the best one for them.
@@ -1435,166 +1537,6 @@ impl Fleet {
         }
     }
 
-    /// Send a job to its machine: create it there (staged when it has inputs), put its
-    /// inputs in place, start it.
-    fn dispatch(&self, id: &str) {
-        let Ok(job) = self.job(id) else { return };
-        let Some(dev) = job.device.clone() else {
-            return;
-        };
-        let attempt = job.attempt + 1;
-        let wid = format!("{id}-{attempt}");
-        let result = (|| -> Result<()> {
-            let (d, key) = self.device_of(&dev)?;
-            let key = key.ok_or_else(|| anyhow!("{dev} is not paired"))?;
-            let client = net::kimo(&d.kimo, Some(&key));
-            // Inputs: the outputs of earlier steps, at the same path in this job's folder.
-            let mut inputs = vec![];
-            let mut env = job.spec.env.clone();
-            let mut run = job.spec.run.clone();
-            for (name, from) in &job.spec.inputs {
-                let (step, path) = from.split_once('/').unwrap_or_default();
-                let found = self.step_artifact(job.workflow.as_deref(), step, path);
-                let Some(art) = found else {
-                    self.event(
-                        Some(&dev),
-                        Some(id),
-                        "job",
-                        &format!("input {from} is missing"),
-                    );
-                    continue;
-                };
-                env.insert(
-                    format!("KIMO_INPUT_{}", name.to_ascii_uppercase().replace('-', "_")),
-                    path.to_string(),
-                );
-                if let Some(r) = run.as_mut() {
-                    for key in [
-                        format!("{{{{inputs.{name}}}}}"),
-                        format!("{{{{artifacts.{name}}}}}"),
-                    ] {
-                        *r = r.replace(&key, path);
-                    }
-                }
-                inputs.push((path.to_string(), art));
-            }
-            let mut body = json!({
-                "id": wid,
-                "name": job.spec.task,
-                "env": env,
-                "start": inputs.is_empty(),
-            });
-            if let Some(cwd) = &job.spec.cwd {
-                body["cwd"] = json!(cwd);
-            }
-            if let Some(g) = &job.spec.git {
-                let fill = |t: &str| {
-                    t.replace("{{job}}", id)
-                        .replace("{{workflow}}", job.workflow.as_deref().unwrap_or(id))
-                };
-                let mut git = json!({ "repo": g.repo });
-                if let Some(r) = &g.reference {
-                    git["ref"] = json!(fill(r));
-                }
-                if let Some(b) = &g.branch {
-                    // A retry gets a branch of its own (the first one exists already).
-                    let b = fill(b);
-                    git["branch"] = json!(if attempt > 1 {
-                        format!("{b}-{attempt}")
-                    } else {
-                        b
-                    });
-                }
-                body["git"] = git;
-            }
-            if let Some(t) = job.spec.timeout.as_deref().and_then(jobs::parse_duration) {
-                body["timeout_s"] = json!(t);
-            }
-            match job.spec.runner {
-                Runner::Command => body["command"] = json!(run.unwrap_or_default()),
-                Runner::Agent => {
-                    let mut agent = json!({
-                        "kind": job.spec.agent.as_deref().unwrap_or("claude"),
-                        "prompt": job.spec.prompt.clone().unwrap_or_default(),
-                    });
-                    if let Some(m) = &job.spec.model {
-                        agent["model"] = json!(m);
-                    }
-                    if let Some(e) = &job.spec.effort {
-                        agent["effort"] = json!(e);
-                    }
-                    if let Some(p) = &job.spec.permissions {
-                        agent["permissions"] = json!(p);
-                    }
-                    body["agent"] = agent;
-                }
-                Runner::Approval => bail!("approvals do not run on machines"),
-            }
-            client
-                .call_timeout("POST", "/jobs", Some(&body), 30)
-                .with_context(|| format!("starting it on {dev}"))?;
-            if !inputs.is_empty() {
-                for (path, art) in &inputs {
-                    self.upload(&d.kimo, &key, &wid, path, art)
-                        .with_context(|| format!("sending {path} to {dev}"))?;
-                }
-                client.call_timeout("POST", &format!("/jobs/{wid}/start"), None, 30)?;
-            }
-            Ok(())
-        })();
-        let now = now_ms();
-        if !self.job(id).is_ok_and(|j| j.state == JobState::Dispatched) {
-            // Cancelled while it was being sent: end it over there too.
-            if result.is_ok() {
-                if let Ok((d, Some(key))) = self.device_of(&dev) {
-                    let _ = net::kimo(&d.kimo, Some(&key)).call_timeout(
-                        "POST",
-                        &format!("/jobs/{wid}/cancel"),
-                        None,
-                        net::CALL_SECS,
-                    );
-                }
-            }
-            return;
-        }
-        match result {
-            Ok(()) => {
-                self.update_job(id, |j| {
-                    j.state = JobState::Running;
-                    j.attempt = attempt;
-                    j.worker_job = Some(wid.clone());
-                    j.started_at = Some(now);
-                    j.unreachable_since = None;
-                    j.reason = None;
-                });
-                self.event(
-                    Some(&dev),
-                    Some(id),
-                    "job",
-                    &format!("running {} (attempt {attempt})", job.spec.task),
-                );
-            }
-            Err(e) => {
-                // Not started: placed again, elsewhere if the machine is the problem.
-                let text = format!("{e:#}");
-                self.update_job(id, |j| {
-                    j.state = JobState::Ready;
-                    j.device = None;
-                    j.reason = Some(text.clone());
-                    if !j.exclude.contains(&dev) {
-                        j.exclude.push(dev.clone());
-                    }
-                });
-                self.event(
-                    Some(&dev),
-                    Some(id),
-                    "job",
-                    &format!("could not start: {text}"),
-                );
-            }
-        }
-    }
-
     fn step_artifact(&self, workflow: Option<&str>, step: &str, path: &str) -> Option<Artifact> {
         let inner = self.lock();
         let run = inner.workflows.get(workflow?)?;
@@ -1675,99 +1617,6 @@ impl Fleet {
         Ok(Artifact { sha256, bytes })
     }
 
-    /// Follow the jobs on machines (each on a thread of its own): their state, and when they
-    /// end their log, answer and outputs; retry or fail them.
-    fn follow(self: &Arc<Self>) {
-        let running: Vec<Job> = {
-            let mut inner = self.lock();
-            let list: Vec<Job> = inner
-                .jobs
-                .values()
-                .filter(|j| j.state == JobState::Running && j.worker_job.is_some())
-                .filter(|j| !inner.following.contains(&j.id))
-                .cloned()
-                .collect();
-            for j in &list {
-                inner.following.insert(j.id.clone());
-            }
-            list
-        };
-        for job in running {
-            let me = self.clone();
-            let _ = std::thread::Builder::new()
-                .name("fleet-follow".into())
-                .spawn(move || {
-                    me.follow_one(&job, now_ms());
-                    me.lock().following.remove(&job.id);
-                });
-        }
-    }
-
-    fn follow_one(&self, job: &Job, now: u64) {
-        let dev = job.device.clone().unwrap_or_default();
-        let wid = job.worker_job.clone().unwrap_or_default();
-        let Ok((d, key)) = self.device_of(&dev) else {
-            self.end(
-                job,
-                None,
-                Some(Failure::Device),
-                "its machine left the registry",
-            );
-            return;
-        };
-        let key = key.unwrap_or_default();
-        let client = net::kimo(&d.kimo, Some(&key));
-        match client.raw("GET", &format!("/jobs/{wid}"), vec![], None, net::CALL_SECS) {
-            Ok((200, _, body)) => {
-                let w: Value = serde_json::from_slice(&body).unwrap_or_default();
-                let state = w["state"].as_str().unwrap_or("");
-                if matches!(state, "staged" | "starting" | "running") {
-                    if job.unreachable_since.is_some() {
-                        self.update_job(&job.id, |j| j.unreachable_since = None);
-                    }
-                    return;
-                }
-                self.collect(job, &d.kimo, &key, &wid, &w);
-                let code = w["exit_code"].as_i64().map(|c| c as i32);
-                match state {
-                    "succeeded" => self.end(job, code, None, ""),
-                    "cancelled" => self.end(job, code, None, "cancelled on its machine"),
-                    "lost" => self.end(job, code, Some(Failure::Device), "lost on its machine"),
-                    "timed_out" => self.end(job, code, Some(Failure::Job), "timed out"),
-                    _ => self.end(
-                        job,
-                        code,
-                        Some(Failure::Job),
-                        &code.map_or("failed".into(), |c| format!("exit code {c}")),
-                    ),
-                }
-            }
-            Ok((404, _, _)) => {
-                self.end(
-                    job,
-                    None,
-                    Some(Failure::Device),
-                    "its machine does not know it",
-                );
-            }
-            Ok(_) | Err(_) => {
-                let since = job.unreachable_since.unwrap_or(now);
-                if job.unreachable_since.is_none() {
-                    self.update_job(&job.id, |j| j.unreachable_since = Some(now));
-                }
-                let lost_after = LOST_AFTER_MS.max(d.power.boot_deadline_s * 1000);
-                if now.saturating_sub(since) > lost_after {
-                    self.end(
-                        job,
-                        None,
-                        Some(Failure::Device),
-                        "its machine stopped answering",
-                    );
-                }
-            }
-        }
-    }
-
     /// Keep what a run left: its log, a headless agent's answer and its outputs.
     fn collect(&self, job: &Job, url: &str, key: &str, wid: &str, worker: &Value) {
         let client = net::kimo(url, Some(key));
@@ -1835,10 +1684,10 @@ impl Fleet {
     fn end(&self, job: &Job, code: Option<i32>, failure: Option<Failure>, why: &str) {
         let now = now_ms();
         // Cancelled (or moved on) meanwhile: what its machine says no longer counts.
-        if !self
-            .job(&job.id)
-            .is_ok_and(|j| j.state == JobState::Running)
-        {
+        let Ok(current) = self.job(&job.id) else {
+            return;
+        };
+        if !matches!(current.state, JobState::Running | JobState::Dispatched) {
             return;
         }
         let dev = job.device.clone();
@@ -1862,7 +1711,7 @@ impl Fleet {
         } else {
             (failure, why.to_string())
         };
-        let cancelled = why.starts_with("cancelled");
+        let cancelled = why.starts_with("cancelled") || current.cancel_requested;
         let next = match failure {
             None => None,
             Some(_) if cancelled => Some(Retry::No),
@@ -1876,6 +1725,7 @@ impl Fleet {
                     j.state = JobState::Succeeded;
                     j.ended_at = Some(now);
                     j.reason = None;
+                    j.cancel_requested = false;
                 }
                 Some(Retry::Same) => {
                     j.state = JobState::Ready;
@@ -1895,6 +1745,7 @@ impl Fleet {
                     j.reason = Some(format!("{why}: trying another machine"));
                 }
                 Some(Retry::No) => {
+                    j.cancel_requested = false;
                     j.state = if cancelled {
                         JobState::Cancelled
                     } else {

@@ -2406,3 +2406,113 @@ async fn jobs_run_in_a_fresh_checkout_of_a_commit() {
     }
     assert_eq!(manager.jobs().len(), 1);
 }
+
+/// Audit F2: work that starts while a shutdown waits wins, and nothing new starts once the
+/// shutdown is past its last check.
+#[tokio::test]
+async fn work_started_while_switching_off_stops_the_shutdown() {
+    for kind in ["terminal", "job"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (app, manager) = router_and_manager(tmp.path());
+        manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+        let marker = tmp.path().join("switched-off");
+        manager.set_shutdown_command(&format!("touch '{}'", marker.display()));
+        manager.set_shutdown_ignores_logins(true);
+        let off = app
+            .clone()
+            .oneshot(local(req(
+                "POST",
+                "/api/power/shutdown",
+                None,
+                None,
+                Some("{}"),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(off.status(), StatusCode::ACCEPTED, "{kind}");
+        // Right away, during the shutdown's short wait.
+        let project = tmp.path().join("home/dev/p");
+        std::fs::create_dir_all(&project).unwrap();
+        let body = if kind == "terminal" {
+            (
+                "/api/sessions",
+                serde_json::json!({ "kind": "shell", "name": "late", "cwd": project, "command": ["sleep", "20"] }),
+            )
+        } else {
+            (
+                "/api/jobs",
+                serde_json::json!({ "id": "late", "command": "sleep 20" }),
+            )
+        };
+        let started = app
+            .clone()
+            .oneshot(local(req(
+                "POST",
+                body.0,
+                None,
+                None,
+                Some(&body.1.to_string()),
+            )))
+            .await
+            .unwrap();
+        assert!(
+            started.status().is_success(),
+            "{kind}: {}",
+            started.status()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+        assert!(
+            !marker.exists(),
+            "{kind}: the shutdown ran with new work on the machine"
+        );
+        let power = json(
+            app.clone()
+                .oneshot(local(req("GET", "/api/power", None, None, None)))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(power["shutting_down"], false, "{kind}");
+        assert!(
+            power["last_error"].as_str().unwrap().contains("stopped"),
+            "{kind}: {power}"
+        );
+        if kind == "job" {
+            manager.cancel_job("late").unwrap();
+        }
+    }
+}
+
+/// A staged job that is cancelled ends at once and can never be started (the coordinator
+/// relies on it after an upload that failed half way).
+#[tokio::test]
+async fn a_cancelled_staged_job_never_starts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+    new_job(
+        &app,
+        serde_json::json!({ "id": "half", "command": "touch started", "start": false }),
+    )
+    .await;
+    let c = json(
+        app.clone()
+            .oneshot(local(req(
+                "POST",
+                "/api/jobs/half/cancel",
+                None,
+                None,
+                None,
+            )))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(c["state"], "cancelled");
+    let start = app
+        .clone()
+        .oneshot(local(req("POST", "/api/jobs/half/start", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::BAD_REQUEST);
+}

@@ -39,6 +39,7 @@ function factsLine(d) {
 export function initFleet({ api, state, run }) {
   let timer = null, logTimer = null;
   const data = { status: null, devices: [], jobs: [], workflows: [], events: [] };
+  const previews = new Map();
   const fleet = api.fleet;
 
   async function load() {
@@ -98,15 +99,18 @@ export function initFleet({ api, state, run }) {
     const actions = [
       '<button class="ui-button ghost k-small" data-do="log">log</button>',
       j.state === 'awaiting_approval' ? '<button class="ui-button k-small" data-do="approve">approve</button><button class="ui-button ghost k-small k-danger" data-do="reject">reject</button>' : '',
-      !['succeeded', 'failed', 'cancelled', 'skipped', 'awaiting_approval'].includes(j.state) ? '<button class="ui-button ghost k-small k-danger" data-do="cancel">cancel</button>' : '',
+      !['succeeded', 'failed', 'cancelled', 'skipped', 'awaiting_approval'].includes(j.state) && !j.cancel_requested ? '<button class="ui-button ghost k-small k-danger" data-do="cancel">cancel</button>' : '',
     ].join('');
     const answer = typeof j.result?.result === 'string' ? j.result.result : typeof j.result === 'string' ? j.result : '';
     return `<li data-job="${esc(j.id)}">
-      <span class="k-name" style="cursor:default">${esc(j.spec.task)}</span><span class="ui-badge ${JOB_BADGE[j.state] || 'stopped'}">${esc(words(j.state))}</span>
+      <span class="k-name" style="cursor:default">${esc(j.spec.task)}</span><span class="ui-badge ${j.cancel_requested ? 'paused' : JOB_BADGE[j.state] || 'stopped'}">${esc(j.cancel_requested ? 'cancelling' : words(j.state))}</span>
       <div class="k-meta">${j.device ? `<span>on ${esc(j.device)}</span>` : ''}<span>${esc(j.spec.runner)}</span>${j.attempt > 1 ? `<span>attempt ${j.attempt}</span>` : ''}${j.exit_code != null ? `<span>exit ${j.exit_code}</span>` : ''}<span>${ago(j.updated_at)}</span></div>
       ${j.reason ? `<div class="k-meta"><span>${esc(j.reason)}</span></div>` : ''}
       ${answer ? `<div class="k-meta"><span>${esc(answer.slice(0, 300))}</span></div>` : ''}
       ${outputs.length ? `<div class="k-meta">${outputs.map(o => `<a class="k-link" href="${esc(fleet.artifactUrl(j.id, o))}" target="_blank" rel="noopener">${esc(o)}</a>`).join('')}</div>` : ''}
+      ${(j.evidence || []).length ? `<div class="k-evidence">${j.evidence.map(e => e.job
+        ? `<div><a class="k-link" href="${esc(fleet.artifactUrl(e.job, e.path))}" target="_blank" rel="noopener">${esc(e.path)}</a> <small>from ${esc(e.step)}</small><pre class="k-log" data-preview="${esc(e.job)}" data-path="${esc(e.path)}" hidden></pre></div>`
+        : `<div><span class="k-warn">${esc(e.path)}: no step made it</span></div>`).join('')}</div>` : ''}
       <div class="k-actions">${actions}</div></li>`;
   }
 
@@ -128,6 +132,18 @@ export function initFleet({ api, state, run }) {
     const waiting = data.jobs.filter(j => j.state === 'awaiting_approval');
     const recent = [...waiting, ...data.jobs.filter(j => j.state !== 'awaiting_approval')].slice(0, 30);
     $('fleet-jobs').innerHTML = recent.map(jobRow).join('') || '<li class="ui-empty">No jobs yet. Tap + to run one on whichever machine fits.</li>';
+    // Small text evidence is shown in place, so an approval is decided on what it shows.
+    for (const pre of document.querySelectorAll('#fleet-jobs pre[data-preview]')) {
+      const key = `${pre.dataset.preview}/${pre.dataset.path}`;
+      const show = text => { pre.textContent = text; pre.hidden = !text; };
+      if (previews.has(key)) { show(previews.get(key)); continue; }
+      previews.set(key, '');
+      fetch(fleet.artifactUrl(pre.dataset.preview, pre.dataset.path)).then(r => r.ok ? r.text() : '').then(t => {
+        const text = /[\u0000-\u0008]/.test(t.slice(0, 2000)) ? '' : t.slice(0, 4000);
+        previews.set(key, text);
+        show(text);
+      }).catch(() => {});
+    }
     $('fleet-workflows').innerHTML = data.workflows.slice(0, 10).map(w => {
       const done = w.steps.filter(([, id]) => data.jobs.find(j => j.id === id)?.state === 'succeeded').length;
       return `<li><span class="k-name" style="cursor:default">${esc(w.name)}</span><span class="ui-badge ${JOB_BADGE[w.state] || 'paused'}">${esc(w.state)}</span>

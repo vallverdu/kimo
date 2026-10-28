@@ -562,6 +562,9 @@ impl Manager {
     }
 
     pub(crate) fn start(&self, id: &str) -> Result<()> {
+        // Not while the machine is switching off; a shutdown not yet past its last check sees
+        // this terminal and stops.
+        let _power = self.new_work()?;
         let mut inner = self.lock();
         let spec = inner
             .state

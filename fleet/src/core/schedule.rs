@@ -45,17 +45,17 @@ pub fn qualifies(spec: &JobSpec, c: &Candidate) -> bool {
     if !spec.requires.labels.iter().all(|l| c.labels.contains(l)) {
         return false;
     }
-    let most = |a: Option<f64>, b: Option<f64>| match (a, b) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (a, b) => a.or(b),
-    };
+    // What the machine reports wins; the registry is the plan for machines not seen yet.
+    // Memory and VRAM are what is installed (the largest GPU's), not what is free now: a job
+    // holds a GPU exclusively through `resources.gpu`.
+    let known = |reported: Option<f64>, registry: Option<f64>| reported.or(registry);
     if let Some(gb) = spec.requires.memory_gb {
-        if most(c.resources.memory_gb, c.memory_gb).is_none_or(|m| m + 0.01 < gb) {
+        if known(c.memory_gb, c.resources.memory_gb).is_none_or(|m| m + 0.01 < gb) {
             return false;
         }
     }
     if let Some(gb) = spec.requires.vram_gb {
-        if most(c.resources.vram_gb, c.vram_gb).is_none_or(|v| v + 0.01 < gb) {
+        if known(c.vram_gb, c.resources.vram_gb).is_none_or(|v| v + 0.01 < gb) {
             return false;
         }
     }
@@ -201,6 +201,19 @@ mod tests {
         pref.prefer = Some("nuc-extreme".into());
         assert_eq!(
             choose(&pref, &fleet(), &[]),
+            Choice::Wake("nuc-extreme".into())
+        );
+        // What a machine reports beats what the registry says (audit F7): 12 GB written down,
+        // 6 GB seen.
+        let mut overstated = fleet();
+        overstated[0].vram_gb = Some(6.0);
+        assert_eq!(
+            choose(&big, &overstated, &[]),
+            Choice::Wait("no machine has labels cuda and 10 GB of VRAM".into())
+        );
+        overstated[0].vram_gb = Some(12.0);
+        assert_eq!(
+            choose(&big, &overstated, &[]),
             Choice::Wake("nuc-extreme".into())
         );
         // A machine it failed on is left out.

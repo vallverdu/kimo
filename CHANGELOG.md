@@ -67,6 +67,18 @@ version, and that section becomes the GitHub release notes.
   key can forget itself (`DELETE /api/fleet-key`).
 - Pairing a coordinator with a kimo too old for fleet keys no longer leaves an owner key
   behind: the coordinator revokes it and asks you to update kimo there.
+- Fixes from the requirements audit:
+  - A job whose start was not confirmed is checked with its machine before it goes anywhere
+    else, so it never runs twice. Runs a lost machine may still have are ended when it comes
+    back, and their GPU stays reserved meanwhile.
+  - Cancelling waits for the machine to confirm.
+  - A shutdown checks one last time and gives way to work started meanwhile.
+  - A workflow step never runs without its inputs.
+  - What a machine reports beats the registry.
+  - Notifications work over HTTPS, and a failed one is recorded.
+  - Approvals show the files they name.
+  - The phone ignores late answers from a kimo it switched away from.
+  - Text sent while a terminal reconnects is kept, not lost.
 - Releases include `kimo-fleet` next to `kimo`; the install script installs both.
 
 ## 0.1.14

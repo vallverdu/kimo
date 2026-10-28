@@ -11,7 +11,11 @@ kimo is licensed under MIT OR Apache-2.0 (see `LICENSE-MIT`, `LICENSE-APACHE`). 
 
 Rust dependencies are listed in `Cargo.lock`; each keeps its own license (all permissive:
 MIT, Apache-2.0, BSD, ISC, Zlib, Unicode or similar). `cargo license` (from the `cargo-license`
-crate) prints them.
+crate) prints them. `kimo-fleet` also builds in TLS (for notifications and ZeroTier Central):
+[rustls](https://github.com/rustls/rustls) (Apache-2.0, ISC or MIT),
+[ring](https://github.com/briansmith/ring) (Apache-2.0 and ISC, with code from BoringSSL under
+its notices) and [webpki-roots](https://github.com/rustls/webpki-roots) (Mozilla's root
+certificates, CDLA-Permissive-2.0).
 
 The web client loads Roboto Mono from Google Fonts when it has internet access, and falls
 back to the system monospace font.

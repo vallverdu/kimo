@@ -298,11 +298,24 @@ pub fn check_workflow(w: &Workflow) -> Result<Vec<usize>, String> {
             }
         }
         for from in s.inputs.values() {
-            let step = from.split('/').next().unwrap_or_default();
+            let (step, path) = from.split_once('/').unwrap_or_default();
             if !s.needs.iter().any(|n| n == step) {
                 return Err(format!(
                     "{}: its input {from} comes from {step}, which it does not need",
                     s.task
+                ));
+            }
+            // An input is one of the outputs its step declares (audit F3).
+            let made = &w.steps[names[step]].outputs;
+            if !made.iter().any(|o| o == path) {
+                return Err(format!(
+                    "{}: its input {from} is not an output of {step} (it makes: {})",
+                    s.task,
+                    if made.is_empty() {
+                        "nothing".into()
+                    } else {
+                        made.join(", ")
+                    }
                 ));
             }
         }
@@ -450,6 +463,13 @@ steps:
             .inputs
             .insert("x".into(), "analyse/REPORT.md".into());
         assert!(check_workflow(&w).unwrap_err().contains("does not need"));
+        let mut w: Workflow = serde_yaml_ng::from_str(VISION).unwrap();
+        w.steps[2]
+            .inputs
+            .insert("x".into(), "train/missing.txt".into());
+        assert!(check_workflow(&w)
+            .unwrap_err()
+            .contains("not an output of train"));
         let mut w: Workflow = serde_yaml_ng::from_str(VISION).unwrap();
         w.steps[1].run = None;
         assert!(check_workflow(&w).unwrap_err().contains("needs run:"));

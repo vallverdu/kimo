@@ -62,6 +62,8 @@ impl Machine {
         manager.set_shutdown_ignores_logins(true);
         let off_marker = tmp.join(name).join("switched-off");
         manager.set_shutdown_command(&format!("touch '{}'", off_marker.display()));
+        // The stand-in leaves kimo running: it takes work again right away.
+        manager.set_shutdown_grace(Duration::ZERO);
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -490,8 +492,13 @@ steps:
         analyse.result.as_ref().unwrap()["result"],
         "recommend: ship (compare the results)"
     );
-    // You approve: the workflow is done.
+    // What it asks you to look at comes with it (audit: approval evidence).
     let approval = step(&fleet, "approve-release");
+    assert_eq!(approval.evidence.len(), 1);
+    assert_eq!(approval.evidence[0].path, "results.txt");
+    assert_eq!(approval.evidence[0].step.as_deref(), Some("bench"));
+    assert_eq!(approval.evidence[0].job.as_deref(), Some(bench.id.as_str()));
+    // You approve: the workflow is done.
     let f = fleet.clone();
     blocking(move || f.approve(&approval.id, true))
         .await
@@ -921,4 +928,376 @@ async fn machines_on_tailscale_are_found_with_what_answers_there() {
     assert_eq!(by("jetson").kimo, "unknown");
     assert!(by("pi4").seen.this);
     nuc.off().await;
+}
+
+/// Audit F8: notifications go out over HTTPS (TLS is built in) and a failed one is recorded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notifications_arrive_and_failures_are_recorded() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A stand-in ntfy over HTTP.
+    let got = Arc::new(std::sync::Mutex::new(vec![]));
+    let seen = got.clone();
+    let ntfy = axum::Router::new().route(
+        "/fleet",
+        axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
+            let seen = seen.clone();
+            async move {
+                let title = headers
+                    .get("title")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                seen.lock().unwrap().push((title, body));
+                "ok"
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, ntfy).await.unwrap() });
+    let fleet = fleet(
+        tmp.path(),
+        &format!("ntfy: http://127.0.0.1:{port}/fleet\ndevices: {{}}\n"),
+    );
+    fleet
+        .submit(serde_yaml_ng::from_str("task: release\nrunner: approval\n").unwrap())
+        .unwrap();
+    for _ in 0..50 {
+        if !got.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let got = got.lock().unwrap().clone();
+    assert_eq!(got.len(), 1);
+    assert!(
+        got[0].0.starts_with("kimo fleet") && got[0].1.contains("release waits for your approval")
+    );
+
+    // HTTPS to something that is not TLS: the handshake fails (TLS is there), and it is recorded.
+    let plain = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = plain.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for s in plain.incoming().flatten() {
+            use std::io::Write;
+            let mut s = s;
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\n\r\nnot tls");
+        }
+    });
+    let tmp2 = tempfile::tempdir().unwrap();
+    let fleet = fleet_with(
+        tmp2.path(),
+        &format!("ntfy: https://127.0.0.1:{port}/fleet\ndevices: {{}}\n"),
+        |_| {},
+    );
+    fleet
+        .submit(serde_yaml_ng::from_str("task: release\nrunner: approval\n").unwrap())
+        .unwrap();
+    let mut failure = None;
+    for _ in 0..100 {
+        failure = fleet
+            .events(None, None, 20)
+            .into_iter()
+            .find(|e| e.detail.starts_with("notification not delivered"));
+        if failure.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let failure = failure.expect("the failed notification is recorded").detail;
+    assert!(!failure.contains("TLS required"), "{failure}");
+}
+
+/// A proxy in front of a machine that loses the answer of the first job it passes on (the job
+/// is created over there; the coordinator hears 503).
+async fn lossy_proxy(target: String) -> u16 {
+    let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let app = axum::Router::new().fallback(move |req: axum::extract::Request| {
+        let (target, lost) = (target.clone(), lost.clone());
+        async move {
+            let method = req.method().to_string();
+            let path = req
+                .uri()
+                .path_and_query()
+                .map(|p| p.to_string())
+                .unwrap_or_default();
+            let token = req
+                .headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(str::to_string);
+            let ct = req
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let body = axum::body::to_bytes(req.into_body(), 1 << 20)
+                .await
+                .unwrap()
+                .to_vec();
+            let first_job = method == "POST"
+                && path == "/api/jobs"
+                && !lost.swap(true, std::sync::atomic::Ordering::SeqCst);
+            let (status, ct, bytes) = tokio::task::spawn_blocking(move || {
+                kimo::client::Client::new(&target, token)
+                    .raw(
+                        &method,
+                        path.trim_start_matches("/api"),
+                        body,
+                        ct.as_deref(),
+                        30,
+                    )
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+            if first_job {
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    "lost on the way",
+                )
+                    .into_response();
+            }
+            let mut res =
+                (axum::http::StatusCode::from_u16(status).unwrap(), bytes).into_response();
+            if let Some(ct) = ct {
+                res.headers_mut()
+                    .insert("content-type", ct.parse().unwrap());
+            }
+            res
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    port
+}
+
+use axum::response::IntoResponse;
+
+async fn pair_all(fleet: &Arc<Fleet>, machines: &[(&str, &Machine)]) {
+    for (id, m) in machines {
+        let code = m.pairing_code();
+        let (f, id) = (fleet.clone(), id.to_string());
+        blocking(move || f.pair(&id, &code)).await.unwrap();
+    }
+}
+
+/// Audit F1: an answer lost after the machine took the job never makes it run twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_answer_never_runs_a_job_twice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Machine::new(tmp.path(), "a");
+    let mut b = Machine::new(tmp.path(), "b");
+    a.on().await;
+    b.on().await;
+    let proxy = lossy_proxy(a.url()).await;
+    let fleet = fleet(
+        tmp.path(),
+        &format!(
+            "devices:\n  a:\n    kimo: http://127.0.0.1:{proxy}\n    labels: [x]\n    cost: 1\n  b:\n    kimo: {}\n    labels: [x]\n    cost: 2\n",
+            b.url()
+        ),
+    );
+    pair_all(&fleet, &[("a", &a), ("b", &b)]).await;
+    until(&fleet, 10, "machines ready", |f| {
+        state(f, "a") == "ready" && state(f, "b") == "ready"
+    })
+    .await;
+    let marker = tmp.path().join("ran");
+    let job = fleet
+        .submit(
+            serde_yaml_ng::from_str(&format!(
+                "task: once\nrun: echo $(hostname) >> '{}'; sleep 1\nrequires: {{ labels: [x] }}\nretries: 0\n",
+                marker.display()
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    until(&fleet, 30, "the job done", |f| {
+        f.job(&job.id).unwrap().state.finished()
+    })
+    .await;
+    let done = fleet.job(&job.id).unwrap();
+    assert_eq!(
+        done.state,
+        kimo_fleet::core::jobs::JobState::Succeeded,
+        "{done:#?}"
+    );
+    assert_eq!(done.device.as_deref(), Some("a"), "adopted where it runs");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap().lines().count(),
+        1,
+        "ran once"
+    );
+    assert!(b.manager.jobs().is_empty(), "never sent to b");
+    a.off().await;
+    b.off().await;
+}
+
+/// Audit F1: a coordinator that restarts with a job on its way checks it with the machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_coordinator_settles_jobs_that_were_on_their_way() {
+    use kimo_fleet::core::jobs::JobState;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Machine::new(tmp.path(), "a");
+    let mut b = Machine::new(tmp.path(), "b");
+    a.on().await;
+    b.on().await;
+    let registry = format!(
+        "devices:\n  a:\n    kimo: {}\n    labels: [x]\n    cost: 1\n  b:\n    kimo: {}\n    labels: [x]\n    cost: 2\n",
+        a.url(),
+        b.url()
+    );
+    let marker = tmp.path().join("ran");
+    let (arrived, missing) = {
+        let fleet = fleet(tmp.path(), &registry);
+        pair_all(&fleet, &[("a", &a), ("b", &b)]).await;
+        let spec = |n: &str| {
+            serde_yaml_ng::from_str(&format!(
+                "task: {n}\nrun: echo {n} >> '{}'\nrequires: {{ labels: [x] }}\n",
+                marker.display()
+            ))
+            .unwrap()
+        };
+        (
+            fleet.submit(spec("arrived")).unwrap(),
+            fleet.submit(spec("missing")).unwrap(),
+        )
+    };
+    // As the coordinator left them: both written down as sent to a; only one got there.
+    let db = kimo_fleet::services::db::Db::open(&tmp.path().join("fleet/fleet.db")).unwrap();
+    for j in [&arrived, &missing] {
+        let mut j = j.clone();
+        j.state = JobState::Dispatched;
+        j.device = Some("a".into());
+        j.attempt = 1;
+        j.worker_job = Some(format!("{}-1", j.id));
+        db.put_job(&j.id, j.created_at, "dispatched", &j).unwrap();
+    }
+    a.manager
+        .create_job(
+            serde_json::from_value(json!({
+                "id": format!("{}-1", arrived.id),
+                "command": format!("echo arrived >> '{}'", marker.display()),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let fleet = fleet(tmp.path(), &registry);
+    until(&fleet, 30, "both done", |f| {
+        f.job(&arrived.id).unwrap().state.finished() && f.job(&missing.id).unwrap().state.finished()
+    })
+    .await;
+    assert_eq!(fleet.job(&arrived.id).unwrap().state, JobState::Succeeded);
+    assert_eq!(fleet.job(&arrived.id).unwrap().device.as_deref(), Some("a"));
+    assert_eq!(fleet.job(&missing.id).unwrap().state, JobState::Succeeded);
+    let ran = std::fs::read_to_string(&marker).unwrap();
+    assert_eq!(ran.lines().filter(|l| *l == "arrived").count(), 1, "{ran}");
+    assert_eq!(ran.lines().filter(|l| *l == "missing").count(), 1, "{ran}");
+    a.off().await;
+    b.off().await;
+}
+
+/// Audit F3: a step never runs without its inputs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_never_runs_without_its_inputs() {
+    use kimo_fleet::core::jobs::JobState;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Machine::new(tmp.path(), "a");
+    a.on().await;
+    let fleet = fleet(
+        tmp.path(),
+        &format!("devices:\n  a:\n    kimo: {}\n    labels: [x]\n", a.url()),
+    );
+    pair_all(&fleet, &[("a", &a)]).await;
+    // An input that is not an output of its step: refused.
+    let wrong = "workflow: w\nsteps:\n  - task: producer\n    run: echo d > data.txt\n    outputs: [data.txt]\n  - task: consumer\n    needs: [producer]\n    inputs: { m: producer/missing.txt }\n    run: cat missing.txt || echo MISSING\n";
+    let e = fleet
+        .submit_workflow(serde_yaml_ng::from_str(wrong).unwrap())
+        .unwrap_err();
+    assert!(
+        format!("{e:#}").contains("not an output of producer"),
+        "{e:#}"
+    );
+    // An optional producer that fails leaves its consumer without the input: the consumer
+    // fails, saying so, and never runs.
+    let marker = tmp.path().join("consumer-ran");
+    let flow = format!(
+        "workflow: w\nsteps:\n  - task: producer\n    run: exit 1\n    outputs: [data.txt]\n    optional: true\n    requires: {{ labels: [x] }}\n  - task: consumer\n    needs: [producer]\n    inputs: {{ m: producer/data.txt }}\n    run: touch '{}'\n    requires: {{ labels: [x] }}\n",
+        marker.display()
+    );
+    let run = fleet
+        .submit_workflow(serde_yaml_ng::from_str(&flow).unwrap())
+        .unwrap();
+    until(&fleet, 30, "the workflow ended", |f| {
+        f.workflow(&run.id).unwrap().0.state != kimo_fleet::services::fleet::RunState::Running
+    })
+    .await;
+    let (w, jobs) = fleet.workflow(&run.id).unwrap();
+    assert_eq!(w.state, kimo_fleet::services::fleet::RunState::Failed);
+    assert_eq!(jobs[1].state, JobState::Failed);
+    assert!(jobs[1]
+        .reason
+        .as_deref()
+        .unwrap()
+        .contains("producer/data.txt is not available"));
+    assert!(!marker.exists(), "the consumer never ran");
+    a.off().await;
+}
+
+/// Audit F4: cancelling a job whose machine does not answer keeps it (and its lease) until
+/// the machine confirms the run ended.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_waits_for_the_machine_to_confirm() {
+    use kimo_fleet::core::jobs::JobState;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut a = Machine::new(tmp.path(), "a");
+    a.on().await;
+    let fleet = fleet(
+        tmp.path(),
+        &format!("devices:\n  a:\n    kimo: {}\n    labels: [x]\n", a.url()),
+    );
+    pair_all(&fleet, &[("a", &a)]).await;
+    let job = fleet
+        .submit(
+            serde_yaml_ng::from_str("task: long\nrun: sleep 60\nrequires: { labels: [x] }\n")
+                .unwrap(),
+        )
+        .unwrap();
+    until(&fleet, 20, "running", |f| {
+        f.job(&job.id).unwrap().state == JobState::Running
+    })
+    .await;
+    let wid = fleet.job(&job.id).unwrap().worker_job.unwrap();
+    // Its machine's kimo goes away; the job itself keeps running there.
+    a.off().await;
+    let f = fleet.clone();
+    let id = job.id.clone();
+    let c = blocking(move || f.cancel(&id)).await.unwrap();
+    assert_eq!(c.state, JobState::Running);
+    assert!(c.cancel_requested);
+    assert!(c.reason.unwrap().contains("does not answer"));
+    assert_eq!(
+        fleet.device("a").unwrap().jobs,
+        vec![job.id.clone()],
+        "its lease stays"
+    );
+    assert_eq!(
+        a.manager.job(&wid).unwrap().state,
+        kimo::core::jobs::JobState::Running
+    );
+    // Back: the cancel goes through, and only then is the job cancelled.
+    a.on().await;
+    until(&fleet, 30, "cancelled", |f| {
+        f.job(&job.id).unwrap().state == JobState::Cancelled
+    })
+    .await;
+    assert_eq!(
+        a.manager.job(&wid).unwrap().state,
+        kimo::core::jobs::JobState::Cancelled
+    );
+    assert!(fleet.device("a").unwrap().jobs.is_empty());
+    a.off().await;
 }

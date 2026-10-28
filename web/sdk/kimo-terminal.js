@@ -4,7 +4,8 @@
 //   <kimo-terminal url="https://kimo.your-tailnet.ts.net" token="kimo_…" session="api-refactor-1a2b3c"></kimo-terminal>
 //
 // Or set `element.kimo = new Kimo({...})` instead of url/token. Attributes: `session`,
-// `readonly` (watch only), `font-size`. Methods: `send(text)` types into the terminal, `focus()`.
+// `readonly` (watch only), `font-size`. Methods: `send(text)` types into the terminal (false
+// when disconnected: nothing is queued), `focus()`; `connected`, with `open`/`close` events.
 // Colours follow the page's --color-background / --color-ink tokens when defined.
 
 import { Kimo } from './kimo.js';
@@ -138,10 +139,18 @@ class KimoTerminal extends HTMLElement {
     }
   }
 
-  sendBytes(bytes) { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(bytes); }
+  /** Is the terminal connected (typing reaches it)? `open` and `close` events say when this changes. */
+  get connected() { return this.ws?.readyState === WebSocket.OPEN; }
 
-  /** Type text into the terminal (add '\r' for Enter). */
-  send(text) { this.sendBytes(encoder.encode(text)); }
+  /** Send bytes; `false` when not connected (nothing was sent: keep what was to be sent). */
+  sendBytes(bytes) {
+    if (!this.connected) return false;
+    this.ws.send(bytes);
+    return true;
+  }
+
+  /** Type text into the terminal (add '\r' for Enter); `false` when not connected. */
+  send(text) { return this.sendBytes(encoder.encode(text)); }
 
   focus() { this.term?.focus(); }
 }

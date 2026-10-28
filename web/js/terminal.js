@@ -63,12 +63,26 @@ compose.addEventListener('submit', e => {
   if (!box.value.trim() && !ready.length) return;
   // Image paths first (the agent attaches them), then the words.
   const text = [...ready.map(a => quote(a.path)), box.value].filter(Boolean).join(' ');
-  // Text first, then Enter separately so TUIs treat it as typed input rather than a paste.
-  screen.send(text);
-  setTimeout(() => screen.send('\r'), 30);
+  // Not connected: nothing is sent and nothing is lost (the draft and images stay).
+  if (!screen.send(text)) return toast('Not connected: your message is kept. Send it again once the terminal is back.', true);
   box.value = '';
   clearAttachments();
+  // Text first, then Enter separately so TUIs treat it as typed input rather than a paste.
+  // Enter is never sent again by itself: the text may have arrived.
+  setTimeout(() => {
+    if (!screen.send('\r')) toast('The message was typed but Enter did not arrive: press ⏎ once the terminal is back.', true);
+  }, 30);
 });
+
+// While disconnected, sending waits (the draft is kept) and the box says so.
+const sendButton = compose.querySelector('button:not([type=button])');
+function showConnection(connected) {
+  sendButton.disabled = !connected;
+  compose.elements.text.placeholder = connected ? 'Message the agent…' : 'Reconnecting… your message is kept';
+}
+showConnection(false);
+screen.addEventListener('open', () => showConnection(true));
+screen.addEventListener('close', () => showConnection(false));
 
 // ----- photos and images for the agent -----
 

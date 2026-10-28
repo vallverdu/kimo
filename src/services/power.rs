@@ -28,9 +28,14 @@ pub struct Power {
 #[derive(Default)]
 pub struct Shutdown {
     started: bool,
+    /// Past the last check: the command runs, and no new work may start.
+    committed: bool,
     last_error: Option<String>,
     /// The command, when not the system's (tests, setups that need another).
     command: Option<String>,
+    /// After a shutdown command that worked, how long new work is still refused (the machine
+    /// is going down); past it, kimo is evidently still up and takes work again.
+    grace: Option<Duration>,
     /// People logged in do not keep the machine on (`KIMO_SHUTDOWN_IGNORE_LOGINS=1`: a
     /// desktop that logs in by itself).
     ignore_logins: bool,
@@ -52,6 +57,22 @@ impl Manager {
             .or_else(|| std::env::var("KIMO_SHUTDOWN_COMMAND").ok())
             .filter(|c| !c.trim().is_empty())
             .unwrap_or_else(|| default_shutdown_command(std::env::consts::OS).to_string())
+    }
+
+    /// Starting new work (a terminal, a job): refused once a shutdown is past its last check;
+    /// before that, the new work wins and the shutdown is stopped. Hold the guard while the
+    /// work starts.
+    pub(crate) fn new_work(&self) -> Result<std::sync::MutexGuard<'_, Shutdown>, anyhow::Error> {
+        let s = self.shutdown_state();
+        if s.committed {
+            anyhow::bail!("this machine is switching off");
+        }
+        Ok(s)
+    }
+
+    /// How long new work is refused after a shutdown command that worked (default 30 s).
+    pub fn set_shutdown_grace(&self, grace: Duration) {
+        self.shutdown_state().grace = Some(grace);
     }
 
     /// Use another command to switch the machine off (`sh -c`).
@@ -77,6 +98,12 @@ impl Manager {
 
     /// What keeps this machine on, with the people logged in already looked up.
     pub(crate) fn blockers_with(&self, logins: &[crate::core::node::Login]) -> Vec<Blocker> {
+        let logins = if self.logins_count() { logins } else { &[] };
+        self.blockers_of(logins)
+    }
+
+    /// What keeps this machine on, counting exactly these logins (takes no shutdown lock).
+    fn blockers_of(&self, logins: &[crate::core::node::Login]) -> Vec<Blocker> {
         let sessions: Vec<(String, bool)> = self
             .sessions()
             .into_iter()
@@ -84,7 +111,6 @@ impl Manager {
             .map(|s| (s.spec.name.clone(), s.status == SessionStatus::Paused))
             .collect();
         let jobs: Vec<String> = self.running_jobs();
-        let logins = if self.logins_count() { logins } else { &[] };
         blockers(&sessions, &jobs, logins)
     }
 
@@ -118,6 +144,34 @@ impl Manager {
         let me = self.clone();
         std::thread::spawn(move || {
             std::thread::sleep(DELAY);
+            // The last check, holding off new work: something that started meanwhile wins.
+            {
+                let logins = if me.logins_count() {
+                    crate::services::node::logins()
+                } else {
+                    vec![]
+                };
+                let mut s = me.shutdown_state();
+                if !s.started {
+                    return;
+                }
+                if !force {
+                    // `blockers_with` reads the sessions: the shutdown lock is taken first,
+                    // as when work starts.
+                    let blockers = me.blockers_of(&logins);
+                    if !blockers.is_empty() {
+                        let what: Vec<&str> = blockers.iter().map(|b| b.what.as_str()).collect();
+                        tracing::info!("not switching off: {} started", what.join(", "));
+                        s.started = false;
+                        s.last_error = Some(format!(
+                            "switching off was stopped: {} started meanwhile",
+                            what.join(", ")
+                        ));
+                        return;
+                    }
+                }
+                s.committed = true;
+            }
             let result = run_for(
                 Command::new("sh").args(["-c", &cmd]),
                 Duration::from_secs(60),
@@ -134,10 +188,26 @@ impl Manager {
                 ),
                 Err(e) => Some(format!("{e:#}")),
             };
+            if error.is_none() {
+                // Going down: still here after the grace, it did not switch off.
+                let grace = me.shutdown_state().grace.unwrap_or(Duration::from_secs(30));
+                std::thread::sleep(grace);
+                let mut s = me.shutdown_state();
+                if s.committed {
+                    s.started = false;
+                    s.committed = false;
+                    s.last_error = Some(format!(
+                        "still running {} s after the shutdown command",
+                        grace.as_secs()
+                    ));
+                }
+                return;
+            }
             if let Some(e) = error {
                 tracing::warn!("cannot switch this machine off: {e}");
                 let mut s = me.shutdown_state();
                 s.started = false;
+                s.committed = false;
                 s.last_error = Some(e);
             }
         });

@@ -226,6 +226,19 @@ power: { wake_if_needed: true }
 - **Retries.** A failed job is retried on the same machine (`retries:`). A job lost with its
   machine is retried on another.
 
+**When the network is not reliable:**
+
+- A run's id (`<job>-<attempt>`) is written down before the job is sent. If the machine's
+  answer does not come, the coordinator asks the machine about that id before doing
+  anything else:
+  - if the machine has it, the run is adopted;
+  - if the machine says it does not, the job is placed again under the same id;
+  - if the machine cannot be asked, the job waits as *dispatched* and keeps its lease.
+- A job that loses its machine moves on. The run it may have left there is ended when the
+  machine answers again, and its GPU stays reserved until then.
+- **Cancelling** a job on a machine shows *cancelling* until the machine confirms the run
+  ended.
+
 A **workflow** is a list of steps:
 
 ```yaml
@@ -252,7 +265,11 @@ steps:
 - **Outputs.** When a step succeeds, the coordinator copies its `outputs` from the machine
   and keeps them under their SHA-256. Later steps get them as `inputs`, at the same path,
   even when the machine that made them is off by then.
-- **Approvals** wait for you in the Fleet tab, or `kimo-fleet approve <job>`.
+- **Approvals** wait for you in the Fleet tab, or `kimo-fleet approve <job>`. The files
+  their `show:` names, from earlier steps, come with them, and small text files are shown in
+  place.
+- An input must be one of the `outputs` of the step it names. A step whose input was not
+  made (its step failed, even an optional one) fails rather than running without it.
 
 Run them with `kimo-fleet run file.yaml`, from the Fleet tab (+), or through the SDK:
 `kimo.fleet.submit(job)` and `kimo.fleet.submitWorkflow(yaml)`.
@@ -321,6 +338,8 @@ machines on local ports:
 
 - one-way pairing and what a fleet key may do;
 - the magic packet (caught on a local socket);
+- a lost answer after the machine took a job (it runs once), a coordinator restart with
+  jobs on their way, cancelling while the machine does not answer, and missing inputs;
 - a job waking a machine, running there, and its output kept;
 - idle shutdown through the machine's own check, and refusal while work runs there;
 - holds and manual control;

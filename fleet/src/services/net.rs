@@ -57,24 +57,22 @@ pub fn send_wol(mac: [u8; 6], to: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-/// A notification to the owner's ntfy topic (in the background; failures are logged).
-pub fn notify(ntfy: Option<String>, title: String, body: String) {
-    let Some(url) = ntfy else {
-        return;
-    };
-    std::thread::spawn(move || {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(10)))
-            .build()
-            .into();
-        if let Err(e) = agent
-            .post(&url)
-            .header("Title", &title)
-            .send(body.as_bytes())
-        {
-            tracing::warn!("cannot notify through {url}: {e}");
-        }
-    });
+/// Send a notification to an ntfy topic URL (HTTPS with checked certificates, or HTTP).
+pub fn notify(url: &str, title: &str, body: &str) -> Result<()> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let res = agent
+        .post(url)
+        .header("Title", title)
+        .send(body.as_bytes())
+        .map_err(|e| anyhow!("{e}"))?;
+    if !res.status().is_success() {
+        anyhow::bail!("{url} answered {}", res.status());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

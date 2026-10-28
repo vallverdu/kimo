@@ -457,6 +457,8 @@ impl Manager {
     }
 
     fn start_runner(&self, dir: &Path) -> Result<()> {
+        // As for terminals: not while the machine is switching off.
+        let _power = self.new_work()?;
         // The runner detaches at once: this waits only for that.
         let status = Command::new(self.job_runner()?)
             .arg("job-run")
@@ -608,6 +610,20 @@ impl Manager {
         let job = self.job(id)?;
         if job.state.finished() {
             return Ok(job);
+        }
+        if job.state == JobState::Staged {
+            // Never started: it ends here, and can never be started any more.
+            write_atomic(
+                &dir.join("exit.json"),
+                &serde_json::to_vec(&Exit {
+                    cancelled: true,
+                    ended_at: now_ms(),
+                    ..Default::default()
+                })?,
+            )?;
+            let _ = std::fs::remove_file(dir.join("staged"));
+            self.changed();
+            return self.job(id);
         }
         std::fs::write(dir.join("cancel"), b"")?;
         if let Some(pid) = read_number(&dir.join("pid")) {

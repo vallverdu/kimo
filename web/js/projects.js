@@ -2,7 +2,7 @@
 import { $, esc, shortPath, toast } from './ui.js';
 import { initReview } from './review.js';
 
-export function initProjects({ api, state, run, terminal }) {
+export function initProjects({ api, state, run, terminal, openHere = () => true }) {
   const review = initReview({ api });
   const sheet = $('sheet-project'), form = sheet.querySelector('form'), folderSheet = $('sheet-folder');
 
@@ -53,8 +53,9 @@ export function initProjects({ api, state, run, terminal }) {
       const taken = new Set(state.sessions.map(s => s.name));
       let name = `${p.name}${branch} ${kind}`;
       for (let n = 2; taken.has(name); n++) name = `${p.name}${branch} ${kind} ${n}`;
-      const s = await run(api.createSession({ name, kind, cwd }));
-      if (s) terminal.open(s);
+      const client = api.forHost(api.host);
+      const s = await run(client.createSession({ name, kind, cwd }));
+      if (s && openHere(client, s)) terminal.open(s);
       return;
     }
     if (e.target.closest('[data-do=files]')) return review.open(p, 'files');
@@ -91,7 +92,8 @@ export function initProjects({ api, state, run, terminal }) {
     e.preventDefault();
     const f = form.elements;
     const body = { mode: f.mode.value, name: f.name.value, path: f.path.value || null, git: f.git.checked, url: f.url.value || null };
-    const made = await run(api.createProject(body), body.mode === 'clone' ? 'Cloning…' : 'Project ready');
+    const client = api.forHost(api.host);
+    const made = await run(client.createProject(body), body.mode === 'clone' ? 'Cloning…' : 'Project ready');
     if (!made) return;
     sheet.close();
     form.reset();
@@ -101,7 +103,7 @@ export function initProjects({ api, state, run, terminal }) {
     if (made.reopened) toast(n ? `${made.project.name} was already a project: opened it` : `${made.project.name} is already a project`);
     else if (n) toast(`Continuing ${n === 1 ? 'its last conversation' : `its last ${n} conversations`}`);
     const open = made.session || made.continued?.[0];
-    if (open) terminal.open(open);
+    if (open && openHere(client, open)) terminal.open(open);
   });
 
   // ----- earlier conversations -----
@@ -134,8 +136,9 @@ export function initProjects({ api, state, run, terminal }) {
       if (s) terminal.open(s);
       return;
     }
-    const s = await run(api.continueConversation({ agent: li.dataset.agent, cwd: historyProject.path, id: li.dataset.conv, name: li.querySelector('strong').textContent.slice(0, 32), start: true }), 'Continuing the conversation');
-    if (s) terminal.open(s);
+    const client = api.forHost(api.host);
+    const s = await run(client.continueConversation({ agent: li.dataset.agent, cwd: historyProject.path, id: li.dataset.conv, name: li.querySelector('strong').textContent.slice(0, 32), start: true }), 'Continuing the conversation');
+    if (s && openHere(client, s)) terminal.open(s);
   });
 
   // ----- folder picker -----

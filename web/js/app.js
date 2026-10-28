@@ -158,8 +158,9 @@ const parts = {};
 
 // The memory report; announces agents kimo stopped to free memory since the last one.
 async function loadMemory() {
-  const m = await api.memory().catch(() => null);
-  if (!m) return;
+  const gen = generation;
+  const m = await api.forHost(api.host).memory().catch(() => null);
+  if (!m || !isCurrent(gen)) return;
   const newest = Math.max(0, ...m.freed.map(f => f.at));
   if (state.seenFreed != null) {
     for (const f of m.freed.filter(f => f.at > state.seenFreed && f.reason !== 'asked')) {
@@ -250,16 +251,26 @@ function render() {
 
 // ----- data -----
 
+// Each switch to another kimo starts a new generation: answers that arrive for an older one
+// (a slow host, a stale event stream) are dropped, so what is shown is always the selected
+// kimo's. Every load uses a client bound to the kimo it was asked of.
+let generation = 0;
+const isCurrent = gen => gen === generation;
+
 async function refresh() {
+  const gen = generation, client = api.forHost(api.host);
   try {
-    [state.sessions, state.accounts, state.status, state.apps, state.projects, state.usage] = await Promise.all([
-      api.sessions(), api.accounts(), api.status(), api.clients().catch(() => []), api.projects().catch(() => []),
-      api.usage().catch(() => []),
+    const got = await Promise.all([
+      client.sessions(), client.accounts(), client.status(), client.clients().catch(() => []), client.projects().catch(() => []),
+      client.usage().catch(() => []),
     ]);
+    if (!isCurrent(gen)) return false;
+    [state.sessions, state.accounts, state.status, state.apps, state.projects, state.usage] = got;
     render();
     loadMemory();
     return true;
   } catch (e) {
+    if (!isCurrent(gen)) return false;
     // A kimo this one cannot reach with its key, or no longer paired: back to this one.
     if (api.host && (e.status === 401 || e.status === 404)) { useHost(null); return refresh(); }
     if (e.status === 401) {
@@ -277,9 +288,11 @@ async function refresh() {
 let unsubscribe = null;
 async function connect() {
   unsubscribe?.();
-  if (!(await refresh())) return;
+  unsubscribe = null;
+  const gen = generation, client = api.forHost(api.host);
+  if (!(await refresh()) || !isCurrent(gen)) return;
   // Owner-only extras: the colour scheme, new versions, other kimos (app keys get a 403).
-  api.settings().then(st => { state.settings = st; applyTheme(st.theme); renderAccounts(); }).catch(() => {});
+  client.settings().then(st => { if (isCurrent(gen)) { state.settings = st; applyTheme(st.theme); renderAccounts(); } }).catch(() => {});
   loadHosts();
   checkRelease();
   // A fleet coordinator beside this kimo: its tab.
@@ -287,7 +300,9 @@ async function connect() {
     document.querySelectorAll('[data-fleet]').forEach(el => { el.hidden = !on; });
     if (!on && state.view === 'fleet') show('agents');
   });
-  unsubscribe = api.subscribe(({ sessions, accounts }) => {
+  unsubscribe?.();
+  unsubscribe = client.subscribe(({ sessions, accounts }) => {
+    if (!isCurrent(gen)) return;
     state.sessions = sessions;
     state.accounts = accounts;
     render();
@@ -305,7 +320,7 @@ async function run(promise, done) {
   }
 }
 
-const projectsView = initProjects({ api, state, run, terminal });
+const projectsView = initProjects({ api, state, run, terminal, openHere: (c, s) => openHere(c, s) });
 const devicesView = initDevices({ api, state, run });
 const usageView = initUsage({ api, state, run });
 const fleetView = initFleet({ api, state, run });
@@ -486,8 +501,10 @@ sessionSheet.querySelector('form').addEventListener('submit', async e => {
     if (f.model.value.trim()) body.model = f.model.value.trim();
     if (f.effort.value) body.effort = f.effort.value;
   }
-  const s = await run(api.createSession(body));
+  const client = api.forHost(api.host);
+  const s = await run(client.createSession(body));
   if (!s) return;
+  if (!openHere(client, s)) return;
   try { localStorage.setItem(RECENT, JSON.stringify([body.cwd, ...recent().filter(x => x !== body.cwd)].filter(Boolean).slice(0, 8))); } catch { /* ignore */ }
   sessionSheet.close();
   e.target.reset();
@@ -501,8 +518,9 @@ accountSheet.querySelector('form').addEventListener('submit', async e => {
   if (!acc) return;
   accountSheet.close();
   e.target.reset();
-  const login = await run(api.login(acc.id));
-  if (login) terminal.open(login);
+  const client = api.forHost(api.host);
+  const login = await run(client.login(acc.id));
+  if (login && openHere(client, login)) terminal.open(login);
 });
 
 // Not paired: type the code kimo shows (an installed app cannot scan its own QR code), or
@@ -582,8 +600,20 @@ $('install').addEventListener('click', async e => {
 
 // ----- other kimos (paired with this one) -----
 
+/**
+ * Was `client`'s kimo still the selected one when its answer came? A session made on one kimo
+ * is never opened through another: you are told where it is instead.
+ */
+function openHere(client, session) {
+  if (client.host === api.host) return true;
+  const where = client.host ? state.hosts.find(h => h.id === client.host)?.name ?? client.host : 'this kimo';
+  toast(`${session?.name || 'It'} started on ${where}: switch back to it to open it`);
+  return false;
+}
+
 const HOST = 'kimo-host';
 function useHost(id) {
+  generation++;
   api.useHost(id);
   try { id ? localStorage.setItem(HOST, id) : localStorage.removeItem(HOST); } catch { /* ignore */ }
   document.title = id ? `kimo · ${state.hosts.find(h => h.id === id)?.name ?? id}` : 'kimo · agents';
@@ -633,7 +663,11 @@ async function followUpdates() {
 }
 setInterval(async () => {
   if (document.visibilityState !== 'visible' || !unsubscribe) return;
-  try { state.status = await api.status(); renderStats(); } catch { /* the event stream reports problems */ }
+  const gen = generation;
+  try {
+    const st = await api.forHost(api.host).status();
+    if (isCurrent(gen)) { state.status = st; renderStats(); }
+  } catch { /* the event stream reports problems */ }
   loadMemory();
   followUpdates();
 }, 5000);
