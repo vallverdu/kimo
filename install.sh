@@ -49,6 +49,11 @@ mkdir -p "$BIN_DIR"
 install -m 755 "$tmp/$name/kimo" "$BIN_DIR/.kimo-new"
 mv -f "$BIN_DIR/.kimo-new" "$BIN_DIR/kimo"
 echo "installed $BIN_DIR/kimo"
+# The fleet coordinator (for the always-on machine of a fleet; unused otherwise).
+if [ -f "$tmp/$name/kimo-fleet" ]; then
+  install -m 755 "$tmp/$name/kimo-fleet" "$BIN_DIR/.kimo-fleet-new"
+  mv -f "$BIN_DIR/.kimo-fleet-new" "$BIN_DIR/kimo-fleet"
+fi
 case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "add $BIN_DIR to your PATH" ;; esac
 # macOS: kimo.app in Applications (Dock, Launchpad, Spotlight).
 if [ "$(uname -s)" = "Darwin" ]; then

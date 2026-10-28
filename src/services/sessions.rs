@@ -144,6 +144,13 @@ pub struct Manager {
     pub(crate) last_freed: Mutex<Option<Instant>>,
     /// Bumped when a key is revoked: open terminals and event streams check their key again.
     revocations: watch::Sender<u64>,
+    /// Peers that did not answer lately (by id) and until when they are not asked again, so a
+    /// sleeping machine does not hold up every listing.
+    pub(crate) peers_asleep: Mutex<HashMap<String, Instant>>,
+    /// Switching the machine off (`POST /api/power/shutdown`).
+    pub(crate) shutdown: Mutex<crate::services::power::Shutdown>,
+    /// The kimo binary that runs jobs (`kimo job-run`), when not this one (tests).
+    pub(crate) job_runner: Mutex<Option<PathBuf>>,
 }
 
 /// A folder path with symlinks resolved (macOS `/var` → `/private/var`), so paths written by
@@ -248,6 +255,9 @@ impl Manager {
             pairing: Mutex::new(HashMap::new()),
             restart: tokio::sync::Notify::new(),
             revocations: watch::channel(0).0,
+            peers_asleep: Mutex::new(HashMap::new()),
+            shutdown: Mutex::default(),
+            job_runner: Mutex::new(None),
             last_freed: Mutex::new(None),
         });
         let weak = Arc::downgrade(&manager);
@@ -289,7 +299,7 @@ impl Manager {
         self.store.save(&inner.state)
     }
 
-    fn changed(&self) {
+    pub(crate) fn changed(&self) {
         self.changes.send_modify(|v| *v = v.wrapping_add(1));
     }
 

@@ -113,6 +113,16 @@ pub fn tick(mode: KeepAwake, working: bool) {
     }
 }
 
+/// Unix time (ms) an agent was last seen working on this machine (since kimo started).
+pub fn last_working_at() -> Option<u64> {
+    let guard = HOLDER.lock().unwrap_or_else(|e| e.into_inner());
+    let since = guard.as_ref()?.last_working?.elapsed();
+    let at = std::time::SystemTime::now().checked_sub(since)?;
+    at.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
 pub fn status(mode: KeepAwake) -> Awake {
     let guard = HOLDER.lock().unwrap_or_else(|e| e.into_inner());
     Awake {

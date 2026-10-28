@@ -48,6 +48,15 @@ pub struct Config {
     #[arg(long, env = "KIMO_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
+    /// The fleet coordinator on this machine (`kimo-fleet`), e.g. http://127.0.0.1:7780: the
+    /// owner's apps reach it at /api/fleet (machines' power, jobs, workflows).
+    #[arg(long, env = "KIMO_FLEET")]
+    pub fleet: Option<String>,
+
+    /// Key for the fleet coordinator, when it asks for one.
+    #[arg(long, env = "KIMO_FLEET_TOKEN", hide_env_values = true)]
+    pub fleet_token: Option<String>,
+
     /// Bytes of output kept per terminal for reconnecting clients.
     #[arg(long, env = "KIMO_SCROLLBACK", default_value_t = 256 * 1024)]
     pub scrollback_bytes: usize,
@@ -133,6 +142,9 @@ pub enum Command {
     },
     /// List the other kimos paired with this one.
     Peers,
+    /// Run a job's folder to its end (kimo starts this itself for `POST /api/jobs`).
+    #[command(hide = true)]
+    JobRun { dir: PathBuf },
     /// Pair with or forget another kimo (lab box, Raspberry Pi, Mac mini…).
     Peer {
         #[command(subcommand)]

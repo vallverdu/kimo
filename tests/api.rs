@@ -30,6 +30,7 @@ fn router(tmp: &std::path::Path, admin_token: Option<&str>) -> axum::Router {
             admin_origins: vec![],
             local_owner: true,
             bound: "0.0.0.0".parse().unwrap(),
+            fleet: None,
         },
     )
 }
@@ -1659,4 +1660,749 @@ async fn project_files_and_git_through_the_api() {
     assert_eq!(log[0]["subject"], "first");
     let clean = get(format!("/api/projects/{id}/git")).await;
     assert_eq!(clean["changes"].as_array().unwrap().len(), 0, "{clean}");
+}
+
+/// The router and its manager (to stand in for the machine's own commands).
+fn router_and_manager(tmp: &std::path::Path) -> (axum::Router, std::sync::Arc<Manager>) {
+    std::fs::create_dir_all(tmp.join("home")).unwrap();
+    let manager = Manager::new(ManagerConfig {
+        data_dir: tmp.join("kimo"),
+        user_home: tmp.join("home"),
+        shell: "/bin/sh".into(),
+        scrollback_bytes: 1024,
+        projects_dir: tmp.join("home/dev"),
+        port: 7777,
+        host_name: "test".into(),
+    })
+    .unwrap();
+    let app = kimo::api::router(
+        manager.clone(),
+        kimo::api::Options {
+            token: None,
+            admin_origins: vec![],
+            local_owner: true,
+            bound: "0.0.0.0".parse().unwrap(),
+            fleet: None,
+        },
+    );
+    (app, manager)
+}
+
+#[tokio::test]
+async fn a_fleet_coordinator_pairs_one_way_and_reaches_only_facts_jobs_and_power() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    let call = |r: Request<Body>| {
+        let app = app.clone();
+        async move { app.oneshot(r).await.unwrap() }
+    };
+    let code = json(call(local(req("POST", "/api/pairing", None, None, None))).await).await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let paired = call(remote(req(
+        "POST",
+        "/api/pair",
+        None,
+        None,
+        Some(&format!(
+            r#"{{"code":"{code}","name":"pi4 (fleet)","role":"fleet"}}"#
+        )),
+    )))
+    .await;
+    assert_eq!(paired.status(), StatusCode::OK);
+    let fleet = json(paired).await;
+    let key = fleet["token"].as_str().unwrap().to_string();
+    assert!(key.starts_with("kimo_fleet_"));
+    // Its key is listed with the devices, as a coordinator; it is not an owner key.
+    let devices = json(call(local(req("GET", "/api/devices", None, None, None))).await).await;
+    assert_eq!(devices[0]["role"], "fleet");
+    let state = std::fs::read_to_string(tmp.path().join("kimo/state.json")).unwrap();
+    let state: serde_json::Value = serde_json::from_str(&state).unwrap();
+    assert!(state["devices"].as_array().unwrap().is_empty());
+    assert_eq!(state["fleet"].as_array().unwrap().len(), 1);
+
+    let with_key = |m: &str, p: &str, body: Option<&str>| remote(req(m, p, None, Some(&key), body));
+    // The machine's facts and power: yes.
+    let node = call(with_key("GET", "/api/node", None)).await;
+    assert_eq!(node.status(), StatusCode::OK);
+    let node = json(node).await;
+    assert_eq!(node["host"], "test");
+    assert!(node["cpus"].as_u64().unwrap() >= 1);
+    assert!(node["labels"].as_array().unwrap().len() >= 2);
+    assert!(node["sessions"]["total"].is_number());
+    assert_eq!(
+        call(with_key("GET", "/api/status", None)).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(with_key("GET", "/api/power", None)).await.status(),
+        StatusCode::OK
+    );
+    // The owner's sessions, keys, files and other kimos: no.
+    for (m, p) in [
+        ("GET", "/api/sessions"),
+        ("POST", "/api/sessions"),
+        ("GET", "/api/events"),
+        ("GET", "/api/devices"),
+        ("POST", "/api/pairing"),
+        ("GET", "/api/peers"),
+        ("GET", "/api/accounts"),
+        ("GET", "/api/settings"),
+        ("GET", "/api/fs"),
+        ("GET", "/api/hosts/nuc/sessions"),
+    ] {
+        assert_eq!(
+            call(with_key(m, p, None)).await.status(),
+            StatusCode::FORBIDDEN,
+            "{m} {p}"
+        );
+    }
+    // A coordinator is never a web page.
+    let from_page = call(remote(req("GET", "/api/node", Some(APP), Some(&key), None))).await;
+    assert_eq!(from_page.status(), StatusCode::FORBIDDEN);
+
+    // Forgetting it on the Devices page revokes the key at once.
+    let id = devices[0]["id"].as_str().unwrap().to_string();
+    let gone = call(local(req(
+        "DELETE",
+        &format!("/api/devices/{id}"),
+        None,
+        None,
+        None,
+    )))
+    .await;
+    assert_eq!(gone.status(), StatusCode::OK);
+    assert_eq!(
+        call(with_key("GET", "/api/node", None)).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    drop(manager);
+}
+
+#[tokio::test]
+async fn the_machine_switches_off_only_when_nothing_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    let marker = tmp.path().join("switched-off");
+    manager.set_shutdown_command(&format!("touch '{}'", marker.display()));
+    // People logged in to the test machine do not count here (that check has its own test).
+    manager.set_shutdown_ignores_logins(true);
+    let call = |r: Request<Body>| {
+        let app = app.clone();
+        async move { app.oneshot(r).await.unwrap() }
+    };
+    let code = json(call(local(req("POST", "/api/pairing", None, None, None))).await).await["code"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let key = json(
+        call(remote(req(
+            "POST",
+            "/api/pair",
+            None,
+            None,
+            Some(&format!(
+                r#"{{"code":"{code}","name":"pi4","role":"fleet"}}"#
+            )),
+        )))
+        .await,
+    )
+    .await["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let off = |force: bool| {
+        remote(req(
+            "POST",
+            "/api/power/shutdown",
+            None,
+            Some(&key),
+            Some(&format!(r#"{{"force":{force}}}"#)),
+        ))
+    };
+
+    // A running terminal keeps the machine on: the coordinator hears what.
+    let project = tmp.path().join("home/dev/p");
+    std::fs::create_dir_all(&project).unwrap();
+    let body = serde_json::json!({ "kind": "shell", "name": "build", "cwd": project, "command": ["sleep", "30"] });
+    let made = call(local(req(
+        "POST",
+        "/api/sessions",
+        None,
+        None,
+        Some(&body.to_string()),
+    )))
+    .await;
+    assert_eq!(made.status(), StatusCode::OK);
+    let id = json(made).await["id"].as_str().unwrap().to_string();
+    let power = json(call(remote(req("GET", "/api/power", None, Some(&key), None))).await).await;
+    assert_eq!(power["can_shutdown"], false);
+    assert_eq!(power["blockers"][0]["kind"], "session");
+    let refused = call(off(false)).await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let refused = json(refused).await;
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("build (running)"));
+    // Only the owner may force it.
+    assert_eq!(call(off(true)).await.status(), StatusCode::FORBIDDEN);
+
+    // Once the terminal is stopped, it switches off (here: the stand-in command runs).
+    let stop = call(local(req(
+        "POST",
+        &format!("/api/sessions/{id}/action"),
+        None,
+        None,
+        Some(r#"{"action":"stop"}"#),
+    )))
+    .await;
+    assert_eq!(stop.status(), StatusCode::OK);
+    for _ in 0..50 {
+        if manager.sessions()[0].status != kimo::core::models::SessionStatus::Running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let accepted = call(off(false)).await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    assert_eq!(json(accepted).await["shutting_down"], true);
+    for _ in 0..50 {
+        if marker.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(marker.exists(), "the shutdown command ran");
+}
+
+#[test]
+fn people_logged_in_keep_the_machine_on() {
+    let b = kimo::core::power::blockers(
+        &[],
+        &[],
+        &kimo::core::node::parse_who("jordi    tty2   2026-10-28 10:00 (tty2)\n"),
+    );
+    assert_eq!(b.len(), 1);
+    assert_eq!(b[0].kind, "login");
+}
+
+/// Wait until the job has ended; returns it.
+async fn job_ended(app: &axum::Router, id: &str) -> serde_json::Value {
+    for _ in 0..150 {
+        let job = json(
+            app.clone()
+                .oneshot(local(req(
+                    "GET",
+                    &format!("/api/jobs/{id}"),
+                    None,
+                    None,
+                    None,
+                )))
+                .await
+                .unwrap(),
+        )
+        .await;
+        if !["starting", "running"].contains(&job["state"].as_str().unwrap_or("")) {
+            return job;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("job {id} did not end");
+}
+
+async fn new_job(app: &axum::Router, body: serde_json::Value) -> serde_json::Value {
+    let res = app
+        .clone()
+        .oneshot(local(req(
+            "POST",
+            "/api/jobs",
+            None,
+            None,
+            Some(&body.to_string()),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    json(res).await
+}
+
+#[tokio::test]
+async fn jobs_run_to_their_end_with_a_real_exit_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+
+    let ok = new_job(
+        &app,
+        serde_json::json!({ "id": "hello", "command": "echo hi; echo oops >&2" }),
+    )
+    .await;
+    assert_eq!(ok["id"], "hello");
+    let ok = job_ended(&app, "hello").await;
+    assert_eq!(ok["state"], "succeeded");
+    assert_eq!(ok["exit_code"], 0);
+    let log = json(
+        app.clone()
+            .oneshot(local(req("GET", "/api/jobs/hello/log", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(log["text"].as_str().unwrap().contains("hi"));
+    assert!(log["text"].as_str().unwrap().contains("oops"));
+    assert_eq!(log["done"], true);
+    // From where it stopped: nothing new.
+    let next = log["next"].as_u64().unwrap();
+    let rest = json(
+        app.clone()
+            .oneshot(local(req(
+                "GET",
+                &format!("/api/jobs/hello/log?offset={next}"),
+                None,
+                None,
+                None,
+            )))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(rest["text"], "");
+
+    let failed = new_job(
+        &app,
+        serde_json::json!({ "command": ["sh", "-c", "exit 3"] }),
+    )
+    .await;
+    let failed = job_ended(&app, failed["id"].as_str().unwrap()).await;
+    assert_eq!(failed["state"], "failed");
+    assert_eq!(failed["exit_code"], 3);
+
+    let missing = new_job(
+        &app,
+        serde_json::json!({ "command": ["no-such-program-kimo"] }),
+    )
+    .await;
+    let missing = job_ended(&app, missing["id"].as_str().unwrap()).await;
+    assert_eq!(missing["state"], "failed");
+    assert_eq!(missing["exit_code"], 127);
+
+    let late = new_job(
+        &app,
+        serde_json::json!({ "command": "sleep 30", "timeout_s": 1 }),
+    )
+    .await;
+    let late = job_ended(&app, late["id"].as_str().unwrap()).await;
+    assert_eq!(late["state"], "timed_out");
+
+    // A running job keeps the machine on, and counts in its facts.
+    manager.set_shutdown_ignores_logins(true);
+    let long = new_job(
+        &app,
+        serde_json::json!({ "id": "long", "command": "sleep 30" }),
+    )
+    .await;
+    assert!(["starting", "running"].contains(&long["state"].as_str().unwrap()));
+    for _ in 0..50 {
+        if manager.job("long").unwrap().state == kimo::core::jobs::JobState::Running {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let power = json(
+        app.clone()
+            .oneshot(local(req("GET", "/api/power", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(power["blockers"][0]["what"], "job long");
+    let node = json(
+        app.clone()
+            .oneshot(local(req("GET", "/api/node", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(node["sessions"]["jobs_running"], 1);
+    // Still running: it cannot be forgotten, only cancelled.
+    let busy = app
+        .clone()
+        .oneshot(local(req("DELETE", "/api/jobs/long", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(busy.status(), StatusCode::BAD_REQUEST);
+    let cancel = app
+        .clone()
+        .oneshot(local(req(
+            "POST",
+            "/api/jobs/long/cancel",
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let long = job_ended(&app, "long").await;
+    assert_eq!(long["state"], "cancelled");
+    let gone = app
+        .clone()
+        .oneshot(local(req("DELETE", "/api/jobs/long", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::OK);
+    let unknown = app
+        .clone()
+        .oneshot(local(req("GET", "/api/jobs/long", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+
+    // Bad requests: plain errors.
+    for body in [
+        serde_json::json!({ "id": "../x", "command": "true" }),
+        serde_json::json!({}),
+        serde_json::json!({ "command": "true", "cwd": "/no/such/folder" }),
+        serde_json::json!({ "id": "hello", "command": "true" }),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(local(req(
+                "POST",
+                "/api/jobs",
+                None,
+                None,
+                Some(&body.to_string()),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
+        assert!(json(res).await["error"].is_string());
+    }
+}
+
+#[tokio::test]
+async fn jobs_outlive_the_kimo_that_started_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+    let marker = tmp.path().join("done");
+    new_job(
+        &app,
+        serde_json::json!({ "id": "outlive", "command": format!("sleep 1; touch '{}'", marker.display()) }),
+    )
+    .await;
+    // kimo goes away (an update, a crash) and another starts on the same data.
+    drop(app);
+    drop(manager);
+    let (app, _manager) = router_and_manager(tmp.path());
+    let job = job_ended(&app, "outlive").await;
+    assert_eq!(job["state"], "succeeded");
+    assert!(marker.exists());
+}
+
+#[tokio::test]
+async fn headless_agent_jobs_end_with_the_agent_s_answer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+    // A stand-in `claude` that answers like `claude -p --output-format json`.
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("claude");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\nprompt=$(cat)\necho \"args: $*\" >&2\nprintf '{\"type\":\"result\",\"result\":\"did: %s\",\"is_error\":false}' \"$prompt\"\n",
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let job = new_job(
+        &app,
+        serde_json::json!({
+            "id": "agent",
+            "agent": { "kind": "claude", "prompt": "-- write the report", "model": "sonnet", "permissions": "yolo" },
+            "env": { "PATH": path },
+        }),
+    )
+    .await;
+    assert_eq!(job["agent"], "claude");
+    let job = job_ended(&app, "agent").await;
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert_eq!(job["result"]["result"], "did: -- write the report");
+    let log = json(
+        app.clone()
+            .oneshot(local(req("GET", "/api/jobs/agent/log", None, None, None)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let log = log["text"].as_str().unwrap();
+    assert!(
+        log.contains("-p --output-format json --dangerously-skip-permissions --model sonnet"),
+        "{log}"
+    );
+}
+
+#[tokio::test]
+async fn jobs_need_control_and_fleet_keys_may_run_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+    let read = manager
+        .add_client("watcher", vec![], kimo::core::models::Scope::Read)
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(remote(req(
+            "POST",
+            "/api/jobs",
+            None,
+            Some(&read.token),
+            Some(r#"{"command":"true"}"#),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let res = app
+        .clone()
+        .oneshot(remote(req(
+            "GET",
+            "/api/jobs",
+            None,
+            Some(&read.token),
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let code = manager.start_pairing().code;
+    let fleet = manager
+        .pair_as(&code, "pi4", kimo::services::devices::Role::Fleet)
+        .unwrap();
+    let res = app
+        .clone()
+        .oneshot(remote(req(
+            "POST",
+            "/api/jobs",
+            None,
+            Some(&fleet.token),
+            Some(r#"{"id":"from-fleet","command":"true"}"#),
+        )))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    assert_eq!(job_ended(&app, "from-fleet").await["state"], "succeeded");
+}
+
+#[tokio::test]
+async fn staged_jobs_get_their_input_files_first_and_give_their_outputs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+    let staged = new_job(
+        &app,
+        serde_json::json!({ "id": "bench", "command": "wc -c < in/model.onnx > out.txt; mkdir -p results; echo '{\"fps\":30}' > results/bench.json", "start": false }),
+    )
+    .await;
+    assert_eq!(staged["state"], "staged");
+    // Its own folder (no cwd given).
+    assert!(staged["cwd"].as_str().unwrap().ends_with("jobs/bench/work"));
+    let put = |path: &str, body: &'static str| {
+        let mut r = Request::builder()
+            .method("PUT")
+            .uri(format!("/api/jobs/bench/files?path={path}"))
+            .header(header::HOST, "localhost:7777")
+            .body(Body::from(body))
+            .unwrap();
+        r.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 50000))));
+        app.clone().oneshot(r)
+    };
+    let res = put("in/model.onnx", "12345").await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(json(res).await["bytes"], 5);
+    for bad in ["../escape", "/etc/passwd", ""] {
+        let res = put(bad, "x").await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let start = app
+        .clone()
+        .oneshot(local(req(
+            "POST",
+            "/api/jobs/bench/start",
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::OK);
+    assert_eq!(job_ended(&app, "bench").await["state"], "succeeded");
+    // Too late for inputs now; outputs can be fetched.
+    assert_eq!(
+        put("in/late", "x").await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+    let out = app
+        .clone()
+        .oneshot(local(req(
+            "GET",
+            "/api/jobs/bench/files?path=results/bench.json",
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(out.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(out.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(&bytes[..], b"{\"fps\":30}\n");
+    let out = app
+        .clone()
+        .oneshot(local(req(
+            "GET",
+            "/api/jobs/bench/files?path=out.txt",
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(out.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&bytes).trim(), "5");
+    let missing = app
+        .clone()
+        .oneshot(local(req(
+            "GET",
+            "/api/jobs/bench/files?path=nope",
+            None,
+            None,
+            None,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn jobs_run_in_a_fresh_checkout_of_a_commit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (app, manager) = router_and_manager(tmp.path());
+    manager.set_job_runner(std::path::Path::new(env!("CARGO_BIN_EXE_kimo")));
+    let repo = tmp.path().join("home/dev/seg");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("train.sh"), "echo trained > model.txt\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "first"]);
+    let first = git(&["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("train.sh"), "echo second > model.txt\n").unwrap();
+    git(&["commit", "-q", "-am", "second"]);
+    // Uncommitted work in the repository never reaches a job.
+    std::fs::write(repo.join("train.sh"), "echo dirty > model.txt\n").unwrap();
+
+    // A worktree at the first commit, on a branch of its own.
+    let job = new_job(
+        &app,
+        serde_json::json!({
+            "id": "train",
+            "command": "sh train.sh; git rev-parse --abbrev-ref HEAD > branch.txt",
+            "git": { "repo": "~/dev/seg", "ref": first, "branch": "kimo/train" },
+        }),
+    )
+    .await;
+    assert_eq!(job["git"]["commit"], first.as_str());
+    assert_eq!(job["git"]["worktree"], true);
+    assert_eq!(job_ended(&app, "train").await["state"], "succeeded");
+    let file = |id: &str, path: &str| {
+        let app = app.clone();
+        let uri = format!("/api/jobs/{id}/files?path={path}");
+        async move {
+            let res = app
+                .oneshot(local(req("GET", &uri, None, None, None)))
+                .await
+                .unwrap();
+            let b = axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&b).trim().to_string()
+        }
+    };
+    assert_eq!(file("train", "model.txt").await, "trained");
+    assert_eq!(file("train", "branch.txt").await, "kimo/train");
+    assert!(git(&["worktree", "list"]).contains("jobs/train/work"));
+    // Forgetting the job removes its worktree; the branch stays for whoever pushes it.
+    let gone = app
+        .clone()
+        .oneshot(local(req("DELETE", "/api/jobs/train", None, None, None)))
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::OK);
+    assert!(!git(&["worktree", "list"]).contains("jobs/train/work"));
+    assert!(git(&["branch", "--list", "kimo/train"]).contains("kimo/train"));
+
+    // A clone of a URL, at its HEAD (the second commit).
+    let url = format!("file://{}", repo.display());
+    new_job(
+        &app,
+        serde_json::json!({ "id": "cloned", "command": "sh train.sh", "git": { "repo": url } }),
+    )
+    .await;
+    assert_eq!(job_ended(&app, "cloned").await["state"], "succeeded");
+    assert_eq!(file("cloned", "model.txt").await, "second");
+
+    // Mistakes: plain errors, and no folder left behind.
+    for body in [
+        serde_json::json!({ "command": "true", "git": { "repo": "~/dev/none" } }),
+        serde_json::json!({ "command": "true", "git": { "repo": "~/dev/seg", "ref": "no-such-ref" } }),
+        serde_json::json!({ "command": "true", "git": { "repo": "~/dev/seg", "branch": "a b" } }),
+        serde_json::json!({ "command": "true", "cwd": "~", "git": { "repo": "~/dev/seg" } }),
+    ] {
+        let res = app
+            .clone()
+            .oneshot(local(req(
+                "POST",
+                "/api/jobs",
+                None,
+                None,
+                Some(&body.to_string()),
+            )))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+    assert_eq!(manager.jobs().len(), 1);
 }

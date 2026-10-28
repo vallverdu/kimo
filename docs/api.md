@@ -13,10 +13,11 @@ as `?token=<key>` where headers are not possible (websockets, EventSource).
 | This machine itself | nothing (requests from the machine, not through a proxy; `KIMO_LOCAL_OWNER`) | everything |
 | A paired device or kimo | its device key (pairing) | everything |
 | A script | `KIMO_TOKEN` | everything |
+| A fleet coordinator | its fleet key (pairing with `"role": "fleet"`) | `GET /status`, `GET /node`, `/jobs`, `/power` (no `force`); never sessions, terminals, files, keys or other kimos, and never from a web page |
 | An app | an app key (`/clients`), only from its listed origins | `control`: sessions, projects, messages, terminals, account switching · `read`: GET only, no terminals, no folder listing |
 
 Owner only: `/clients`, `/devices`, `/pairing`, `/network`, `/qr`, `/settings`, `/peers`,
-`/hosts`, `/update`, `/ports`, `/awake`, installing or removing skills, adding, signing in or deleting accounts.
+`/hosts`, `/update`, `/ports`, `/awake`, `/power`, `/fleet`, installing or removing skills, adding, signing in or deleting accounts.
 
 Requests from another web page (an `Origin` that is not kimo itself) need a key that lists
 that origin; kimo answers CORS preflights for listed origins.
@@ -107,8 +108,8 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | Method | Path | |
 |---|---|---|
 | POST | `/pairing` | a one-time pairing code (10 minutes), short enough to type: `K7M2-9QXP` |
-| POST | `/pair` | `{code, name}` → a device key (no key needed: the code is the proof). Case, spaces and dashes in typed codes do not matter; after 20 wrong codes every open code stops working |
-| GET, DELETE | `/devices`, `/devices/{id}` | paired devices; unpair |
+| POST | `/pair` | `{code, name, role?}` → a device key (no key needed: the code is the proof). Case, spaces and dashes in typed codes do not matter; after 20 wrong codes every open code stops working. `role: "fleet"` asks for a fleet coordinator's key instead of an owner's (one-way: this kimo gets nothing for the coordinator) |
+| GET, DELETE | `/devices`, `/devices/{id}` | paired devices and coordinators (`role: owner \| fleet`); unpair (the key stops working at once) |
 | GET | `/network` | addresses kimo is reachable on; Tailscale name and HTTPS address; `firewall`: why phones may be blocked (macOS firewall), when that is the case |
 | POST | `/network/https` | serve kimo over HTTPS on the tailnet (a free port; other services untouched) |
 | GET | `/qr?text=` | a QR code as SVG |
@@ -117,6 +118,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | DELETE | `/peers/{id}` | forget a paired kimo |
 | GET | `/peers/keys` | paired kimos with their keys (for the owner's own apps) |
 | POST | `/peers/accept` | used by another kimo during pairing |
+| any | `/fleet/…` | the fleet coordinator beside this kimo (`kimo serve --fleet http://127.0.0.1:7780`; `/status` says `fleet: true`): its API, for the owner only. See [fleet.md](fleet.md) |
 | any | `/hosts/{host}/…` | the same API on a paired kimo (`host`: its id or name from `/peers`), through this one with this kimo's key there: calls, `/events` and terminal websockets. A phone paired with one kimo uses all of them |
 
 ## The machine
@@ -125,7 +127,30 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 |---|---|---|
 | GET | `/ports` | listening TCP ports: `[{port, addresses, pid, process, session, session_name, kimo}]`; `session` is the kimo session whose processes listen there (a dev server an agent started), `kimo` marks kimo itself; ports of the system and other users come without a process |
 | GET | `/awake` | keeping the computer awake: `{mode: off \| agents \| on, active, supported}` (`caffeinate` on macOS, `systemd-inhibit` on Linux); also in `/status` as `awake` |
-| POST | `/awake` | `{mode}`: `agents` keeps it awake while an agent works and two minutes after; saved as `keep_awake` in the settings |
+| POST | `/awake` | `{mode}`: `agents` keeps it awake while an agent or a job works and two minutes after; saved as `keep_awake` in the settings |
+| GET | `/node` | what the machine is and does now, for a coordinator: `{host, version, os, arch, model, labels, nvidia_driver, cuda, jetson_l4t, hailo, xcode, cpus, load, uptime_s, mem_total_bytes, mem_available_bytes, disk, gpus: [{name, memory_total_mb, memory_used_mb, utilization_percent, temperature_c}], sessions: {total, running, paused, working, last_working_at, jobs_running}, logins: [{user, line, from}], in_use, awake, at}`. `labels` come from the facts (`x86_64`/`arm64`, `linux`/`macos`, `cuda`, `jetson`, `tensorrt`, `rpi`, `hailo-10h`, `xcode`); what rarely changes is looked up every ten minutes |
+| GET | `/power` | what keeps the machine on: `{can_shutdown, blockers: [{kind: session \| job \| login, what}], command, shutting_down, last_error}` |
+| POST | `/power/shutdown` | `{force?}`: switch the machine off in a moment (202), after checking again that no terminal is running or paused, no job runs and nobody is logged in; otherwise 409 with the `blockers`. Only the owner may `force`. The command is `systemctl poweroff` (falling back to `sudo -n systemctl poweroff`) on Linux, System Events on macOS, or `KIMO_SHUTDOWN_COMMAND`; `KIMO_SHUTDOWN_IGNORE_LOGINS=1` stops logins from counting (a desktop that logs in by itself) |
+
+## Jobs
+
+A job is a command or a headless agent run to its end, detached from kimo: `kimo job-run`
+runs it in a session of its own and writes everything to `~/.kimo/jobs/<id>/` (`spec.json`,
+`log`, `exit.json`, `result`), so it survives kimo updating, restarting or crashing, and ends
+with a real exit code. A running job keeps the machine awake (keep awake: while agents work)
+and on (`/power`). Control keys and fleet coordinators may run jobs; read keys see them.
+
+| Method | Path | |
+|---|---|---|
+| GET | `/jobs` | newest first: `[{id, name, state, program, args, cwd, agent, timeout_s, created_at, started_at, ended_at, exit_code, signal, log_bytes, git}]`; `state`: `staged`, `starting`, `running`, `succeeded`, `failed`, `cancelled`, `timed_out`, `lost` (its runner vanished: the machine went off) |
+| POST | `/jobs` | `{command: "line for sh -c" \| ["argv"…], cwd?, env?, timeout_s?, id?, name?, start?, git?}` or `{agent: {kind: claude \| codex, prompt, model?, effort?, account?, permissions?: yolo \| manual}, …}` → 201. An agent job runs `claude -p --output-format json` or `codex exec` with the prompt on its standard input; its answer is the job's `result`. Without `cwd` a job runs in a fresh folder of its own; `git: {repo, ref?, branch?}` runs it in a fresh checkout of a commit instead: a worktree of a repository on the machine (`~/dev/seg`), removed with the job, or a clone of a URL. `start: false` creates it staged, for its input files |
+| GET | `/jobs/{id}` | one job; `result` once a headless agent ended (Claude's JSON, Codex's last message) |
+| GET | `/jobs/{id}/log?offset=` | `{offset, next, size, text, done}`, 256 KB at most per call (stdout and stderr together) |
+| PUT | `/jobs/{id}/files?path=` | a staged job's input file (the body, streamed), inside its folder |
+| GET | `/jobs/{id}/files?path=` | a file of its folder (an output), streamed |
+| POST | `/jobs/{id}/start` | start a staged job |
+| POST | `/jobs/{id}/cancel` | end it (SIGTERM to its process group, SIGKILL ten seconds later) |
+| DELETE | `/jobs/{id}` | forget a job that ended (its folder and worktree go) |
 
 ## Updates
 
@@ -175,6 +200,11 @@ kimo.useHost(id); kimo.forHost(id);                     // talk to one of them t
 kimo.settings(); kimo.saveSettings(s);                   // owner only
 kimo.release(force); kimo.installUpdate(); kimo.restartKimo();   // owner only
 kimo.ports(); kimo.awake(); kimo.setAwake('agents');          // owner only
+kimo.jobs(); kimo.job(id); kimo.createJob({ command, git, timeout_s });   // detached jobs
+kimo.jobLog(id, offset); kimo.cancelJob(id); kimo.deleteJob(id);
+kimo.node(); kimo.power(); kimo.powerOff();              // facts; power (owner only)
+kimo.fleet.devices(); kimo.fleet.wake(id); kimo.fleet.shutdown(id);   // the coordinator
+kimo.fleet.hold(id, { hours: 2 }); kimo.fleet.submit(job); kimo.fleet.submitWorkflow(yaml);
 quietFor(session);                  // seconds since its last output
 ```
 

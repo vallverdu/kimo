@@ -9,6 +9,9 @@ pub enum Caller {
     Admin,
     /// An app key.
     Client { scope: Scope, origins: Vec<String> },
+    /// A fleet coordinator's key (one-way pairing): the machine's status and facts, jobs and
+    /// power, nothing of the owner's sessions, files or keys.
+    Fleet,
 }
 
 /// Origins compare without a trailing slash and case-insensitively.
@@ -89,22 +92,34 @@ pub fn cross_origin_allowed(caller: &Caller, origin: &str, admin_origins: &[Stri
     match caller {
         Caller::Admin => origin_listed(origin, admin_origins),
         Caller::Client { origins, .. } => origin_listed(origin, origins),
+        // A coordinator is a program, never a web page.
+        Caller::Fleet => false,
     }
+}
+
+/// What a fleet coordinator may call: the machine's status and facts, jobs, power.
+fn fleet_permits(method: &str, path: &str) -> bool {
+    let under = |p: &str| path == p || path.starts_with(&format!("{p}/"));
+    (method == "GET" && (path == "/status" || path == "/node")) || under("/jobs") || under("/power")
 }
 
 /// May `caller` call `method path` (path relative to `/api`)?
 pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
-    let Caller::Client { scope, .. } = caller else {
-        return true;
-    };
     let path = path.trim_end_matches('/');
+    let scope = match caller {
+        Caller::Admin => return true,
+        Caller::Fleet => return fleet_permits(method, path),
+        Caller::Client { scope, .. } => scope,
+    };
     // Managing logins and app keys stays with the owner.
     let admin_only = [
         "/clients", "/network", "/pairing", "/devices", "/qr", "/settings", "/peers", "/update",
         // Paired kimos reached through this one get this kimo's own key there.
         "/hosts",
-        // What else runs on the machine, and its sleep.
-        "/ports", "/awake",
+        // What else runs on the machine, its sleep and power.
+        "/ports", "/awake", "/power",
+        // The fleet coordinator (wakes and shuts down machines).
+        "/fleet",
     ]
         .iter()
         .any(|p| path.starts_with(p))
@@ -168,6 +183,56 @@ mod tests {
         // A project whose name starts like a route is still the app's to rename.
         assert!(permits(&app, "PATCH", "/projects/github-tools"));
         assert!(permits(&app, "GET", "/projects"));
+    }
+
+    #[test]
+    fn fleet_keys_reach_only_status_facts_jobs_and_power() {
+        let fleet = Caller::Fleet;
+        for (m, p) in [
+            ("GET", "/status"),
+            ("GET", "/node"),
+            ("GET", "/power"),
+            ("POST", "/power/shutdown"),
+            ("GET", "/jobs"),
+            ("POST", "/jobs"),
+            ("GET", "/jobs/j1/log"),
+            ("POST", "/jobs/j1/cancel"),
+        ] {
+            assert!(permits(&fleet, m, p), "{m} {p}");
+        }
+        for (m, p) in [
+            ("GET", "/sessions"),
+            ("POST", "/sessions"),
+            ("GET", "/sessions/a/term"),
+            ("GET", "/events"),
+            ("GET", "/accounts"),
+            ("GET", "/devices"),
+            ("POST", "/pairing"),
+            ("GET", "/hosts/nuc/sessions"),
+            ("GET", "/peers"),
+            ("GET", "/settings"),
+            ("GET", "/projects/p/files"),
+            ("GET", "/fs"),
+            ("POST", "/status"),
+            ("GET", "/jobsx"),
+            ("GET", "/powerful"),
+            ("GET", "/fleet/devices"),
+        ] {
+            assert!(!permits(&fleet, m, p), "{m} {p}");
+        }
+        assert!(!cross_origin_allowed(
+            &fleet,
+            "https://pi.local",
+            &["*".into()]
+        ));
+        // App keys never control the machine's power or the fleet.
+        let app = Caller::Client {
+            scope: Scope::Control,
+            origins: vec![],
+        };
+        assert!(!permits(&app, "POST", "/power/shutdown"));
+        assert!(!permits(&app, "POST", "/fleet/devices/nuc/wake"));
+        assert!(permits(&app, "GET", "/node"));
     }
 
     #[test]

@@ -8,6 +8,11 @@ use crate::services::sessions::Manager;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How long a peer that did not answer is left alone (asleep, switched off, moved).
+pub const ASLEEP_FOR: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PeerInfo {
@@ -32,17 +37,41 @@ impl Manager {
         Client::new(&peer.url, Some(peer.token.clone()))
     }
 
-    /// Peers with whether they answer right now (checked in parallel, 3 s at most).
-    pub fn peers(&self) -> Vec<PeerInfo> {
-        let peers = self.peer_list();
-        let handles: Vec<_> = peers
+    /// Did this peer fail to answer within the last [`ASLEEP_FOR`]? Then it is not asked.
+    fn asleep(&self, id: &str) -> bool {
+        let mut asleep = self.peers_asleep.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        asleep.retain(|_, until| *until > now);
+        asleep.contains_key(id)
+    }
+
+    /// The sessions of a peer (3 s at most), remembering whether it answered.
+    fn peer_sessions(&self, peer: &Peer) -> Option<Vec<Value>> {
+        if self.asleep(&peer.id) {
+            return None;
+        }
+        let list = Self::peer_client(peer)
+            .call_timeout("GET", "/sessions", None, 3)
+            .ok()
+            .and_then(|v| v.as_array().cloned());
+        let mut asleep = self.peers_asleep.lock().unwrap_or_else(|e| e.into_inner());
+        match list {
+            Some(_) => asleep.remove(&peer.id),
+            None => asleep.insert(peer.id.clone(), Instant::now() + ASLEEP_FOR),
+        };
+        list
+    }
+
+    /// Peers with whether they answer right now (checked in parallel, 3 s at most; one that
+    /// did not answer lately counts as offline without asking).
+    pub fn peers(self: &Arc<Self>) -> Vec<PeerInfo> {
+        let handles: Vec<_> = self
+            .peer_list()
             .into_iter()
             .map(|p| {
+                let me = self.clone();
                 std::thread::spawn(move || {
-                    let sessions = Self::peer_client(&p)
-                        .call_timeout("GET", "/sessions", None, 3)
-                        .ok()
-                        .and_then(|v| v.as_array().map(Vec::len));
+                    let sessions = me.peer_sessions(&p).map(|l| l.len());
                     PeerInfo {
                         id: p.id,
                         name: p.name,
@@ -186,6 +215,10 @@ impl Manager {
         inner.state.peers.retain(|p| p.id != id);
         self.save(&inner)?;
         drop(inner);
+        self.peers_asleep
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
         self.revoke_peer_key(&peer);
         Ok(peer)
     }
@@ -214,7 +247,7 @@ impl Manager {
     }
 
     /// Sessions of this kimo and of every reachable peer (ids of remote ones are `peer/id`).
-    pub fn all_sessions(&self) -> Vec<Value> {
+    pub fn all_sessions(self: &Arc<Self>) -> Vec<Value> {
         let host = self.host_name().to_string();
         let mut all: Vec<Value> = self
             .sessions()
@@ -230,13 +263,11 @@ impl Manager {
             .peer_list()
             .into_iter()
             .map(|p| {
+                let me = self.clone();
                 std::thread::spawn(move || {
-                    let list = Self::peer_client(&p)
-                        .call_timeout("GET", "/sessions", None, 3)
-                        .ok()?;
+                    let list = me.peer_sessions(&p)?;
                     Some(
-                        list.as_array()?
-                            .iter()
+                        list.iter()
                             .map(|s| {
                                 let mut v = s.clone();
                                 v["id"] =

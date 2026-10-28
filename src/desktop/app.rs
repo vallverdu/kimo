@@ -5142,6 +5142,7 @@ mod tests {
                     admin_origins: vec![],
                     local_owner: true,
                     bound: "127.0.0.1".parse().unwrap(),
+                    fleet: None,
                 },
             );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

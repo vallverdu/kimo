@@ -27,7 +27,7 @@ fn peer_of(app: &App, host: &str) -> Result<Peer, ApiError> {
 }
 
 /// The query without this kimo's key (the call to the peer carries the peer's key).
-fn query_without_token(query: Option<&str>) -> String {
+pub(super) fn query_without_token(query: Option<&str>) -> String {
     let kept: Vec<&str> = query
         .unwrap_or_default()
         .split('&')

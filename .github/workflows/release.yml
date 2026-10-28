@@ -36,13 +36,15 @@ jobs:
         with:
           key: ${{ matrix.target }}-${{ matrix.server }}
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.server && '--no-default-features' || '' }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p kimo ${{ matrix.server && '--no-default-features' || '' }}
+          cargo build --release --target ${{ matrix.target }} -p kimo-fleet
       - name: Package
         shell: bash
         run: |
           name="kimo${{ matrix.server && '-server' || '' }}-${{ matrix.target }}"
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/kimo" "dist/$name/"
+          cp "target/${{ matrix.target }}/release/kimo" "target/${{ matrix.target }}/release/kimo-fleet" "dist/$name/"
           cp README.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md "dist/$name/"
           cp -r contrib "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"

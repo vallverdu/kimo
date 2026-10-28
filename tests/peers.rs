@@ -40,6 +40,7 @@ async fn start_server(
             admin_origins: vec![],
             local_owner: false,
             bound: "127.0.0.1".parse().unwrap(),
+            fleet: None,
         },
     );
     let server = tokio::spawn(async move {

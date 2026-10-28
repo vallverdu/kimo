@@ -432,6 +432,10 @@ pub struct State {
     pub runs: Vec<Run>,
     #[serde(default)]
     pub peers: Vec<Peer>,
+    /// Keys of fleet coordinators (one-way pairing): status, node facts, jobs and power only.
+    /// A list of its own, so that an older kimo never takes them for owner keys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fleet: Vec<Device>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

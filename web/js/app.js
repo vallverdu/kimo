@@ -7,6 +7,7 @@ import { initProjects } from './projects.js';
 import { initDevices } from './devices.js';
 import { initUsage } from './usage.js';
 import { initMachine } from './machine.js';
+import { initFleet } from './fleet.js';
 
 const state = { sessions: [], accounts: [], apps: [], projects: [], devices: [], network: null, status: null, usage: [], hosts: [], view: 'agents' };
 const machine = initMachine({
@@ -38,7 +39,7 @@ function usageText(u) {
   if (u.limits_note) return u.limits_note;
   return u.tokens_7d ? `${kTokens(u.tokens_5h)} tokens in 5 h · ${kTokens(u.tokens_7d)} in 7 days` : 'no usage through kimo in 7 days';
 }
-const VIEWS = ['agents', 'projects', 'usage', 'accounts', 'devices', 'apps'];
+const VIEWS = ['agents', 'projects', 'usage', 'accounts', 'devices', 'fleet', 'apps'];
 
 // ----- rendering -----
 
@@ -281,6 +282,11 @@ async function connect() {
   api.settings().then(st => { state.settings = st; applyTheme(st.theme); renderAccounts(); }).catch(() => {});
   loadHosts();
   checkRelease();
+  // A fleet coordinator beside this kimo: its tab.
+  fleetView.available().then(on => {
+    document.querySelectorAll('[data-fleet]').forEach(el => { el.hidden = !on; });
+    if (!on && state.view === 'fleet') show('agents');
+  });
   unsubscribe = api.subscribe(({ sessions, accounts }) => {
     state.sessions = sessions;
     state.accounts = accounts;
@@ -302,6 +308,7 @@ async function run(promise, done) {
 const projectsView = initProjects({ api, state, run, terminal });
 const devicesView = initDevices({ api, state, run });
 const usageView = initUsage({ api, state, run });
+const fleetView = initFleet({ api, state, run });
 
 // ----- views -----
 
@@ -309,9 +316,11 @@ function show(view) {
   state.view = VIEWS.includes(view) ? view : 'agents';
   for (const v of VIEWS) $(`view-${v}`).hidden = state.view !== v;
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === state.view));
-  $('add').setAttribute('aria-label', { agents: 'New session', projects: 'New project', accounts: 'New account', devices: 'Pair a device', apps: 'New app' }[state.view]);
+  $('add').setAttribute('aria-label', { agents: 'New session', projects: 'New project', accounts: 'New account', devices: 'Pair a device', fleet: 'New job', apps: 'New app' }[state.view]);
   $('add').hidden = state.view === 'usage';
   if (state.view === 'usage') usageView.load();
+  if (state.view === 'fleet') fleetView.start();
+  else fleetView.stop();
   if (state.view === 'devices') devicesView.load();
   else devicesView.hideQr();
 }
@@ -453,6 +462,7 @@ $('add').addEventListener('click', () => {
   if (state.view === 'apps') return appSheet.showModal();
   if (state.view === 'projects') return projectsView.open();
   if (state.view === 'devices') return devicesView.showQr();
+  if (state.view === 'fleet') return fleetView.openNew();
   const form = sessionSheet.querySelector('form');
   form.elements.project.innerHTML = '<option value="">any folder</option>' +
     state.projects.map(p => `<option value="${esc(p.path)}">${esc(p.name)}</option>`).join('');

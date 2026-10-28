@@ -1,0 +1,33 @@
+[package]
+name = "kimo-fleet"
+version = "0.1.14"
+edition = "2021"
+description = "Fleet coordinator for kimo: the machines, their power (Wake-on-LAN, shutdown), and the jobs and workflows that run on them"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "kimo-fleet"
+path = "src/main.rs"
+
+[dependencies]
+# kimo's API client, access rules and network helpers; no window.
+kimo = { path = "..", default-features = false }
+anyhow = "1"
+axum = "0.8"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+clap = { version = "4", features = ["derive", "env"] }
+libc = "0.2"
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "fs", "io-util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ureq = { version = "3", default-features = false, features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

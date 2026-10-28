@@ -79,6 +79,7 @@ fn main() -> Result<()> {
         ),
         Command::Whoami => kimo::cli::whoami(&kimo::cli::client(cfg.port)),
         Command::Peers => kimo::cli::peers(&kimo::cli::client(cfg.port)),
+        Command::JobRun { dir } => kimo::services::jobs::run(&dir),
         Command::Usage { days, json } => kimo::cli::usage(&kimo::cli::client(cfg.port), days, json),
         Command::History { folder } => kimo::cli::history(&kimo::cli::client(cfg.port), folder),
         Command::Continue { id, folder } => {
@@ -133,11 +134,13 @@ async fn serve(cfg: Config) -> Result<()> {
             let m = sampler.clone();
             let memory = tokio::task::spawn_blocking(move || {
                 m.sample();
-                // Keep the computer awake as the settings say (while agents work, always).
+                // Keep the computer awake as the settings say (while agents or jobs work,
+                // always).
                 let working = m
                     .sessions()
                     .iter()
-                    .any(|s| s.activity == Some(kimo::core::activity::Activity::Working));
+                    .any(|s| s.activity == Some(kimo::core::activity::Activity::Working))
+                    || !m.running_jobs().is_empty();
                 kimo::services::awake::tick(m.settings().keep_awake, working);
                 kimo::services::stats::system_memory()
             })
@@ -193,6 +196,11 @@ async fn serve(cfg: Config) -> Result<()> {
             admin_origins: cfg.origins.clone(),
             local_owner: cfg.local_owner,
             bound: ip,
+            fleet: cfg
+                .fleet
+                .clone()
+                .filter(|f| !f.trim().is_empty())
+                .map(|f| (f, cfg.fleet_token.clone().filter(|t| !t.is_empty()))),
         },
     );
     // After an update: the terminals the kimo before handed over keep running here.

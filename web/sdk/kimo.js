@@ -36,16 +36,16 @@ export class Kimo {
   /** A client for a paired kimo, sharing this one's address and key. */
   forHost(host) { return new Kimo({ url: this.url, token: this.token, host }); }
 
-  async request(method, path, body, { local = false } = {}) {
+  async request(method, path, body, { local = false, text = false } = {}) {
     let res;
     try {
       res = await fetch(`${this.url}${local ? '/api' : this.base}${path}`, {
         method,
         headers: {
-          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...(body === undefined ? {} : { 'Content-Type': text ? 'text/yaml' : 'application/json' }),
           ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined ? undefined : text ? body : JSON.stringify(body),
       });
     } catch (e) {
       throw new KimoError(`cannot reach kimo at ${this.url}`, 0);
@@ -212,6 +212,53 @@ export class Kimo {
   /** @param {'off'|'agents'|'on'} mode `agents`: while an agent is working. */
   setAwake(mode) { return this.request('POST', '/awake', { mode }); }
 
+  // Jobs: a command or a headless agent run to its end, detached from kimo (it survives kimo
+  // updating or restarting). Control keys may run them; fleet coordinators do.
+  /** [{id, name, state: staged|starting|running|succeeded|failed|cancelled|timed_out|lost, exit_code, git, …}], newest first. */
+  jobs() { return this.request('GET', '/jobs'); }
+  /** One job; a headless agent's answer is in `result` once it ended. */
+  job(id) { return this.request('GET', `/jobs/${enc(id)}`); }
+  /**
+   * @param {{command?: string|string[], agent?: {kind: 'claude'|'codex', prompt: string, model?: string, effort?: string, account?: string, permissions?: 'yolo'|'manual'},
+   *   cwd?: string, git?: {repo: string, ref?: string, branch?: string}, env?: Object<string,string>, timeout_s?: number, id?: string, name?: string, start?: boolean}} job
+   * `git`: a fresh checkout of a commit (a worktree of a repository on the machine, or a clone of a URL);
+   * `start: false`: staged, to put input files in place first (`putJobFile`), then `startJob`.
+   */
+  createJob(job) { return this.request('POST', '/jobs', job); }
+  /** Its log from `offset`: {text, next, size, done}; call again with `next` for more. */
+  jobLog(id, offset = 0) { return this.request('GET', `/jobs/${enc(id)}/log?offset=${offset}`); }
+  cancelJob(id) { return this.request('POST', `/jobs/${enc(id)}/cancel`); }
+  startJob(id) { return this.request('POST', `/jobs/${enc(id)}/start`); }
+  /** Forget a job that ended (its folder and checkout go). */
+  deleteJob(id) { return this.request('DELETE', `/jobs/${enc(id)}`); }
+  /** A file of the job's folder (an output), as a URL to fetch. */
+  jobFileUrl(id, path) { return `${this.urlWithToken(`${this.base}/jobs/${enc(id)}/files`)}${this.token ? '&' : '?'}path=${enc(path)}`; }
+  /** Put an input file (Blob) in a staged job's folder at `path`. */
+  async putJobFile(id, path, blob) {
+    const res = await fetch(`${this.url}${this.base}/jobs/${enc(id)}/files?path=${enc(path)}`, {
+      method: 'PUT',
+      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      body: blob,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new KimoError(data.error || `HTTP ${res.status}`, res.status);
+    return data;
+  }
+
+  // The machine's facts and power (owner and fleet coordinators)
+  /** What the machine is and does now: {os, arch, model, labels, gpus, cuda, xcode, load, disk, sessions, logins, in_use, …}. */
+  node() { return this.request('GET', '/node'); }
+  /** {can_shutdown, blockers: [{kind, what}], shutting_down, last_error}. Owner only. */
+  power() { return this.request('GET', '/power'); }
+  /** Switch the machine off when nothing runs there (`force`: anyway). Owner only. */
+  powerOff({ force = false } = {}) { return this.request('POST', '/power/shutdown', { force }); }
+
+  /**
+   * The fleet coordinator behind this kimo (`status().fleet`): the machines, their power,
+   * and the jobs and workflows placed on them. Owner only.
+   */
+  get fleet() { return new KimoFleet(this); }
+
   // Owner only: devices and network
   network() { return this.request('GET', '/network'); }
   /** Serve kimo over HTTPS on the tailnet (tailscale serve); returns {url}. */
@@ -270,6 +317,64 @@ export class Kimo {
   urlWithToken(path) {
     return `${this.url}${path}${this.token ? `?token=${encodeURIComponent(this.token)}` : ''}`;
   }
+}
+
+/** The fleet coordinator's API through the kimo that serves it (`kimo serve --fleet`). */
+export class KimoFleet {
+  constructor(kimo) { this.kimo = kimo; }
+  call(method, path, body, opts = {}) { return this.kimo.request(method, `/fleet${path}`, body, { ...opts, local: true }); }
+
+  /** {version, host, devices, registry_error, jobs: {ready, waiting_device, running, awaiting_approval}}. */
+  status() { return this.call('GET', '/status'); }
+  /**
+   * The machines: [{id, state: off|waking|booted|ready|busy|idle|draining|unreachable|manual, labels,
+   * facts, jobs, paired, can_wake, auto_shutdown, shutdown_at, keep_on_until, error, …}].
+   */
+  devices() { return this.call('GET', '/devices'); }
+  device(id) { return this.call('GET', `/devices/${enc(id)}`); }
+  /** Wake it (Wake-on-LAN from the coordinator's network). */
+  wake(id) { return this.call('POST', `/devices/${enc(id)}/wake`); }
+  /** Switch it off (refused while work runs there). */
+  shutdown(id) { return this.call('POST', `/devices/${enc(id)}/shutdown`); }
+  /** @param {{hours?: number, never?: boolean, manual?: boolean}} hold keep on, never switch off, take control. */
+  hold(id, hold) { return this.call('POST', `/devices/${enc(id)}/hold`, hold); }
+  /** Pair with a machine of the registry using the code its kimo shows (`kimo pair`). */
+  pair(id, code) { return this.call('POST', `/devices/${enc(id)}/pair`, { code }); }
+  /** Its facts over the last `hours`: [{at, facts}]. */
+  samples(id, hours = 24) { return this.call('GET', `/devices/${enc(id)}/samples?hours=${hours}`); }
+  /** Wakes, shutdowns, jobs and approvals, newest first. */
+  events({ device, job, limit } = {}) { return this.call('GET', `/events${qs({ device, job, limit })}`); }
+  /** devices.yaml as text; `saveRegistry(text)` checks it before replacing it. */
+  async registry() {
+    const res = await fetch(`${this.kimo.url}/api/fleet/registry`, { headers: this.kimo.token ? { Authorization: `Bearer ${this.kimo.token}` } : {} });
+    if (!res.ok) throw new KimoError(`HTTP ${res.status}`, res.status);
+    return res.text();
+  }
+  saveRegistry(text) { return this.call('PUT', '/registry', text, { text: true }); }
+
+  jobs() { return this.call('GET', '/jobs'); }
+  job(id) { return this.call('GET', `/jobs/${enc(id)}`); }
+  /**
+   * Queue a job: an object or YAML text, e.g.
+   * `{task: 'tests', run: 'cargo test', requires: {labels: ['cuda']}, timeout: '30m', retries: 1}`.
+   */
+  submit(job) { return this.call('POST', '/jobs', job, { text: typeof job === 'string' }); }
+  cancel(id) { return this.call('POST', `/jobs/${enc(id)}/cancel`); }
+  approve(id) { return this.call('POST', `/jobs/${enc(id)}/approve`); }
+  reject(id) { return this.call('POST', `/jobs/${enc(id)}/reject`); }
+  /** {text, next, done}: from its machine while it runs, kept by the coordinator once it ended. */
+  log(id, offset = 0) { return this.call('GET', `/jobs/${enc(id)}/log?offset=${offset}`); }
+  /** URL of an output a job made (kept by the coordinator). */
+  artifactUrl(id, path) {
+    return this.kimo.urlWithToken(`/api/fleet/jobs/${enc(id)}/artifacts/${path.split('/').map(enc).join('/')}`);
+  }
+
+  workflows() { return this.call('GET', '/workflows'); }
+  /** The run and its jobs (one per step). */
+  workflow(id) { return this.call('GET', `/workflows/${enc(id)}`); }
+  /** Start a workflow: an object `{workflow, steps: [...]}` or its YAML text. */
+  submitWorkflow(workflow) { return this.call('POST', '/workflows', workflow, { text: typeof workflow === 'string' }); }
+  cancelWorkflow(id) { return this.call('POST', `/workflows/${enc(id)}/cancel`); }
 }
 
 /** Seconds since a session last printed something (null when it never did). */

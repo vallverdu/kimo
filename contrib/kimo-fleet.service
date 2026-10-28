@@ -1,0 +1,21 @@
+# kimo-fleet, the coordinator of a fleet of kimos, as a user service on the always-on machine
+# (a Raspberry Pi 4 in docs/fleet.md). The kimo on the same machine reaches it with
+# KIMO_FLEET=http://127.0.0.1:7780 (EnvironmentFile of kimo.service, or kimo serve --fleet).
+#   cp contrib/kimo-fleet.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now kimo-fleet
+#   loginctl enable-linger $USER
+#   journalctl --user -u kimo-fleet -f
+# Machines go in ~/.kimo-fleet/devices.yaml; then `kimo-fleet reload` and `kimo-fleet pair`.
+[Unit]
+Description=kimo fleet coordinator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/kimo-fleet serve
+Restart=on-failure
+Environment=RUST_LOG=kimo_fleet=info
+# KIMO_FLEET_PORT=7780, KIMO_FLEET_DIR=%h/.kimo-fleet
+
+[Install]
+WantedBy=default.target

@@ -3,6 +3,51 @@
 Changes since the last release collect under *Unreleased*; a release renames it to its
 version, and that section becomes the GitHub release notes.
 
+## Unreleased
+
+- **kimo fleet**: a coordinator for several machines that each run kimo
+  ([docs/fleet.md](docs/fleet.md)). `kimo-fleet` runs on an always-on machine (a Raspberry
+  Pi) and:
+  - keeps the registry of machines (`devices.yaml`);
+  - wakes them with Wake-on-LAN and switches them off when idle (through their kimo, which
+    checks first);
+  - places jobs on the machine that fits: labels, VRAM, free GPU, already on before one to
+    wake, cheapest first;
+  - runs workflows whose steps pass files between machines and wait for your approval;
+  - keeps logs, outputs and every event in SQLite, and notifies you through ntfy.
+- A **Fleet** tab on the phone (when this kimo has a coordinator, `kimo serve --fleet`):
+  - machines with their state, GPUs and load;
+  - wake, switch off, keep on for 2 hours, manual control, pair;
+  - jobs with their logs, outputs, cancel and approve;
+  - workflows, and what happened lately;
+  - a new job from a command or YAML.
+- **One-way pairing** for coordinators (`"role": "fleet"`): the coordinator's key reaches
+  only the machine's status, facts, jobs and power. It never reaches terminals, files,
+  accounts, keys or other kimos, and never works from a web page.
+- **Jobs** on every kimo (`/api/jobs`): a command or a headless agent (`claude -p`,
+  `codex exec`) run to its end, detached from kimo.
+  - Its state lives in files, so it survives kimo updating, restarting or crashing, and it
+    ends with a real exit code.
+  - Its log, a time limit, cancelling, and the agent's answer as its result.
+  - It runs in a fresh folder, a folder of yours, or a fresh git checkout of a commit (a
+    worktree or a clone, optionally on a new branch).
+  - A job can be staged so input files go in first, and output files can be fetched after.
+  - Running jobs keep the machine awake and on.
+- `/api/node`: what the machine is and does now:
+  - NVIDIA GPUs with their memory, driver and CUDA (`nvidia-smi`);
+  - Jetson L4T, Raspberry Pi model, Hailo accelerator, Xcode;
+  - load, disk, who is logged in, sessions and jobs;
+  - labels made from all of this.
+- `/api/power` and `/api/power/shutdown`: switch the machine off when nothing runs and nobody
+  is logged in. Only the owner may force it.
+- Paired kimos that do not answer (asleep, switched off) are left alone for 20 seconds
+  instead of holding up every listing.
+- SDK: `jobs()`, `createJob()`, `jobLog()`, `cancelJob()`, `startJob()`, `putJobFile()`,
+  `jobFileUrl()`, `deleteJob()`, `node()`, `power()`, `powerOff()`, and `kimo.fleet.*`
+  (`devices`, `wake`, `shutdown`, `hold`, `pair`, `events`, `samples`, `submit`,
+  `submitWorkflow`, `log`, `approve`, `reject`, `cancel`, `artifactUrl`, `registry`).
+- Releases include `kimo-fleet` next to `kimo`; the install script installs both.
+
 ## 0.1.14
 
 - Updating no longer interrupts agents: the new kimo takes over the running terminals (the

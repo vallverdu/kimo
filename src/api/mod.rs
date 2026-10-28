@@ -1,6 +1,7 @@
 //! HTTP + WebSocket API and the embedded PWA. The API is also the surface for custom tools.
 
 mod files;
+mod fleet;
 mod hosts;
 
 use crate::core::access::{self, Caller};
@@ -43,6 +44,8 @@ struct App {
     /// the machine) are the local owner.
     own_names: Arc<[String]>,
     bound: IpAddr,
+    /// The fleet coordinator's address and key (`--fleet`), if this kimo has one.
+    fleet: Option<(Arc<str>, Option<Arc<str>>)>,
 }
 
 /// How the API is exposed.
@@ -55,6 +58,8 @@ pub struct Options {
     pub local_owner: bool,
     /// Address kimo listens on (for the network page).
     pub bound: IpAddr,
+    /// The fleet coordinator on this machine (`http://127.0.0.1:7780`) and its key, if any.
+    pub fleet: Option<(String, Option<String>)>,
 }
 
 /// Errors become `{ "error": "..." }` with a plain message the UI can show.
@@ -92,6 +97,9 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         local_ips: crate::services::network::local_ips().into(),
         own_names: own_names.into(),
         bound: options.bound,
+        fleet: options
+            .fleet
+            .map(|(url, token)| (url.trim_end_matches('/').into(), token.map(Into::into))),
     };
     let api = Router::new()
         .route("/status", get(status))
@@ -155,6 +163,20 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/usage/daily", get(daily_usage))
         .route("/update", get(check_update).post(install_update))
         .route("/ports", get(ports))
+        .route("/node", get(node))
+        .route("/jobs", get(list_jobs).post(create_job))
+        .route("/jobs/{id}", get(get_job).delete(delete_job))
+        .route("/jobs/{id}/log", get(job_log))
+        .route("/jobs/{id}/cancel", post(cancel_job))
+        .route("/jobs/{id}/start", post(start_job))
+        .route(
+            "/jobs/{id}/files",
+            get(job_file)
+                .put(put_job_file)
+                .layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route("/power", get(power))
+        .route("/power/shutdown", post(power_off))
         .route("/awake", get(awake).post(set_awake))
         .route("/update/restart", post(restart))
         .route(
@@ -167,6 +189,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/peers/accept", post(accept_peer))
         .route("/peers/{id}", axum::routing::delete(remove_peer))
         .route("/hosts/{host}/{*rest}", axum::routing::any(hosts::proxy))
+        .route("/fleet/{*rest}", axum::routing::any(fleet::proxy))
         .layer(middleware::from_fn_with_state(app.clone(), auth));
     // Pairing is the way in for a new device: it needs a one-time code, not a key.
     let public = Router::new().route("/pair", post(pair));
@@ -261,6 +284,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
         _ if owner_here => Some(Caller::Admin),
         (Some(t), Some(admin)) if t.as_str() == &**admin => Some(Caller::Admin),
         (Some(t), _) if app.manager.device_by_token(t).is_some() => Some(Caller::Admin),
+        (Some(t), _) if app.manager.fleet_by_token(t).is_some() => Some(Caller::Fleet),
         (Some(t), _) => app.manager.client_by_token(t).map(|c| Caller::Client {
             scope: c.scope,
             origins: c.origins,
@@ -284,6 +308,7 @@ async fn auth(State(app): State<App>, mut req: Request, next: Next) -> Response 
     // The key behind the call: open terminals and streams end when it is revoked.
     req.extensions_mut()
         .insert(Principal(if owner_here { None } else { token.clone() }));
+    req.extensions_mut().insert(caller);
     let mut res = next.run(req).await;
     if let Some(origin) = &origin {
         cors(&mut res, origin);
@@ -300,6 +325,7 @@ impl App {
     fn key_valid(&self, token: &str) -> bool {
         self.token.as_deref() == Some(token)
             || self.manager.device_by_token(token).is_some()
+            || self.manager.fleet_by_token(token).is_some()
             || self.manager.client_by_token(token).is_some()
     }
 
@@ -343,6 +369,8 @@ async fn status(State(app): State<App>) -> Json<serde_json::Value> {
         "agents_rss_bytes": sessions.iter().map(|s| s.usage.rss_bytes).sum::<u64>(),
         "memory_pressure": crate::core::memory::pressure(mem_total, mem_available),
         "awake": crate::services::awake::status(app.manager.settings().keep_awake),
+        // A fleet coordinator answers at /api/fleet.
+        "fleet": app.fleet.is_some(),
     }))
 }
 
@@ -897,6 +925,222 @@ async fn ports(State(app): State<App>) -> ApiResult<serde_json::Value> {
     Ok(Json(json!(list)))
 }
 
+/// Facts about this machine for a fleet coordinator: hardware, GPUs, load, logins, agents.
+async fn node(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let node = tokio::task::spawn_blocking(move || manager.node())
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(node)))
+}
+
+/// Run a blocking manager call off the async threads.
+async fn blocking<T: Send + 'static>(
+    app: &App,
+    f: impl FnOnce(Arc<Manager>) -> anyhow::Result<T> + Send + 'static,
+) -> Result<T, ApiError> {
+    let manager = app.manager.clone();
+    tokio::task::spawn_blocking(move || f(manager))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(ApiError::from)
+}
+
+fn unknown_job(e: ApiError) -> ApiError {
+    if e.1.starts_with("unknown job") {
+        ApiError(StatusCode::NOT_FOUND, e.1)
+    } else {
+        e
+    }
+}
+
+async fn list_jobs(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    Ok(Json(json!(blocking(&app, |m| Ok(m.jobs())).await?)))
+}
+
+/// A command or a headless agent, run to its end detached from kimo.
+async fn create_job(
+    State(app): State<App>,
+    Json(new): Json<crate::services::jobs::NewJob>,
+) -> Result<Response, ApiError> {
+    let job = blocking(&app, move |m| m.create_job(new)).await?;
+    Ok((StatusCode::CREATED, Json(json!(job))).into_response())
+}
+
+async fn get_job(State(app): State<App>, Path(id): Path<String>) -> ApiResult<serde_json::Value> {
+    let (job, result) = blocking(&app, move |m| Ok((m.job(&id)?, m.job_result(&id)?)))
+        .await
+        .map_err(unknown_job)?;
+    let mut v = json!(job);
+    if let Some(r) = result {
+        v["result"] = r;
+    }
+    Ok(Json(v))
+}
+
+/// The job's log from `?offset=` (at most 256 KB per call; `next` continues).
+async fn job_log(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    let offset = q.get("offset").and_then(|o| o.parse().ok()).unwrap_or(0);
+    let chunk = blocking(&app, move |m| m.job_log(&id, offset))
+        .await
+        .map_err(unknown_job)?;
+    Ok(Json(json!(chunk)))
+}
+
+async fn cancel_job(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let job = blocking(&app, move |m| m.cancel_job(&id))
+        .await
+        .map_err(unknown_job)?;
+    Ok(Json(json!(job)))
+}
+
+async fn start_job(State(app): State<App>, Path(id): Path<String>) -> ApiResult<serde_json::Value> {
+    let job = blocking(&app, move |m| m.start_job(&id))
+        .await
+        .map_err(unknown_job)?;
+    Ok(Json(json!(job)))
+}
+
+/// A file of the job's folder (`?path=out/model.onnx`), streamed: outputs can be large.
+async fn job_file(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, ApiError> {
+    let rel = q.get("path").cloned().unwrap_or_default();
+    let path = blocking(&app, move |m| m.job_path(&id, &rel))
+        .await
+        .map_err(unknown_job)?;
+    let file = tokio::fs::File::open(&path).await.map_err(|_| {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            "no such file in the job's folder".into(),
+        )
+    })?;
+    let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let stream = futures_util::stream::unfold(file, |mut f| async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 64 << 10];
+        match f.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(buf)), f))
+            }
+            Err(e) => Some((Err(e), f)),
+        }
+    });
+    let mut res = axum::body::Body::from_stream(stream).into_response();
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
+        h.insert(header::CONTENT_LENGTH, v);
+    }
+    Ok(res)
+}
+
+/// Put an input file in a staged job's folder (`?path=`), streamed to disk.
+async fn put_job_file(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+    body: axum::body::Body,
+) -> ApiResult<serde_json::Value> {
+    let rel = q.get("path").cloned().unwrap_or_default();
+    let path = blocking(&app, move |m| m.job_input_path(&id, &rel))
+        .await
+        .map_err(unknown_job)?;
+    let tmp = path.with_extension("kimo-part");
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mut stream = body.into_data_stream();
+    let mut size = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+        size += chunk.len() as u64;
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+            .await
+            .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    }
+    tokio::io::AsyncWriteExt::flush(&mut file)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    tokio::fs::rename(&tmp, &path)
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(json!({ "ok": true, "bytes": size })))
+}
+
+async fn delete_job(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    blocking(&app, move |m| m.delete_job(&id))
+        .await
+        .map_err(unknown_job)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// What keeps this machine on, and whether a shutdown is under way.
+async fn power(State(app): State<App>) -> ApiResult<serde_json::Value> {
+    let manager = app.manager.clone();
+    let power = tokio::task::spawn_blocking(move || manager.power())
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(power)))
+}
+
+#[derive(Deserialize, Default)]
+struct PowerOffBody {
+    /// Switch off even with work running (the owner only).
+    #[serde(default)]
+    force: bool,
+}
+
+/// Switch this machine off, after checking again that nothing runs and nobody is logged in.
+async fn power_off(
+    State(app): State<App>,
+    Extension(caller): Extension<Caller>,
+    body: Option<Json<PowerOffBody>>,
+) -> Result<Response, ApiError> {
+    let force = body.map(|b| b.0.force).unwrap_or_default();
+    if force && caller != Caller::Admin {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "only the owner can switch a machine off with work running".into(),
+        ));
+    }
+    let manager = app.manager.clone();
+    let result = tokio::task::spawn_blocking(move || manager.power_off(force))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(match result {
+        Ok(power) => (StatusCode::ACCEPTED, Json(json!(power))).into_response(),
+        Err(blockers) => {
+            let what: Vec<&str> = blockers.iter().map(|b| b.what.as_str()).collect();
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": format!("still in use: {}", what.join(", ")),
+                    "blockers": blockers,
+                })),
+            )
+                .into_response()
+        }
+    })
+}
+
 async fn awake(State(app): State<App>) -> Json<serde_json::Value> {
     Json(json!(crate::services::awake::status(
         app.manager.settings().keep_awake
@@ -1034,13 +1278,16 @@ struct PairBody {
     code: String,
     #[serde(default)]
     name: String,
+    /// `fleet` for a coordinator (one-way, limited key); the owner's access otherwise.
+    #[serde(default)]
+    role: crate::services::devices::Role,
 }
 
 /// A new device trades its one-time code for its own key.
 async fn pair(State(app): State<App>, Json(body): Json<PairBody>) -> ApiResult<serde_json::Value> {
     let device = app
         .manager
-        .pair(&body.code, &body.name)
+        .pair_as(&body.code, &body.name, body.role)
         .map_err(|e| ApiError(StatusCode::FORBIDDEN, e.to_string()))?;
     Ok(Json(json!(device)))
 }

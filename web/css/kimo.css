@@ -60,7 +60,8 @@
 .k-connect code { background: none; font-size: inherit; }
 .ui-sheet textarea.k-code { font-size: 1.2rem; }
 .ui-sheet [data-copy] { align-self: flex-start; }
-.k-tabbar { grid-template-columns: repeat(6, 1fr) !important; }
+.k-tabbar { grid-template-columns: none !important; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+.ui-tabbar a[hidden], .ui-nav li[hidden] { display: none; }
 .k-warn { color: var(--color-bad); }
 .k-field { display: flex; gap: .8rem; align-items: stretch; margin-top: .6rem; }
 .k-field input { margin-top: 0 !important; flex: 1; min-width: 0; }
@@ -233,3 +234,8 @@
 .k-letter-M, .k-letter-R, .k-letter-C { color: var(--color-warn); }
 .k-letter-A, .k-letter-U { color: var(--color-good); }
 .k-letter-D { color: var(--color-bad); }
+
+/* Fleet */
+.k-log { margin: 0; max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 1.2rem; line-height: 1.5; background: var(--color-background); border: 1px solid var(--color-line); padding: 1.2rem; }
+.k-events li small { color: var(--color-muted); white-space: nowrap; }
+.k-meta .k-link { margin-right: 1.2rem; }

@@ -15,6 +15,19 @@ pub struct DeviceInfo {
     pub id: String,
     pub name: String,
     pub paired_at: u64,
+    pub role: Role,
+}
+
+/// What a paired key may do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// A phone, tablet or kimo of the owner: everything.
+    #[default]
+    Owner,
+    /// A fleet coordinator: status, node facts, jobs and power, nothing else (one-way:
+    /// this kimo gets no key for it).
+    Fleet,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +60,12 @@ impl Manager {
 
     /// Trade a pairing code (once) for a device key.
     pub fn pair(&self, code: &str, name: &str) -> Result<Device> {
+        self.pair_as(code, name, Role::Owner)
+    }
+
+    /// Trade a pairing code (once) for a key with `role`: whoever has the code may ask for
+    /// less than the owner's access.
+    pub fn pair_as(&self, code: &str, name: &str, role: Role) -> Result<Device> {
         let valid = {
             let mut codes = self.pairing.lock().unwrap_or_else(|e| e.into_inner());
             let valid = codes
@@ -68,17 +87,40 @@ impl Manager {
             "" => "device",
             n => n,
         };
+        let mut inner = self.lock();
+        // Ids name one key: forgetting one never takes another of the same name with it.
+        let taken = |id: &str| {
+            inner
+                .state
+                .devices
+                .iter()
+                .chain(&inner.state.fleet)
+                .any(|d| d.id == id)
+        };
+        let base = slug(name);
+        let mut id = base.clone();
+        let mut n = 2;
+        while taken(&id) {
+            id = format!("{base}-{n}");
+            n += 1;
+        }
+        let prefix = match role {
+            Role::Owner => "kimo_dev_",
+            Role::Fleet => "kimo_fleet_",
+        };
         let device = Device {
-            id: slug(name),
+            id,
             name: name.chars().take(60).collect(),
-            token: format!("kimo_dev_{}{}", random_hex(), random_hex()),
+            token: format!("{prefix}{}{}", random_hex(), random_hex()),
             paired_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() as u64),
             extra: Default::default(),
         };
-        let mut inner = self.lock();
-        inner.state.devices.push(device.clone());
+        match role {
+            Role::Owner => inner.state.devices.push(device.clone()),
+            Role::Fleet => inner.state.fleet.push(device.clone()),
+        }
         self.save(&inner)?;
         Ok(device)
     }
@@ -90,16 +132,32 @@ impl Manager {
     }
 
     pub fn devices(&self) -> Vec<DeviceInfo> {
-        self.lock()
-            .state
-            .devices
-            .iter()
-            .map(|d| DeviceInfo {
+        let inner = self.lock();
+        let info = |role| {
+            move |d: &Device| DeviceInfo {
                 id: d.id.clone(),
                 name: d.name.clone(),
                 paired_at: d.paired_at,
-            })
+                role,
+            }
+        };
+        inner
+            .state
+            .devices
+            .iter()
+            .map(info(Role::Owner))
+            .chain(inner.state.fleet.iter().map(info(Role::Fleet)))
             .collect()
+    }
+
+    /// The fleet coordinator calling with this key, if it is one.
+    pub fn fleet_by_token(&self, token: &str) -> Option<Device> {
+        self.lock()
+            .state
+            .fleet
+            .iter()
+            .find(|d| d.token == token)
+            .cloned()
     }
 
     pub fn device_by_token(&self, token: &str) -> Option<Device> {
@@ -113,9 +171,10 @@ impl Manager {
 
     pub fn delete_device(&self, id: &str) -> Result<()> {
         let mut inner = self.lock();
-        let before = inner.state.devices.len();
+        let before = inner.state.devices.len() + inner.state.fleet.len();
         inner.state.devices.retain(|d| d.id != id);
-        if inner.state.devices.len() == before {
+        inner.state.fleet.retain(|d| d.id != id);
+        if inner.state.devices.len() + inner.state.fleet.len() == before {
             return Err(anyhow!("unknown device: {id}"));
         }
         self.save(&inner)?;
