@@ -1,5 +1,6 @@
 //! Choosing the address to listen on (loopback, LAN, Tailscale, ZeroTier, explicit IP).
 
+use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +129,78 @@ pub fn parse_tailscale_dns(status_json: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// A device on the tailnet, as `tailscale status --json` reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TailnetDevice {
+    /// Its MagicDNS label (`lab-nuc`): the name `tailscale status` shows.
+    pub name: String,
+    /// The name the device gives itself (`Pixel 8 Pro`; iOS says `localhost`).
+    pub host_name: String,
+    pub dns_name: String,
+    pub ips: Vec<String>,
+    /// `linux`, `macOS`, `iOS`, `android`, `windows`…
+    pub os: String,
+    pub online: bool,
+    /// Traffic with it right now.
+    pub active: bool,
+    /// When an offline device was last connected (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen: Option<String>,
+    /// This machine.
+    #[serde(rename = "self")]
+    pub this: bool,
+    /// Owned by the same Tailscale user as this machine (not a device shared with it).
+    pub mine: bool,
+}
+
+/// Every device on the tailnet from `tailscale status --json`: this machine first, then the
+/// online ones, then by name.
+pub fn parse_tailnet(status_json: &str) -> Vec<TailnetDevice> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(status_json) else {
+        return Vec::new();
+    };
+    let me = v["Self"]["UserID"].as_u64();
+    let device = |d: &serde_json::Value, this: bool| -> Option<TailnetDevice> {
+        let dns_name = d["DNSName"].as_str()?.trim_end_matches('.').to_string();
+        let host_name = d["HostName"].as_str().unwrap_or_default().to_string();
+        let name = dns_name
+            .split('.')
+            .next()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(&host_name)
+            .to_string();
+        let last_seen = d["LastSeen"]
+            .as_str()
+            .filter(|t| !t.starts_with("0001-"))
+            .map(str::to_string);
+        Some(TailnetDevice {
+            name,
+            host_name,
+            dns_name,
+            ips: d["TailscaleIPs"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|ip| ip.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            os: d["OS"].as_str().unwrap_or_default().to_string(),
+            online: this || d["Online"].as_bool().unwrap_or(false),
+            active: d["Active"].as_bool().unwrap_or(false),
+            last_seen,
+            this,
+            mine: this || (me.is_some() && d["UserID"].as_u64() == me),
+        })
+    };
+    let mut out: Vec<TailnetDevice> = device(&v["Self"], true).into_iter().collect();
+    if let Some(peers) = v["Peer"].as_object() {
+        out.extend(peers.values().filter_map(|d| device(d, false)));
+    }
+    out.sort_by(|a, b| (!a.this, !a.online, &a.name).cmp(&(!b.this, !b.online, &b.name)));
+    out
+}
+
 /// HTTPS URL under which `tailscale serve` already proxies to kimo's `port`, if any
 /// (from `tailscale serve status --json`).
 pub fn tailscale_https_url(serve_json: &str, port: u16) -> Option<String> {
@@ -248,6 +321,51 @@ mod tests {
         4: tailscale0    inet 100.101.1.10/32 scope global tailscale0\n\
         5: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n\
         6: ztabc    inet 10.147.17.4/24 scope global ztabc\n";
+
+    #[test]
+    fn lists_the_tailnet() {
+        let status = r#"{
+            "Self": {"DNSName": "rpi4.demo.ts.net.", "HostName": "rpi4-demo", "OS": "linux",
+                     "TailscaleIPs": ["100.101.20.9", "fd7a::1"], "UserID": 7, "Online": true,
+                     "LastSeen": "0001-01-01T00:00:00Z"},
+            "Peer": {
+                "a": {"DNSName": "iphone-12-pro.demo.ts.net.", "HostName": "localhost", "OS": "iOS",
+                      "TailscaleIPs": ["100.101.30.1"], "UserID": 7, "Online": false,
+                      "LastSeen": "2026-10-15T19:11:10.1Z"},
+                "b": {"DNSName": "pixel-8-pro.demo.ts.net.", "HostName": "Pixel 8 Pro", "OS": "android",
+                      "TailscaleIPs": ["100.101.30.3"], "UserID": 7, "Online": true, "Active": true,
+                      "LastSeen": "0001-01-01T00:00:00Z"},
+                "c": {"DNSName": "redmi-note-12-pro-5g.demo.ts.net.", "HostName": "Redmi", "OS": "android",
+                      "TailscaleIPs": ["100.101.30.4"], "UserID": 9, "Online": false}
+            }
+        }"#;
+        let devices = parse_tailnet(status);
+        let names: Vec<&str> = devices.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "rpi4",
+                "pixel-8-pro",
+                "iphone-12-pro",
+                "redmi-note-12-pro-5g"
+            ]
+        );
+        assert!(devices[0].this && devices[0].online && devices[0].mine);
+        assert_eq!(devices[0].ips, ["100.101.20.9", "fd7a::1"]);
+        assert_eq!(devices[0].last_seen, None);
+        let pixel = &devices[1];
+        assert!(pixel.online && pixel.active && pixel.mine && !pixel.this);
+        assert_eq!(
+            (pixel.host_name.as_str(), pixel.os.as_str()),
+            ("Pixel 8 Pro", "android")
+        );
+        let iphone = &devices[2];
+        assert!(!iphone.online && iphone.mine);
+        assert_eq!(iphone.last_seen.as_deref(), Some("2026-10-15T19:11:10.1Z"));
+        assert!(!devices[3].mine, "a device shared from another user");
+        assert!(parse_tailnet("not json").is_empty());
+        assert!(parse_tailnet("{}").is_empty());
+    }
 
     #[test]
     fn picks_the_address_a_peer_reaches() {

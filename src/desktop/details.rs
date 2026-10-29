@@ -992,10 +992,15 @@ impl KimoApp {
                     );
                     ui.label(
                         RichText::new(format!(
-                            "{} · {} · {} asks{}",
+                            "{} · {} · {} ask{}{}",
                             s(c, "agent"),
                             ago(now_ms, c["updated_at"].as_u64().unwrap_or(0)),
                             c["messages"].as_u64().unwrap_or(0),
+                            if c["messages"].as_u64() == Some(1) {
+                                ""
+                            } else {
+                                "s"
+                            },
                             if c["session"].is_null() {
                                 ""
                             } else {

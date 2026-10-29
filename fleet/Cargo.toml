@@ -1,6 +1,6 @@
 [package]
 name = "kimo-fleet"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 description = "Fleet coordinator for kimo: the machines, their power (Wake-on-LAN, shutdown), and the jobs and workflows that run on them"
 license = "MIT OR Apache-2.0"

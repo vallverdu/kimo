@@ -3,8 +3,22 @@
 Changes since the last release collect under *Unreleased*; a release renames it to its
 version, and that section becomes the GitHub release notes.
 
-## Unreleased
+## 0.1.15
 
+- **Map tab**: every machine and phone on your tailnet in 3D, drawn to scale and linked to
+  this kimo, live while open: who is online, what each machine runs (projects, agents, its
+  facts and fleet jobs), and a pulse when work starts or ends. **All** frames everything,
+  **Top** switches to a 2D view from above, **Labels** hides the names. New
+  `GET /api/network/tailnet` (owner) and SDK `tailnet()`; three.js r160 vendored in
+  `web/vendor/three/`, loaded only when the tab opens.
+- The map knows the fleet: a machine's hardware model and role (from the coordinator) choose
+  how it is drawn and what it is called, and a machine on the tailnet that is not in the
+  fleet yet can be added from the map.
+- New screenshots, all with invented data (`scripts/demo/`: a real kimo with a made-up
+  world; `node scripts/demo/run.mjs --capture`), in light and dark, including the Fleet and
+  Map tabs and the window's files and changes.
+- The window: the history list keeps the date and the button in view with long titles, and
+  "1 session" is no longer "1 sessions".
 - **kimo fleet**: a coordinator for several machines that each run kimo
   ([docs/fleet.md](docs/fleet.md)). `kimo-fleet` runs on an always-on machine (a Raspberry
   Pi) and:

@@ -261,6 +261,11 @@ export class Kimo {
 
   // Owner only: devices and network
   network() { return this.request('GET', '/network'); }
+  /**
+   * The tailnet this kimo is on (owner): `{tailscale, devices: [{name, host_name, dns_name, ips, os,
+   * online, active, last_seen?, self, mine}]}`. `tailscale` is false when it is not installed here.
+   */
+  tailnet() { return this.request('GET', '/network/tailnet'); }
   /** Serve kimo over HTTPS on the tailnet (tailscale serve); returns {url}. */
   enableHttps() { return this.request('POST', '/network/https'); }
   /** One-time code (10 minutes) for a pairing link `<address>/#pair=<code>`. */

@@ -122,7 +122,7 @@ export function initProjects({ api, state, run, terminal, openHere = () => true 
     try {
       const list = await api.conversations(p.path);
       $('history-list').innerHTML = list.length ? list.map(c => `<li data-conv="${esc(c.id)}" data-agent="${esc(c.agent)}" data-session="${esc(c.session || '')}">
-        <div><strong>${esc(c.title)}</strong><small>${esc(c.agent)} · ${ago(c.updated_at)} · ${c.messages} asks</small></div>
+        <div><strong>${esc(c.title)}</strong><small>${esc(c.agent)} · ${ago(c.updated_at)} · ${c.messages} ask${c.messages === 1 ? '' : 's'}</small></div>
         <button type="button" class="ui-button ${c.session ? 'ghost ' : ''}k-small">${c.session ? 'open' : 'continue'}</button></li>`).join('')
         : '<li class="k-hint">No Claude or Codex conversations in this folder yet.</li>';
     } catch (err) { toast(err.message, true); }

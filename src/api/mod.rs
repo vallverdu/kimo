@@ -153,6 +153,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/fs", get(browse).post(make_folder))
         .route("/network", get(network))
         .route("/network/https", post(enable_https))
+        .route("/network/tailnet", get(tailnet))
         .route("/pairing", post(start_pairing))
         .route("/devices", get(list_devices))
         .route("/devices/{id}", axum::routing::delete(delete_device))
@@ -1277,6 +1278,16 @@ async fn network(State(app): State<App>) -> ApiResult<serde_json::Value> {
         .await
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!(info)))
+}
+
+/// The machines and phones on this kimo's tailnet, with who is online now.
+async fn tailnet() -> ApiResult<serde_json::Value> {
+    let devices = tokio::task::spawn_blocking(crate::services::network::tailnet)
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        json!({ "tailscale": devices.is_some(), "devices": devices.unwrap_or_default() }),
+    ))
 }
 
 async fn enable_https(State(app): State<App>) -> ApiResult<serde_json::Value> {

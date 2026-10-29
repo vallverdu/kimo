@@ -2,7 +2,8 @@
 export const $ = id => document.getElementById(id);
 export const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 export const mb = bytes => bytes >= 1 << 30 ? `${(bytes / (1 << 30)).toFixed(1)} GB` : `${Math.round(bytes / (1 << 20))} MB`;
-export const home = path => path.replace(/^\/home\/[^/]+/, '~');
+/** `~/…` for paths in a home folder (Linux `/home/x`, macOS `/Users/x`). */
+export const home = path => path.replace(/^\/(home|Users)\/[^/]+/, '~');
 
 export function toast(message, isError = false) {
   let el = document.querySelector('.ui-toast');

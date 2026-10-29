@@ -325,6 +325,10 @@ pub struct KimoApp {
     last_usage: Instant,
     /// CPU of each project over the last minutes (bottom bar, resources).
     cpu_history: std::collections::HashMap<String, std::collections::VecDeque<f32>>,
+    /// A capture for the README (`KIMO_CAPTURE`): when it started, and how far it got.
+    capture_started: Option<Instant>,
+    capture_step: u8,
+    capture_done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The update the Dock icon already bounced for.
     attention_for: Option<String>,
     /// The server version this window already tried to restart onto.
@@ -547,6 +551,9 @@ impl KimoApp {
             last_ports: Instant::now() - Duration::from_secs(60),
             last_usage: Instant::now() - Duration::from_secs(600),
             cpu_history: Default::default(),
+            capture_started: None,
+            capture_step: 0,
+            capture_done: Default::default(),
             attention_for: None,
             followed: None,
         };
@@ -577,6 +584,76 @@ impl KimoApp {
             Some(a) if a > j => Some(a - 1),
             other => other,
         };
+    }
+
+    /// `KIMO_CAPTURE=<file.png>`: show a view (`KIMO_CAPTURE_VIEW`: terminals, usage,
+    /// subscriptions, skills, settings, devices), a session (`KIMO_CAPTURE_SESSION`), the right
+    /// panel (`KIMO_CAPTURE_PANEL`: files, changes, agents) or a project's earlier
+    /// conversations (`KIMO_CAPTURE_HISTORY`: its folder), save the window as a PNG and close.
+    /// For the README screenshots (`scripts/demo`), against demonstration data.
+    fn capture(&mut self, ctx: &egui::Context) {
+        let Some(out) = std::env::var_os("KIMO_CAPTURE") else {
+            return;
+        };
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let wait = env("KIMO_CAPTURE_WAIT")
+            .and_then(|w| w.parse::<f64>().ok())
+            .unwrap_or(4.0);
+        let since = *self.capture_started.get_or_insert_with(Instant::now);
+        let elapsed = since.elapsed().as_secs_f64();
+        if self.capture_step == 0 && elapsed > 1.0 {
+            self.capture_step = 1;
+            self.view = match env("KIMO_CAPTURE_VIEW").as_deref() {
+                Some("usage") => View::Usage,
+                Some("subscriptions") => View::Subscriptions,
+                Some("skills") => View::Skills,
+                Some("settings") => View::Settings,
+                Some("devices") => View::Devices,
+                _ => View::Terminals,
+            };
+            self.refresh_view();
+            if let Some(id) = env("KIMO_CAPTURE_SESSION") {
+                self.open_session(&id);
+            }
+            if let Some(tab) = env("KIMO_CAPTURE_PANEL") {
+                self.details.open = true;
+                self.details.scope = None;
+                self.details.tab = match tab.as_str() {
+                    "changes" => details::Tab::Changes,
+                    "agents" => details::Tab::Agents,
+                    _ => details::Tab::Files,
+                };
+            }
+            if let Some(folder) = env("KIMO_CAPTURE_HISTORY") {
+                let name = self
+                    .projects
+                    .iter()
+                    .find(|p| s(p, "path") == folder)
+                    .map(|p| s(p, "name").to_string())
+                    .unwrap_or_default();
+                self.job(move |c| {
+                    let list = c.get(&format!("/conversations?path={}", query_escape(&folder)))?;
+                    Ok(Msg::History(name, folder, list))
+                });
+            }
+        }
+        if self.capture_step == 1 && elapsed > wait {
+            self.capture_step = 2;
+            let (done, out, repaint) =
+                (self.capture_done.clone(), PathBuf::from(&out), ctx.clone());
+            ctx.request_screenshot(move |image| {
+                match encode_png(&image).and_then(|png| Ok(std::fs::write(&out, png)?)) {
+                    Ok(()) => eprintln!("kimo: saved {}", out.display()),
+                    Err(e) => eprintln!("kimo: cannot save the capture: {e:#}"),
+                }
+                done.store(true, std::sync::atomic::Ordering::SeqCst);
+                repaint.request_repaint();
+            });
+        }
+        if self.capture_done.load(std::sync::atomic::Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        ctx.request_repaint_after(Duration::from_millis(100));
     }
 
     fn toggle_details(&mut self) {
@@ -3334,7 +3411,7 @@ impl KimoApp {
                     ui.label(RichText::new(s(p, "name")).color(theme::ink()));
                     ui.label(RichText::new(s(p, "url")).size(11.0).color(theme::muted()));
                     if let Some(n) = p["sessions"].as_u64() {
-                        ui.label(RichText::new(format!("{n} sessions")).size(11.0).color(theme::muted()));
+                        ui.label(RichText::new(format!("{n} session{}", if n == 1 { "" } else { "s" })).size(11.0).color(theme::muted()));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button(RichText::new("forget").color(theme::bad())).clicked() {
@@ -4159,10 +4236,6 @@ impl KimoApp {
                     .show(ui, |ui| {
                         for c in &list {
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(s(c, "agent")).size(10.5).color(theme::teal()),
-                                );
-                                ui.label(RichText::new(s(c, "title")).color(theme::ink()));
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -4188,13 +4261,32 @@ impl KimoApp {
                                                 format!("{} d ago", m / 1440)
                                             }
                                         };
+                                        let asks = c["messages"].as_u64().unwrap_or(0);
                                         ui.label(
                                             RichText::new(format!(
-                                                "{ago} · {} asks",
-                                                c["messages"]
+                                                "{ago} · {asks} ask{}",
+                                                if asks == 1 { "" } else { "s" }
                                             ))
                                             .size(10.5)
                                             .color(theme::muted()),
+                                        );
+                                        // The title takes what is left, shortened with "…".
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(s(c, "agent"))
+                                                        .size(10.5)
+                                                        .color(theme::teal()),
+                                                );
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(s(c, "title"))
+                                                            .color(theme::ink()),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            },
                                         );
                                     },
                                 );
@@ -5001,6 +5093,7 @@ impl eframe::App for KimoApp {
         self.handle_messages();
         self.poll();
         let ctx = ui.ctx().clone();
+        self.capture(&ctx);
         let dark = match self.theme {
             Theme::Dark => true,
             Theme::Light => false,

@@ -5,6 +5,7 @@ kimo is licensed under MIT OR Apache-2.0 (see `LICENSE-MIT`, `LICENSE-APACHE`). 
 | Component | Where | License |
 |---|---|---|
 | [xterm.js](https://github.com/xtermjs/xterm.js) 5.5.0 and addon-fit 0.10.0 | `web/vendor/xterm/` | MIT (`web/vendor/xterm/LICENSE`) |
+| [three.js](https://github.com/mrdoob/three.js) r160 (0.160.0) with OrbitControls and CSS2DRenderer | `web/vendor/three/` | MIT (`web/vendor/three/LICENSE`) |
 | [Roboto Mono](https://fonts.google.com/specimen/Roboto+Mono) | `assets/fonts/RobotoMono.ttf` | SIL Open Font License 1.1 (`assets/fonts/OFL.txt`) |
 | [DejaVu Sans Mono](https://dejavu-fonts.github.io/) (symbol fallback) | `assets/fonts/DejaVuSansMono.ttf` | Bitstream Vera / Arev license, DejaVu changes public domain (`assets/fonts/DejaVu-LICENSE.txt`) |
 | [Noto Sans Symbols 2](https://github.com/notofonts/symbols) (symbol fallback) | `assets/fonts/NotoSansSymbols2-Regular.ttf` | SIL Open Font License 1.1 (`assets/fonts/NotoSansSymbols2-OFL.txt`) |

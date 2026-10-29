@@ -1,8 +1,9 @@
 //! Resolving a bind target to an address (asks tailscale / ip when needed).
 
 use crate::core::network::{
-    firewall_warning, parse_ifconfig, parse_interfaces, parse_tailscale_dns, parse_tailscale_ip,
-    tailscale_https_url, tailscale_used_ports, BindTarget, Interface, NetKind,
+    firewall_warning, parse_ifconfig, parse_interfaces, parse_tailnet, parse_tailscale_dns,
+    parse_tailscale_ip, tailscale_https_url, tailscale_used_ports, BindTarget, Interface, NetKind,
+    TailnetDevice,
 };
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
@@ -101,6 +102,14 @@ fn tailscale_cli() -> Option<&'static str> {
 
 fn tailscale() -> &'static str {
     tailscale_cli().unwrap_or("tailscale")
+}
+
+/// The devices on this machine's tailnet, or `None` when Tailscale is not installed here.
+pub fn tailnet() -> Option<Vec<TailnetDevice>> {
+    let cli = tailscale_cli()?;
+    Some(parse_tailnet(
+        &output(cli, &["status", "--json"]).unwrap_or_default(),
+    ))
 }
 
 /// This machine's IPv4 interfaces (`ip` on Linux, `ifconfig` elsewhere).

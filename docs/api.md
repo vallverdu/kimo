@@ -112,6 +112,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | GET, DELETE | `/devices`, `/devices/{id}` | paired devices and coordinators (`role: owner \| fleet`); unpair (the key stops working at once) |
 | GET | `/network` | addresses kimo is reachable on; Tailscale name and HTTPS address; `firewall`: why phones may be blocked (macOS firewall), when that is the case |
 | POST | `/network/https` | serve kimo over HTTPS on the tailnet (a free port; other services untouched) |
+| GET | `/network/tailnet` | the devices on this kimo's tailnet from `tailscale status`: `{tailscale, devices[{name, host_name, dns_name, ips, os, online, active, last_seen?, self, mine}]}` (`mine`: same Tailscale user; `tailscale` false when it is not installed) |
 | GET | `/qr?text=` | a QR code as SVG |
 | GET | `/peers` | paired kimos with `online` and `sessions` |
 | POST | `/peers` | `{url, code, my_url?}`: pair with another kimo using a code shown there |

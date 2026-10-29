@@ -39,7 +39,7 @@ function usageText(u) {
   if (u.limits_note) return u.limits_note;
   return u.tokens_7d ? `${kTokens(u.tokens_5h)} tokens in 5 h · ${kTokens(u.tokens_7d)} in 7 days` : 'no usage through kimo in 7 days';
 }
-const VIEWS = ['agents', 'projects', 'usage', 'accounts', 'devices', 'fleet', 'apps'];
+const VIEWS = ['agents', 'projects', 'usage', 'accounts', 'devices', 'fleet', 'map', 'apps'];
 
 // ----- rendering -----
 
@@ -324,6 +324,19 @@ const projectsView = initProjects({ api, state, run, terminal, openHere: (c, s) 
 const devicesView = initDevices({ api, state, run });
 const usageView = initUsage({ api, state, run });
 const fleetView = initFleet({ api, state, run });
+// The map loads three.js, so only when it is first opened.
+let mapView = null;
+async function showMap(on) {
+  if (!on) return mapView?.stop();
+  try {
+    // From the map, a machine not in the fleet opens the Fleet tab's finder.
+    const addToFleet = () => { location.hash = '#fleet'; fleetView.openFinder(); };
+    mapView ||= (await import('./map.js')).initMap({ api, state, run, addToFleet });
+    if (state.view === 'map') mapView.start();
+  } catch (e) {
+    toast(`The map could not start: ${e.message}`, true);
+  }
+}
 
 // ----- views -----
 
@@ -331,8 +344,9 @@ function show(view) {
   state.view = VIEWS.includes(view) ? view : 'agents';
   for (const v of VIEWS) $(`view-${v}`).hidden = state.view !== v;
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === state.view));
-  $('add').setAttribute('aria-label', { agents: 'New session', projects: 'New project', accounts: 'New account', devices: 'Pair a device', fleet: 'New job', apps: 'New app' }[state.view]);
-  $('add').hidden = state.view === 'usage';
+  $('add').setAttribute('aria-label', { agents: 'New session', projects: 'New project', accounts: 'New account', devices: 'Pair a device', fleet: 'New job', map: 'New', apps: 'New app' }[state.view]);
+  $('add').hidden = state.view === 'usage' || state.view === 'map';
+  showMap(state.view === 'map');
   if (state.view === 'usage') usageView.load();
   if (state.view === 'fleet') fleetView.start();
   else fleetView.stop();

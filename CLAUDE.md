@@ -1,5 +1,13 @@
 # kimo: conventions for agents
 
+Read the shared repository instructions before planning or changing kimo:
+
+@AGENTS.md
+
+The owner's goals and acceptance scenarios are in
+[docs/product-direction.md](docs/product-direction.md). Follow the product priorities at the
+top of [TODO.md](TODO.md): the phone-to-server workflow comes before optional desktop polish.
+
 Layers: entry point → UI (window, web client) → services (I/O) → core (pure logic). The web client has its
 own small CSS (`web/css/base.css`, `app.css`, `kimo.css`) on top of `css/tokens.css`: never
 hard-code colours or font sizes, use the `--color-*` variables. Icons are inline SVG line icons.
@@ -36,7 +44,7 @@ fleet/             kimo-fleet, the coordinator (its own crate, same layers: core
 - Never let a test or a dev server switch the machine off: set `KIMO_SHUTDOWN_COMMAND` (or `set_shutdown_command`) to a stand-in.
 - Projects are never deleted from disk by kimo: "forget" only unregisters them.
 - Credentials never go in state or git: they live in each account's config home.
-- The native window and every PWA use the same HTTP API: new features land in the API first, then in the window, the web client and the SDK.
+- The native window and every PWA use the same HTTP API: new features land in the API and SDK first, then in the phone/web and native clients.
 - Every API change goes through the SDK too: kimo's own PWA uses only `web/sdk/`, so other apps get the same features.
 - Errors reach the user as `{ "error": "plain words" }` and a toast; details go to the log.
 - Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` before committing, and keep `cargo build --no-default-features` working.

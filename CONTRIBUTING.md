@@ -2,6 +2,11 @@
 
 Thanks for helping. Issues and pull requests are welcome.
 
+Read [the product direction](docs/product-direction.md) and [AGENTS.md](AGENTS.md) first.
+kimo's primary workflow is creating and directing projects from a phone PWA on a remote
+computer, and continuing work through paired kimos. Prioritise that workflow and the shared
+API/SDK when choosing changes; the feature inventories in `TODO.md` are not a priority order.
+
 ## Setup
 
 ```bash
@@ -22,8 +27,10 @@ On Linux the window needs the usual X11/Wayland libraries (on Debian/Ubuntu:
 - New features are in `CHANGELOG.md` under *Unreleased*, and in the README and docs.
 - New logic in `src/core` (pure, no I/O) has unit tests; behaviour across processes or the
   network has a test in `tests/`.
-- Features land in the HTTP API first, then in the window, the web client and the SDK.
+- Features land in the HTTP API and SDK, then in the phone/web and native clients. Verify
+  affected mobile and paired-host workflows; record real-device checks separately from tests.
 - Keep it light: kimo should stay one small binary with a small memory footprint.
+- Changes to shared/server code must preserve `cargo build --no-default-features`.
 
 ## Layout
 

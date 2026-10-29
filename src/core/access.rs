@@ -341,6 +341,7 @@ mod tests {
         }
         for (m, p) in [
             ("GET", "/network"),
+            ("GET", "/network/tailnet"),
             ("POST", "/pairing"),
             ("GET", "/devices"),
             ("GET", "/qr"),
