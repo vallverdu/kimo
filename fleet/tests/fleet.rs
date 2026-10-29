@@ -524,10 +524,10 @@ steps:
     assert_eq!(jobs[1].state, JobState::Skipped);
     assert_eq!(jobs[0].exit_code, Some(2));
 
-    // A job no machine can run waits, and says why.
+    // A job no machine can run waits, and says why. (Not `xcode`: a Mac runner reports it.)
     let mac_job = fleet
         .submit(
-            serde_yaml_ng::from_str("task: ios\nrun: xcodebuild\nrequires: { labels: [xcode] }\n")
+            serde_yaml_ng::from_str("task: ios\nrun: xcodebuild\nrequires: { labels: [iphone] }\n")
                 .unwrap(),
         )
         .unwrap();
@@ -537,7 +537,7 @@ steps:
     .await;
     assert_eq!(
         fleet.job(&mac_job.id).unwrap().reason.as_deref(),
-        Some("no machine has labels xcode")
+        Some("no machine has labels iphone")
     );
     let f = fleet.clone();
     let id = mac_job.id.clone();
