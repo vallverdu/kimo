@@ -1,0 +1,6 @@
+{
+  "rpi4": { "source": "pi4/Raspberry Pi 4 Model B.STEP", "label": "Raspberry Pi 4 Model B", "tris": 18000 },
+  "rpi5": { "source": "rpi5/rpi-5b_no_graphics.step", "label": "Raspberry Pi 5", "tris": 22000 },
+  "zero2": { "source": "zero2/Raspberry Pi Zero 2 W.STEP", "label": "Raspberry Pi Zero 2 W", "tris": 18000 },
+  "jetson": { "source": "jetson/P3766-P3768SKU4-P3767ENVELOPE.stp", "label": "NVIDIA Jetson Orin Nano Developer Kit", "tris": 22000 }
+}

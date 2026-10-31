@@ -554,6 +554,60 @@ function screen(parent, w, h, kind, x, y, z, rot) {
   return m;
 }
 
+/** A thicker dark laptop (a gaming one: MSI Katana 15, 359 x 259 x 25 mm). */
+export function laptop() {
+  const g = newDevice();
+  const W = 359;
+  const D = 259;
+  const T = 24;
+  slab(g, W, D, T, 8, M.dark, 0, 0, 0);
+  box(g, 330, 0.6, 130, M.mid, 0, T, -46, { edges: false });
+  const keys = [];
+  for (let r = 0; r < 6; r++) for (let k = 0; k < 17; k++) keys.push([-148 + k * 18.5, T + 0.6 + 0.4, -100 + r * 18.6]);
+  many(g, new THREE.BoxGeometry(16, 0.8, 15), M.pcb, keys);
+  box(g, 110, 0.3, 70, M.light, 0, T, 72);
+  const lid = new THREE.Group();
+  lid.position.set(0, T, -D / 2 + 4);
+  lid.rotation.x = -(108 * Math.PI) / 180;
+  slab(lid, W, D - 8, 7, 8, M.dark, 0, 0, (D - 8) / 2);
+  screen(lid, 335, 195, 'laptop', 0, -0.2, (D - 8) / 2 + 2, [Math.PI / 2, 0, 0]);
+  g.add(lid);
+  led(g, 2, 2, 2, 0, T + 8, -D / 2 + 6);
+  return g;
+}
+
+/**
+ * A machine from its CAD model (`parseGlb`), in the same frame as the shapes above: millimetres,
+ * standing on y = 0. Colours stay the CAD's; the status light sits on top.
+ */
+export function fromParts(parts) {
+  const g = newDevice();
+  const body = new THREE.Group();
+  body.scale.setScalar(1 / MM);
+  const box3 = new THREE.Box3();
+  for (const p of parts) {
+    if (!p.geometry) {
+      p.geometry = new THREE.BufferGeometry();
+      p.geometry.setAttribute('position', new THREE.BufferAttribute(p.positions, 3));
+      p.geometry.setAttribute('normal', new THREE.BufferAttribute(p.normals, 3));
+      p.geometry.setIndex(new THREE.BufferAttribute(p.indices, 1));
+      p.geometry.computeBoundingBox();
+      p.geometry.computeBoundingSphere();
+      p.material = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(...p.color), roughness: 0.75, metalness: 0.05, side: THREE.DoubleSide });
+    }
+    const m = new THREE.Mesh(p.geometry, p.material);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    body.add(m);
+    box3.union(p.geometry.boundingBox);
+  }
+  g.add(body);
+  const reach = Math.max(box3.max.x - box3.min.x, box3.max.z - box3.min.z) / MM;
+  const dot = THREE.MathUtils.clamp(reach * 0.02, 1.6, 4);
+  led(g, dot, dot, dot, 0, box3.max.y / MM + 1, 0);
+  return g;
+}
+
 export function macbookAir() {
   const g = newDevice();
   const W = 304;
@@ -618,4 +672,4 @@ export function phone({ size = [71.5, 147, 7.8], radius = 10, camera = 'square' 
   return g;
 }
 
-export const BUILDERS = { rpi4, rpi5, zero2, rpi5hat, jetson, nucEnthusiast, nucExtreme, macMini, macbookAir, ipadMini, phone };
+export const BUILDERS = { rpi4, rpi5, zero2, rpi5hat, jetson, nucEnthusiast, nucExtreme, nuc13Extreme: nucExtreme, laptop, macMini, macbookAir, ipadMini, phone };

@@ -2516,3 +2516,56 @@ async fn a_cancelled_staged_job_never_starts() {
         .unwrap();
     assert_eq!(start.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn device_models_are_listed_and_stay_in_their_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let app = router(tmp.path(), Some("owner"));
+    let get = |path: &str| req("GET", path, None, Some("owner"), None);
+    // Nothing built yet: clients draw their own shapes.
+    let res = app.clone().oneshot(get("/api/models")).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["models"], serde_json::json!([]));
+
+    let models = tmp.path().join("kimo/models");
+    std::fs::create_dir_all(&models).unwrap();
+    std::fs::write(models.join("rpi4.glb"), b"glTF-bytes").unwrap();
+    std::fs::write(
+        models.join("index.json"),
+        r#"{"models":[{"kind":"rpi4","file":"rpi4.glb","bytes":10}]}"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("kimo/secret.glb"), b"no").unwrap();
+
+    let res = app.clone().oneshot(get("/api/models")).await.unwrap();
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["models"][0]["kind"], "rpi4");
+
+    let res = app
+        .clone()
+        .oneshot(get("/api/models/rpi4.glb"))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "model/gltf-binary");
+    let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"glTF-bytes");
+
+    for bad in [
+        "/api/models/nothing.glb",
+        "/api/models/index.json",
+        "/api/models/..%2Fsecret.glb",
+    ] {
+        let res = app.clone().oneshot(get(bad)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "{bad}");
+    }
+}

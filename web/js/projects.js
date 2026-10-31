@@ -122,12 +122,24 @@ export function initProjects({ api, state, run, terminal, openHere = () => true 
     try {
       const list = await api.conversations(p.path);
       $('history-list').innerHTML = list.length ? list.map(c => `<li data-conv="${esc(c.id)}" data-agent="${esc(c.agent)}" data-session="${esc(c.session || '')}">
-        <div><strong>${esc(c.title)}</strong><small>${esc(c.agent)} · ${ago(c.updated_at)} · ${c.messages} ask${c.messages === 1 ? '' : 's'}</small></div>
+        <div><strong>${esc(c.title)}</strong><small>${esc(c.agent)} · <code title="its id: kimo continue ${esc(c.short || c.id)}">${esc(c.short || c.id.slice(0, 8))}</code> · ${ago(c.updated_at)} · ${c.messages} ask${c.messages === 1 ? '' : 's'}</small></div>
         <button type="button" class="ui-button ${c.session ? 'ghost ' : ''}k-small">${c.session ? 'open' : 'continue'}</button></li>`).join('')
         : '<li class="k-hint">No Claude or Codex conversations in this folder yet.</li>';
     } catch (err) { toast(err.message, true); }
   }
   historySheet.addEventListener('click', async e => {
+    // A conversation from any folder, by the id an agent or `kimo history` gave: moved here.
+    if (e.target.closest('[data-do=continue-id]')) {
+      const id = $('history-id').value.trim();
+      if (!id) return;
+      const client = api.forHost(api.host);
+      const s = await run(client.continueConversation({ id, cwd: historyProject.path, start: true }), 'Continuing it here');
+      if (!s) return;
+      $('history-id').value = '';
+      historySheet.close();
+      if (openHere(client, s)) terminal.open(s);
+      return;
+    }
     const li = e.target.closest('button') && e.target.closest('li[data-conv]');
     if (!li) return;
     historySheet.close();

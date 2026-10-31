@@ -20,3 +20,7 @@ certificates, CDLA-Permissive-2.0).
 
 The web client loads Roboto Mono from Google Fonts when it has internet access, and falls
 back to the system monospace font.
+
+The Tapo plug protocol (`fleet/src/core/tapo.rs`) was written from the behaviour of real plugs and
+two MIT-licensed references: [rabilrbl/tapo-p110-ha](https://github.com/rabilrbl/tapo-p110-ha) and
+[carboni123/tapo-local](https://github.com/carboni123/tapo-local).

@@ -51,8 +51,8 @@ pub fn agents(c: &Client, as_json: bool) -> Result<()> {
     }
     let me = me();
     println!(
-        "{:<34} {:<20} {:<12} {:<7} {:<12} {:<38} FOLDER",
-        "ID", "NAME", "HOST", "KIND", "STATE", "RESUME ID"
+        "{:<34} {:<20} {:<12} {:<7} {:<12} {:<9} FOLDER",
+        "ID", "NAME", "HOST", "KIND", "STATE", "RESUME"
     );
     for a in list.as_array().into_iter().flatten() {
         let you = if me.as_deref() == Some(s(a, "id")) {
@@ -61,13 +61,15 @@ pub fn agents(c: &Client, as_json: bool) -> Result<()> {
             ""
         };
         println!(
-            "{:<34} {:<20} {:<12} {:<7} {:<12} {:<38} {}",
+            "{:<34} {:<20} {:<12} {:<7} {:<12} {:<9} {}",
             format!("{}{you}", s(a, "id")),
             s(a, "name"),
             s(a, "host"),
             s(a, "kind"),
             state(a),
-            a["conversation"].as_str().unwrap_or("-"),
+            a["conversation"]
+                .as_str()
+                .map_or("-", crate::core::history::short_id),
             home(s(a, "cwd"))
         );
     }
@@ -253,43 +255,47 @@ pub fn history(c: &Client, folder: Option<String>) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<7} {:<38} {:<11} {:<5} {:<20} TITLE",
-        "AGENT", "CONVERSATION", "UPDATED", "ASKS", "SESSION"
+        "{:<7} {:<9} {:<11} {:<5} {:<20} TITLE",
+        "AGENT", "ID", "UPDATED", "ASKS", "SESSION"
     );
     for v in list.as_array().into_iter().flatten() {
         println!(
-            "{:<7} {:<38} {:<11} {:<5} {:<20} {}",
+            "{:<7} {:<9} {:<11} {:<5} {:<20} {}",
             s(v, "agent"),
-            s(v, "id"),
+            s(v, "short"),
             ago(v["updated_at"].as_u64().unwrap_or(0)),
             v["messages"],
             v["session"].as_str().unwrap_or("-"),
             s(v, "title")
         );
     }
+    println!("\nkimo continue <ID> continues one here, from any folder.");
     Ok(())
 }
 
-/// Continue a conversation (from `kimo history`) as a kimo session.
+/// Continue a conversation as a kimo session, here (or in `folder`). The id can be its first
+/// characters (`kimo history`, `kimo agents`, or what the agent printed), from any folder.
 pub fn continue_conversation(c: &Client, id: &str, folder: Option<String>) -> Result<()> {
     let folder = folder_or_here(folder);
-    let list: Value = c.get(&format!("/conversations?path={}", enc(&folder)))?;
-    let Some(conv) = list
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|v| s(v, "id") == id || s(v, "id").starts_with(id))
-    else {
-        bail!(
-            "no conversation {id} in {}: see `kimo history`",
-            home(&folder)
-        );
-    };
+    let conv: Value = c.get(&format!("/conversations/find?id={}", enc(id)))?;
     let session = c.post(
         "/conversations/continue",
         json!({ "agent": conv["agent"], "cwd": folder, "id": conv["id"], "start": true }),
     )?;
-    println!("continuing {} as {}", s(conv, "title"), s(&session, "id"));
+    let moved = conv["cwd"]
+        .as_str()
+        .is_some_and(|c| !c.is_empty() && c != folder);
+    println!(
+        "continuing {} \"{}\" as {}{}",
+        s(&conv, "short"),
+        s(&conv, "title"),
+        s(&session, "id"),
+        if moved {
+            format!(" (moved here from {})", home(s(&conv, "cwd")))
+        } else {
+            String::new()
+        }
+    );
     Ok(())
 }
 

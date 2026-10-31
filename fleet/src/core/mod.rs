@@ -3,8 +3,10 @@
 pub mod discover;
 pub mod hardware;
 pub mod jobs;
+pub mod mesh;
 pub mod power;
 pub mod registry;
 pub mod schedule;
 pub mod setup;
+pub mod tapo;
 pub mod wol;

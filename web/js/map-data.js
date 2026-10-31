@@ -18,6 +18,7 @@ const PHONES = [
 // The fleet's hardware models (kimo-fleet `models`) and how the map draws each one.
 export const MODEL_KINDS = {
   'nuc-11-extreme': 'nucExtreme', 'nuc-11-enthusiast': 'nucEnthusiast', 'linux-gpu-pc': 'nucExtreme',
+  'nuc-13-extreme': 'nuc13Extreme', 'gaming-laptop': 'laptop', 'rpi-zero-2w': 'zero2',
   'linux-pc': 'nucEnthusiast', 'jetson-orin-nano': 'jetson', 'rpi5-hailo': 'rpi5hat', rpi5: 'rpi5',
   rpi4: 'rpi4', 'macbook-air': 'macbookAir', 'mac-mini': 'macMini', mac: 'macbookAir',
 };
@@ -42,6 +43,8 @@ export function kindOf({ name = '', os = '', facts, model: fleetModel }) {
   if (/zero/.test(n)) return 'zero2';
   if (/raspberry pi 5|rpi5|\bpi5/.test(n)) return facts?.hailo || /hat|hailo/.test(n) ? 'rpi5hat' : 'rpi5';
   if (/raspberry|rpi|\bpi\d?\b/.test(n)) return 'rpi4';
+  if (/katana|laptop/.test(n)) return 'laptop';
+  if (/nuc13|raptor/.test(n)) return 'nuc13Extreme';
   if (/nuc11btm|nuc11bt|beast|extreme/.test(n)) return 'nucExtreme';
   if (sys === 'macos' || facts?.os === 'macos') return /mini|macmini/.test(n) ? 'macMini' : 'macbookAir';
   if (sys === 'windows') return 'macbookAir';
@@ -129,9 +132,9 @@ export function buildMachines({ tailnet, peers = [], sessions = [], kimos = new 
     if (m) m.peer = p;
   }
   for (const f of fleet || []) {
-    let m = byAddress(f.registry?.kimo, f.id);
+    let m = byAddress(f.registry?.kimo, f.id, f.registry?.tailscale);
     if (!m) {
-      // In the registry but not on the tailnet (yet).
+      // In the registry but not on the tailnet: found over ZeroTier, or not joined yet.
       m = { id: f.id, name: f.id, os: '', tailnet: null, hub: false, labels: [], peer: null, fleet: null };
       machines.set(f.id, m);
     }
@@ -166,6 +169,12 @@ export function buildMachines({ tailnet, peers = [], sessions = [], kimos = new 
     const agents = agentsOf.get(m.id) || [];
     m.agents = agents;
     m.projects = (k.projects || agents.length) ? projectsOf(k.projects || [], agents) : null;
+    m.networks = {
+      tailscale: m.tailnet?.ips?.[0] || m.fleet?.registry?.tailscale || '',
+      zerotier: m.fleet?.registry?.zerotier || '',
+    };
+    m.alias = m.fleet?.registry?.alias || (m.fleet?.registry?.user ? `z${m.fleet.id}` : '');
+    m.plug = m.fleet?.plug || null;
     m.kimo = m.hub ? { online: true, version: status?.version } : m.peer ? { online: m.peer.online, sessions: m.peer.sessions } : null;
     const fleetJobs = (m.fleet?.jobs || []).length;
     m.working = agents.filter(s => s.activity === 'working').length + fleetJobs;
@@ -184,6 +193,50 @@ function statusOf(m) {
   else if (['ready', 'busy', 'idle'].includes(f)) s = 'online';
   if (m.kimo && !m.hub && m.kimo.online && s === 'off') s = 'online';
   return s === 'online' && m.working > 0 ? 'busy' : s;
+}
+
+/**
+ * Who reaches whom, for drawing: one entry per pair of machines, from a mesh check.
+ * `state`: `good` (both ways without a password), `oneway` (a restricted machine: it can be
+ * logged in to and needs a password back, as intended), `problem`, or `violation` (a restricted
+ * machine logs in without a password, which must not happen).
+ * @returns {{a: string, b: string, state: string, networks: string[], check: boolean}[]}
+ */
+export function meshPairs(report) {
+  const pairs = new Map();
+  for (const l of report?.links || []) {
+    const [a, b] = [l.from, l.to].sort();
+    const key = `${a}|${b}`;
+    if (!pairs.has(key)) pairs.set(key, { a, b, links: [] });
+    pairs.get(key).links.push(l);
+  }
+  return [...pairs.values()].map(({ a, b, links }) => {
+    // Tailscale SSH asking for a browser check is not a broken link: the other network shows the rest.
+    const judged = links.filter(l => l.found !== 'check');
+    const seen = judged.length ? judged : links;
+    let state = 'good';
+    if (seen.some(l => !l.as_intended)) state = 'problem';
+    else if (seen.some(l => l.expect === 'password')) state = 'oneway';
+    if (seen.some(l => l.expect === 'password' && l.found === 'ok')) state = 'violation';
+    const up = links.filter(l => l.found !== 'down' && l.found !== 'blocked' && l.found !== 'off');
+    return { a, b, state, networks: [...new Set(up.map(l => l.network))].sort(), check: links.some(l => l.found === 'check') };
+  });
+}
+
+/** A mesh check as a table: `from` per row, a word per machine. */
+export function meshMatrix(report) {
+  const ids = (report?.nodes || []).map(n => n.id);
+  const words = { ok: 'ok', nokey: 'key', blocked: 'fw', off: 'off', check: 'check', down: 'down' };
+  const cell = (from, to) => {
+    const links = (report?.links || []).filter(l => l.from === from && l.to === to);
+    if (!links.length) return { word: from === to ? '' : '?', state: 'none' };
+    // ZeroTier first: on Tailscale, a browser check can hide an account that works.
+    const l = links.find(x => x.network === 'zerotier') || links[0];
+    const word = l.expect === 'password' && l.found === 'nokey' ? 'pw' : words[l.found] || l.found;
+    const state = l.expect === 'password' && l.found === 'ok' ? 'violation' : l.as_intended ? 'good' : 'problem';
+    return { word, state };
+  };
+  return { ids, rows: ids.map(from => ({ from, cells: ids.map(to => cell(from, to)) })) };
 }
 
 export const ZONE_TITLES = { core: 'This kimo', compute: 'Compute', boards: 'Boards', apple: 'Apple', screens: 'Phones and tablets', other: 'Other' };

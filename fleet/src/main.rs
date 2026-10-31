@@ -48,6 +48,22 @@ fn main() -> Result<()> {
             println!("{device} is out of the fleet");
             Ok(())
         }
+        Command::Plug {
+            device,
+            action,
+            force,
+        } => plug(&client(), &device, action.as_deref(), force),
+        Command::PlugLogin => {
+            let password = read_password("TP-Link account password (kept only as a hash): ")?;
+            client().call(
+                "PUT",
+                "/plug-credential",
+                Some(&json!({ "password": password })),
+            )?;
+            println!("Kept. Check it with: kimo-fleet plug <machine>");
+            Ok(())
+        }
+        Command::Mesh { action } => mesh(&client(), action.as_deref()),
         Command::Models => {
             let h = client().call("GET", "/hardware", None)?;
             for m in h["models"].as_array().into_iter().flatten() {
@@ -216,6 +232,110 @@ fn serve(cfg: &Config) -> Result<()> {
         .await?;
         anyhow::Ok(())
     })
+}
+
+/// Read a line from the terminal without showing it.
+fn read_password(prompt: &str) -> Result<String> {
+    use std::io::Write;
+    use std::process::{Command as Process, Stdio};
+    eprint!("{prompt}");
+    std::io::stderr().flush().ok();
+    let stty = |arg: &str| {
+        Process::new("stty")
+            .arg(arg)
+            .stdin(Stdio::inherit())
+            .status()
+    };
+    let hidden = stty("-echo").is_ok_and(|s| s.success());
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    if hidden {
+        let _ = stty("echo");
+        eprintln!();
+    }
+    read?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn plug(c: &Client, device: &str, action: Option<&str>, force: bool) -> Result<()> {
+    let view = match action {
+        None => c.call("GET", &format!("/devices/{device}/plug"), None)?,
+        Some(word) => {
+            let action = match word {
+                "on" | "off" => word,
+                "restart" | "cycle" => "cycle",
+                other => anyhow::bail!("{other}: on, off or restart"),
+            };
+            // A restart holds the call until the plug is back on.
+            c.call_timeout(
+                "POST",
+                &format!("/devices/{device}/plug"),
+                Some(&json!({ "action": action, "force": force })),
+                60,
+            )?
+        }
+    };
+    let s = &view["status"];
+    println!(
+        "{device}: plug at {}{} is {}{}",
+        view["address"].as_str().unwrap_or("?"),
+        view["via"]
+            .as_str()
+            .map(|v| format!(" (through {v})"))
+            .unwrap_or_default(),
+        if s["on"] == true { "on" } else { "off" },
+        s["watts"]
+            .as_f64()
+            .map(|w| format!(", drawing {w} W"))
+            .unwrap_or_default(),
+    );
+    if let Some(m) = s["model"].as_str() {
+        println!("  {m}, firmware {}", s["firmware"].as_str().unwrap_or("?"));
+    }
+    Ok(())
+}
+
+fn mesh(c: &Client, action: Option<&str>) -> Result<()> {
+    if action == Some("apply") {
+        let out = c.call_timeout("POST", "/mesh/apply", None, 300)?;
+        for line in out["machines"].as_array().into_iter().flatten() {
+            println!("{}", line.as_str().unwrap_or(""));
+        }
+    } else if action.is_some_and(|a| a != "check") {
+        anyhow::bail!("check or apply");
+    }
+    c.call("POST", "/mesh/check", None)?;
+    let report = loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let r = c.call("GET", "/mesh", None)?;
+        if r["running"] != true {
+            break r;
+        }
+    };
+    let links = report["links"].as_array().cloned().unwrap_or_default();
+    let intended = links.iter().filter(|l| l["as_intended"] == true).count();
+    println!("{intended} of {} links as intended", links.len());
+    for l in links.iter().filter(|l| l["as_intended"] != true) {
+        println!(
+            "  {} -> {} over {}: {} (should be {})",
+            l["from"].as_str().unwrap_or(""),
+            l["to"].as_str().unwrap_or(""),
+            l["network"].as_str().unwrap_or(""),
+            l["found"].as_str().unwrap_or(""),
+            l["expect"].as_str().unwrap_or(""),
+        );
+    }
+    for u in report["untested"].as_array().into_iter().flatten() {
+        println!(
+            "  could not test from {}: {}",
+            u["id"].as_str().unwrap_or(""),
+            u["why"].as_str().unwrap_or("")
+        );
+    }
+    for v in report["violations"].as_array().into_iter().flatten() {
+        println!("  NOT ALLOWED: {}", v.as_str().unwrap_or(""));
+    }
+    Ok(())
 }
 
 fn time(ms: u64) -> String {

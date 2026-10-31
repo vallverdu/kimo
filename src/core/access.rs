@@ -106,6 +106,17 @@ fn fleet_permits(method: &str, path: &str) -> bool {
         || under("/power")
 }
 
+/// A device model's file name: nothing that could leave the models folder.
+pub fn safe_model_file(name: &str) -> bool {
+    name.strip_suffix(".glb").is_some_and(|stem| {
+        !stem.is_empty()
+            && stem.len() <= 64
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    })
+}
+
 /// May `caller` call `method path` (path relative to `/api`)?
 pub fn permits(caller: &Caller, method: &str, path: &str) -> bool {
     let path = path.trim_end_matches('/');
@@ -167,6 +178,23 @@ pub fn normalize_code(code: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_files_stay_in_their_folder() {
+        assert!(safe_model_file("nucExtreme.glb"));
+        assert!(safe_model_file("rpi-5_b.glb"));
+        for bad in [
+            "../secret.glb",
+            "a/b.glb",
+            ".glb",
+            "x.txt",
+            "x.glb.txt",
+            "..",
+            "",
+        ] {
+            assert!(!safe_model_file(bad), "{bad}");
+        }
+    }
+
     #[test]
     fn files_and_git_are_the_owner_s() {
         let app = Caller::Client {

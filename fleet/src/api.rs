@@ -88,6 +88,16 @@ pub fn router(fleet: Arc<Fleet>, token: Option<String>) -> Router {
         .route("/devices/{id}/pair", post(pair))
         .route("/devices/{id}/key", delete(forget_key))
         .route("/devices/{id}/samples", get(samples))
+        .route("/devices/{id}/plug", get(plug_status).post(plug_action))
+        .route(
+            "/plug-credential",
+            get(plug_credential)
+                .put(set_plug_credential)
+                .delete(forget_plug_credential),
+        )
+        .route("/mesh", get(mesh))
+        .route("/mesh/check", post(mesh_check))
+        .route("/mesh/apply", post(mesh_apply))
         .route("/events", get(events))
         .route("/jobs", get(jobs).post(submit))
         .route("/jobs/{id}", get(job))
@@ -258,6 +268,85 @@ async fn forget_key(State(app): State<App>, Path(id): Path<String>) -> ApiResult
         f.device(&id)
     })
     .await
+}
+
+async fn plug_status(State(app): State<App>, Path(id): Path<String>) -> ApiResult {
+    blocking(&app, move |f| f.plug_status(&id)).await
+}
+
+#[derive(Deserialize)]
+struct PlugBody {
+    action: crate::core::tapo::PlugAction,
+    #[serde(default)]
+    force: bool,
+}
+
+/// Switch a machine's plug on or off, or restart it. `409`: something runs there and `force`
+/// would overrule it. Takes as long as a restart takes.
+async fn plug_action(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(b): Json<PlugBody>,
+) -> ApiResult {
+    let fleet = app.fleet.clone();
+    let view = tokio::task::spawn_blocking(move || fleet.plug_action(&id, b.action, b.force))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(|e| {
+            let overrule = e
+                .downcast_ref::<crate::core::tapo::Refused>()
+                .is_some_and(|r| r.overrule);
+            let text = format!("{e:#}");
+            ApiError(
+                if overrule {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::BAD_REQUEST
+                },
+                text,
+            )
+        })?;
+    Ok(Json(json!(view)))
+}
+
+async fn plug_credential(State(app): State<App>) -> Json<Value> {
+    Json(json!({ "set": app.fleet.plug_credential_set() }))
+}
+
+#[derive(Deserialize)]
+struct PasswordBody {
+    password: String,
+}
+
+/// Keep the hash of the TP-Link account's password (the plugs' login); the password itself is
+/// not kept.
+async fn set_plug_credential(State(app): State<App>, Json(b): Json<PasswordBody>) -> ApiResult {
+    app.fleet.set_plug_password(&b.password)?;
+    Ok(Json(json!({ "set": true })))
+}
+
+async fn forget_plug_credential(State(app): State<App>) -> ApiResult {
+    app.fleet.forget_plug_password()?;
+    Ok(Json(json!({ "set": false })))
+}
+
+async fn mesh(State(app): State<App>) -> Json<Value> {
+    Json(json!(app.fleet.mesh_report()))
+}
+
+/// Start checking the SSH mesh; follow it with GET `/mesh` (`running`).
+async fn mesh_check(State(app): State<App>) -> Json<Value> {
+    app.fleet.mesh_check();
+    Json(json!(app.fleet.mesh_report()))
+}
+
+/// Set up shortcuts and keys so the machines match the registry's rule.
+async fn mesh_apply(State(app): State<App>) -> ApiResult {
+    let fleet = app.fleet.clone();
+    let out = tokio::task::spawn_blocking(move || fleet.mesh_apply())
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(out))
 }
 
 async fn samples(

@@ -4,8 +4,10 @@
 import * as THREE from '../vendor/three/three.module.min.js';
 import { OrbitControls } from '../vendor/three/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from '../vendor/three/CSS2DRenderer.js';
-import { BUILDERS, M, MM, applyPalette, paintedTexture, repaint } from './map-models.js';
-import { buildMachines, layout } from './map-data.js';
+import { BUILDERS, M, MM, applyPalette, fromParts, paintedTexture, repaint } from './map-models.js';
+import { buildMachines, layout, meshPairs } from './map-data.js';
+import { parseGlb } from './glb.js';
+import { plugAction, plugButtons, plugDone, plugLine } from './power-actions.js';
 import { $, esc, mb } from './ui.js';
 
 const STATUS = {
@@ -14,7 +16,7 @@ const STATUS = {
   waking: ['Waking', '--color-warn'],
   off: ['Off', '--color-muted'],
   unreachable: ['Unreachable', '--color-bad'],
-  unjoined: ['Not on the tailnet', '--color-muted'],
+  unjoined: ['Not on a network yet', '--color-muted'],
 };
 const isUp = s => s === 'online' || s === 'busy';
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -111,6 +113,23 @@ export function initMap({ api, addToFleet = null }) {
     return m;
   }
 
+  // ----- CAD models -----
+  const pack = new Map(); // kind → parts, once loaded
+  let packIndex = null;
+  async function loadModels(machines) {
+    packIndex ||= await local.models().then(r => r.models || []).catch(() => []);
+    const wanted = new Set(machines.map(m => m.kind));
+    await Promise.all(packIndex.filter(i => wanted.has(i.kind) && !pack.has(i.kind)).map(async i => {
+      try {
+        pack.set(i.kind, parseGlb(await local.modelBytes(i.file, i.bytes)));
+      } catch (e) {
+        // Its shape is drawn instead.
+        pack.set(i.kind, null);
+        log(`${i.label || i.kind}: ${e.message}`, 'bad');
+      }
+    }));
+  }
+
   // ----- machines -----
   const nodes = new Map(); // id → { m, root, model, label, link, sel, size, top }
   let hub = null;
@@ -121,7 +140,9 @@ export function initMap({ api, addToFleet = null }) {
     root.position.set(m.pos[0], 0, m.pos[1]);
     root.rotation.y = m.rot || 0;
     root.userData.id = m.id;
-    const model = BUILDERS[m.kind](m);
+    // Its CAD model when this kimo holds one (scripts/device-models), else its shape.
+    const parts = pack.get(m.kind);
+    const model = parts ? fromParts(parts) : BUILDERS[m.kind](m);
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
@@ -168,7 +189,7 @@ export function initMap({ api, addToFleet = null }) {
     anchor.add(label);
 
     world.add(root);
-    const node = { m, root, model, label: el, sel, size, top, screen, link: null };
+    const node = { m, root, model, label: el, anchor, sel, size, top, screen, link: null };
     nodes.set(m.id, node);
     return node;
   }
@@ -210,7 +231,40 @@ export function initMap({ api, addToFleet = null }) {
     if (selected) selected = nodes.get(selected.m.id) || null;
     for (const n of nodes.values()) refresh(n);
     if (selected) select(selected.m.id, false);
+    drawMesh();
   }
+
+  // ----- the SSH mesh: who reaches whom -----
+  const meshGroup = new THREE.Group();
+  scene.add(meshGroup);
+  const meshLines = {
+    good: new THREE.LineBasicMaterial({ transparent: true, opacity: 0.55 }),
+    oneway: new THREE.LineDashedMaterial({ dashSize: 0.04, gapSize: 0.05, transparent: true, opacity: 0.7 }),
+    problem: new THREE.LineBasicMaterial({ transparent: true, opacity: 0.9 }),
+    violation: new THREE.LineBasicMaterial(),
+  };
+  let meshReport = null;
+  let meshKey = '';
+  const meshOn = $('map-mesh');
+  meshOn.checked = pref('mesh', '1') === '1';
+  function drawMesh() {
+    meshGroup.clear();
+    if (!meshOn.checked || !meshReport) return;
+    const only = selected?.m.id;
+    for (const p of meshPairs(meshReport)) {
+      if (only && p.a !== only && p.b !== only) continue;
+      const a = [...nodes.values()].find(n => n.m.id === p.a);
+      const b = [...nodes.values()].find(n => n.m.id === p.b);
+      if (!a || !b) continue;
+      const [from, to] = [worldTop(a, 0.02), worldTop(b, 0.02)];
+      const mid = from.clone().lerp(to, 0.5);
+      mid.y += 0.1 + from.distanceTo(to) * 0.12;
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(new THREE.QuadraticBezierCurve3(from, mid, to).getPoints(32)), meshLines[p.state] || meshLines.problem);
+      line.computeLineDistances();
+      meshGroup.add(line);
+    }
+  }
+  meshOn.addEventListener('change', () => { keep('mesh', meshOn.checked ? '1' : '0'); drawMesh(); });
 
   function refresh(n) {
     const s = n.m.status;
@@ -250,6 +304,7 @@ export function initMap({ api, addToFleet = null }) {
       ${m.model ? `<p class="k-hint">${esc(m.model)}</p>` : ''}
       <p class="k-map-state" data-status="${esc(m.status)}"><i class="k-dot"></i>${esc(STATUS[m.status]?.[0] || m.status)}${m.working ? ` · ${m.working} working` : ''}</p>
       ${m.fleet?.can_wake && ['off', 'unreachable'].includes(m.fleet.state) ? '<p><button class="ui-button k-small" type="button" data-map-wake>wake</button></p>' : ''}
+      ${m.plug ? `<h4 class="k-map-h">Power</h4><dl class="k-map-dl">${rows([['Plug', `${m.plug.address}${m.plug.via ? ` through ${m.plug.via}` : ''}`], ['Now', plugLine(m.plug)]])}</dl>${plugCredentialSet ? `<p class="k-actions">${plugButtons(m.id, m.plug)}</p>` : '<p class="k-hint">Give the coordinator your TP-Link password in the Fleet tab to use it.</p>'}` : ''}
       ${!m.fleet && !m.hub && addToFleet && fleetOn && t && !['phone', 'ipadMini'].includes(m.kind) ? '<p><button class="ui-button k-small" type="button" data-map-add>add to the fleet</button></p>' : ''}
       <h4 class="k-map-h">Projects</h4>${projects}
       ${jobs ? `<h4 class="k-map-h">Fleet jobs</h4><ul class="k-map-agents">${jobs}</ul>` : ''}
@@ -260,13 +315,31 @@ export function initMap({ api, addToFleet = null }) {
         ['System', [f.os, f.arch].filter(Boolean).join(' · ')],
       ])}</dl>` : ''}
       <h4 class="k-map-h">Network</h4><dl class="k-map-dl">${rows([
-        ['Tailscale', t ? t.dns_name : 'not on the tailnet'], ['Address', t?.ips?.[0]],
+        ['Tailscale', t ? t.dns_name : m.networks?.tailscale || 'not on this tailnet'], ['Address', t?.ips?.[0]],
+        ['ZeroTier', m.networks?.zerotier], ['SSH', m.alias ? `ssh ${m.alias}` : ''],
+        ['Mesh', meshSummary(m.id)],
         ['Last seen', t && !t.online && t.last_seen ? ago(t.last_seen) : ''], ['kimo', kimo],
         ['Labels', m.labels.join(' · ')],
       ])}</dl>`;
   }
 
+  function meshSummary(id) {
+    const pairs = meshPairs(meshReport).filter(p => p.a === id || p.b === id);
+    if (!pairs.length) return '';
+    const bad = pairs.filter(p => p.state === 'problem' || p.state === 'violation').length;
+    return bad ? `${bad} of ${pairs.length} links need attention` : `${pairs.length} links as intended`;
+  }
+
   $('map-panel').addEventListener('click', async e => {
+    const plug = e.target.closest('[data-plug]')?.dataset.plug;
+    if (plug && selected) {
+      const id = selected.m.id;
+      try {
+        if (await plugAction(local.fleet, id, plug)) log(plugDone(id, plug), 'out');
+        poll();
+      } catch (err) { log(err.message, 'bad'); }
+      return;
+    }
     if (e.target.closest('[data-map-add]') && selected) return addToFleet?.(selected.m.tailnet?.ips?.[0]);
     if (!e.target.closest('[data-map-wake]') || !selected) return;
     try { await local.fleet.wake(selected.m.id); log(`waking ${selected.m.name}`, 'out'); poll(); } catch (err) { log(err.message, 'bad'); }
@@ -287,6 +360,7 @@ export function initMap({ api, addToFleet = null }) {
       if (focus) focusOn(selected);
     }
     renderPanel();
+    drawMesh();
   }
 
   // ----- camera moves: focus, all, top -----
@@ -348,6 +422,40 @@ export function initMap({ api, addToFleet = null }) {
   labelsBox.addEventListener('change', syncLabels);
   syncLabels();
 
+  // ----- labels: no two on top of each other -----
+  // Each stays above its machine; one that would cover another moves up, the nearest to the
+  // bottom of the view first. Runs a few times a second, and not while nothing moves.
+  let declutterAt = 0;
+  let declutterKey = '';
+  function declutter(now) {
+    if (now - declutterAt < 0.2) return;
+    declutterAt = now;
+    const key = `${camera.position.toArray().map(v => v.toFixed(3))}|${controls.target.toArray().map(v => v.toFixed(3))}|${nodes.size}|${stage.clientWidth}`;
+    if (key === declutterKey) return;
+    declutterKey = key;
+    const w = stage.clientWidth;
+    const h = stage.clientHeight;
+    const v = new THREE.Vector3();
+    const tags = [...nodes.values()].map(n => {
+      n.anchor.getWorldPosition(v).project(camera);
+      return { el: n.label, x: (v.x + 1) * w / 2, y: (1 - v.y) * h / 2, w: n.label.offsetWidth, h: n.label.offsetHeight };
+    }).sort((a, b) => b.y - a.y);
+    const placed = [];
+    for (const t of tags) {
+      let lift = 0;
+      for (let moved = true, tries = 0; moved && tries < 30; tries++) {
+        moved = false;
+        for (const p of placed) {
+          const overlapX = Math.abs(t.x - p.x) < (t.w + p.w) / 2 + 3;
+          const overlapY = t.y - lift < p.y + p.h + 2 && t.y - lift + t.h > p.y - 2;
+          if (overlapX && overlapY) { lift = t.y + t.h - p.y + 3; moved = true; }
+        }
+      }
+      placed.push({ x: t.x, y: t.y - lift, w: t.w, h: t.h });
+      t.el.style.marginTop = `${-14 - lift}px`;
+    }
+  }
+
   // ----- picking -----
   const ray = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
@@ -390,17 +498,25 @@ export function initMap({ api, addToFleet = null }) {
   let lastDetail = 0;
   // A fleet coordinator answers (machines can be added to the fleet from here).
   let fleetOn = false;
+  let plugCredentialSet = false;
   let previous = null;
   let signature = '';
 
   async function poll() {
-    const [status, tailnet, peers, sessions, fleet] = await Promise.all([
+    const [status, tailnet, peers, sessions, fleet, mesh, fleetStatus] = await Promise.all([
       local.status().catch(() => null),
       local.tailnet().catch(() => null),
       local.hosts().catch(() => []),
       local.request('GET', '/sessions?all=1').catch(() => []),
       local.fleet.devices().catch(() => null),
+      local.fleet.mesh().catch(() => null),
+      local.fleet.status().catch(() => null),
     ]);
+    plugCredentialSet = !!fleetStatus?.plug_credential;
+    const newKey = mesh ? `${mesh.at}|${mesh.links.length}` : '';
+    const meshChanged = newKey !== meshKey;
+    meshReport = mesh;
+    meshKey = newKey;
     // Projects and facts change slowly: every 20 s, from this kimo and the paired ones that answer.
     if (Date.now() - lastDetail > 20000) {
       lastDetail = Date.now();
@@ -413,6 +529,7 @@ export function initMap({ api, addToFleet = null }) {
     }
     fleetOn = !!fleet;
     const machines = buildMachines({ tailnet, peers, sessions, kimos, fleet: fleet || [], status });
+    await loadModels(machines);
     const zones = layout(machines);
     const sig = machines.map(m => `${m.id}:${m.kind}:${m.zone}`).join('|');
     if (sig !== signature) {
@@ -426,6 +543,7 @@ export function initMap({ api, addToFleet = null }) {
         if (n) { n.m = m; refresh(n); }
       }
       if (selected) renderPanel();
+      if (meshChanged) drawMesh();
     }
     // What changed since the last look.
     if (previous) {
@@ -449,10 +567,13 @@ export function initMap({ api, addToFleet = null }) {
       count(['busy']) ? `<span><i class="k-dot" data-status="busy"></i><b>${count(['busy'])}</b> working</span>` : '',
       `<span><i class="k-dot" data-status="off"></i><b>${count(['off', 'unreachable', 'waking', 'unjoined'])}</b> off</span>`,
       `<span><b>${machines.filter(m => (m.kind === 'phone' || m.kind === 'ipadMini') && isUp(m.status)).length}/${screens}</b> phones and tablets online</span>`,
+      list.some(m => m.plug?.status?.watts != null) ? `<span><b>${Math.round(list.reduce((sum, m) => sum + (m.plug?.status?.watts || 0), 0))} W</b> on plugs</span>` : '',
     ].join('');
-    $('map-alerts').innerHTML = tailnet && !tailnet.tailscale
-      ? '<div class="ui-alert info"><span>Tailscale is not installed on this machine, so the map shows only the kimos paired with it.</span></div>'
-      : '';
+    const brokenRule = mesh?.violations || [];
+    $('map-alerts').innerHTML = [
+      brokenRule.length ? `<div class="ui-alert"><span>Mesh: ${esc(brokenRule.join('; '))}</span></div>` : '',
+      tailnet && !tailnet.tailscale ? '<div class="ui-alert info"><span>Tailscale is not installed on this machine, so the map shows only the kimos paired with it.</span></div>' : '',
+    ].join('');
   }
 
   // ----- theme -----
@@ -473,6 +594,10 @@ export function initMap({ api, addToFleet = null }) {
     for (const mat of [gridMinor, gridMajor, zoneLine, zoneDashed, linkSolid]) mat.color.set(palette.ink);
     linkDashed.color.set(palette.muted);
     for (const mat of [hubLine, selectLine, linkSelected, pulseMats.out]) mat.color.set(palette.accent);
+    meshLines.good.color.set(palette.status.online);
+    meshLines.oneway.color.set(palette.muted);
+    meshLines.problem.color.set(palette.status.waking);
+    meshLines.violation.color.set(palette.status.unreachable);
     pulseMats.back.color.set(palette.teal);
     pulseMats.you.color.set(palette.ink);
     for (const n of nodes.values()) refresh(n);
@@ -523,6 +648,7 @@ export function initMap({ api, addToFleet = null }) {
     }
     renderer.render(scene, camera);
     labels.render(scene, camera);
+    declutter(now);
     frameId = requestAnimationFrame(frame);
   }
 

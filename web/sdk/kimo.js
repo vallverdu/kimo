@@ -106,7 +106,16 @@ export class Kimo {
   removeWorktree(id, path) { return this.request('DELETE', `/projects/${enc(id)}/worktrees?path=${enc(path)}`); }
   /** Earlier Claude and Codex conversations in a folder, newest first (`session` set when attached). */
   conversations(path) { return this.request('GET', `/conversations?path=${enc(path)}`); }
-  /** Continue a conversation as a session: `{agent, cwd, id, name?, start? = true}`. */
+  /**
+   * The conversation whose id starts with `id` (its 8-character `short` is plenty), in any
+   * folder: `{agent, id, short, cwd, title, updated_at, messages, session}`.
+   */
+  findConversation(id) { return this.request('GET', `/conversations/find?id=${enc(id)}`); }
+  /**
+   * Continue a conversation as a session: `{id, agent?, cwd?, name?, start? = true}`. `id` can be
+   * its beginning; `agent` and `cwd` default to the conversation's own. A Claude conversation
+   * continued in another folder is copied there first.
+   */
   continueConversation(c) { return this.request('POST', '/conversations/continue', c); }
   /** Subfolders of `path` (default: the projects folder). */
   /** Create folder `name` inside `parent` (start a project from nothing); returns its listing. */
@@ -266,6 +275,17 @@ export class Kimo {
    * online, active, last_seen?, self, mine}]}`. `tailscale` is false when it is not installed here.
    */
   tailnet() { return this.request('GET', '/network/tailnet'); }
+  /**
+   * The device models this machine holds, for drawing machines: `{models: [{kind, file, label,
+   * size_m, triangles, bytes}]}`. Empty until someone builds them (`scripts/device-models`).
+   */
+  models() { return this.request('GET', '/models', undefined, { local: true }); }
+  /** One model's file, as an ArrayBuffer (`file` from `models()`; `bytes` refreshes a cached copy). */
+  async modelBytes(file, bytes) {
+    const res = await fetch(`${this.url}/api/models/${enc(file)}${bytes ? `?v=${enc(bytes)}` : ''}`, { headers: this.token ? { Authorization: `Bearer ${this.token}` } : {} });
+    if (!res.ok) throw new KimoError(`HTTP ${res.status}`, res.status);
+    return res.arrayBuffer();
+  }
   /** Serve kimo over HTTPS on the tailnet (tailscale serve); returns {url}. */
   enableHttps() { return this.request('POST', '/network/https'); }
   /** One-time code (10 minutes) for a pairing link `<address>/#pair=<code>`. */
@@ -337,7 +357,7 @@ export class KimoFleet {
    */
   devices() { return this.call('GET', '/devices'); }
   device(id) { return this.call('GET', `/devices/${enc(id)}`); }
-  /** Wake it (Wake-on-LAN from the coordinator's network). */
+  /** Wake it: Wake-on-LAN from the coordinator's network, or its plug (`power.wake`). */
   wake(id) { return this.call('POST', `/devices/${enc(id)}/wake`); }
   /** Switch it off (refused while work runs there). */
   shutdown(id) { return this.call('POST', `/devices/${enc(id)}/shutdown`); }
@@ -373,6 +393,34 @@ export class KimoFleet {
   artifactUrl(id, path) {
     return this.kimo.urlWithToken(`/api/fleet/jobs/${enc(id)}/artifacts/${path.split('/').map(enc).join('/')}`);
   }
+
+  /**
+   * A machine's smart plug, read now: `{address, via, status: {on, watts, today_wh, month_wh,
+   * model, firmware, on_seconds}, at, error}`. `devices()` carries the last reading as `plug`.
+   */
+  plug(id) { return this.call('GET', `/devices/${enc(id)}/plug`); }
+  /**
+   * Switch a machine's plug `on` or `off`, or `cycle` it (off, then on: a machine set to start
+   * when power returns boots). Cutting power is refused while work runs there, with status 409;
+   * `{force: true}` overrules that, but never leaves a machine with no way back on.
+   */
+  plugAction(id, action, { force = false } = {}) { return this.call('POST', `/devices/${enc(id)}/plug`, { action, force }); }
+  /** Whether the coordinator holds the plugs' login: `{set}`. */
+  plugCredential() { return this.call('GET', '/plug-credential'); }
+  /** Give the coordinator your TP-Link account's password; it keeps only a hash. */
+  setPlugPassword(password) { return this.call('PUT', '/plug-credential', { password }); }
+  forgetPlugPassword() { return this.call('DELETE', '/plug-credential'); }
+
+  /**
+   * The last check of the SSH mesh: `{running, at, nodes: [{id, alias, user, zerotier, tailscale,
+   * restricted}], links: [{from, to, network, expect: key|password|either, found:
+   * ok|nokey|blocked|off|check|down, as_intended}], untested: [{id, why}], violations: [text]}`.
+   */
+  mesh() { return this.call('GET', '/mesh'); }
+  /** Check it again, in the background; follow `running` with `mesh()`. */
+  checkMesh() { return this.call('POST', '/mesh/check'); }
+  /** Make the machines match the registry's rule: shortcuts and keys, on every machine. */
+  applyMesh() { return this.call('POST', '/mesh/apply'); }
 
   /** Hardware models (`{id, name, kind, role, labels, wake, sleep, cost, notes}`) and roles machines are added with. */
   hardware() { return this.call('GET', '/hardware'); }

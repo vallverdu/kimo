@@ -13,6 +13,7 @@
 // fake `tailscale` on its PATH stands in for the real one, accounts hold no credentials and
 // shutdown is `true`.
 
+import { createHash } from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
@@ -94,7 +95,9 @@ exec sleep 1000000
   for (const c of W.CONVERSATIONS) {
     // As kimo sees the folder (macOS: /var is /private/var).
     const cwd = fs.realpathSync(projectPath(c.project));
-    const id = `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`;
+    // Invented but varied, so each one's short id (its first 8 characters) differs.
+    const h = createHash('sha1').update(`${c.project} ${c.prompt} ${++n}`).digest('hex');
+    const id = `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
     const lines = [];
     const at = t => new Date(t).toISOString();
     const start = now - c.days * day - 2 * 3600_000;
@@ -235,6 +238,7 @@ function fixtures(req) {
     case '/api/fleet/jobs': return W.fleetJobs();
     case '/api/fleet/workflows': return W.fleetWorkflows();
     case '/api/fleet/events': return W.fleetEvents();
+    case '/api/fleet/mesh': return W.mesh();
     case '/api/fleet/ssh-key': return { key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoKeyNotARealKeyDemoKeyNotARealKey studio' };
     default: return null;
   }
@@ -370,7 +374,7 @@ const PHONE = [
   { name: 'phone-usage', hash: 'usage', wait: 2500 },
   { name: 'phone-accounts', hash: 'accounts' },
   { name: 'phone-fleet', hash: 'fleet' },
-  { name: 'phone-map', hash: 'map', wait: 6000 },
+  { name: 'phone-map', hash: 'map', wait: 9000 },
 ];
 
 async function capturePhone() {
@@ -415,6 +419,7 @@ const WINDOW = [
   { name: 'app-skills', view: 'skills' },
   { name: 'app-settings', view: 'settings' },
   { name: 'app-devices', view: 'devices' },
+  { name: 'app-network', view: 'network', wait: 8 },
 ];
 
 async function captureWindow(ids) {

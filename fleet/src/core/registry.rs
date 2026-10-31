@@ -12,13 +12,48 @@ pub struct Registry {
     pub ntfy: Option<String>,
     #[serde(default)]
     pub devices: BTreeMap<String, Device>,
+    /// Who may log in to whom over SSH (see `core::mesh`).
+    #[serde(default, skip_serializing_if = "Mesh::is_empty")]
+    pub mesh: Mesh,
+}
+
+/// The SSH mesh's rule: every machine logs in to every other without a password, except that
+/// `restricted` machines can be logged in to but hold no key for the others.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Mesh {
+    #[serde(default)]
+    pub restricted: Vec<String>,
+}
+
+impl Mesh {
+    fn is_empty(&self) -> bool {
+        self.restricted.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
-    /// Its kimo: `http://10.147.17.21:7777`.
+    /// Its kimo: `http://10.147.17.21:7777`. Empty for a machine that cannot run one (a
+    /// Pi Zero): it is then only watched, and needs `zerotier` or `tailscale` to be found.
+    #[serde(default)]
     pub kimo: String,
+    /// Its address on ZeroTier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zerotier: Option<String>,
+    /// Its name or address on Tailscale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale: Option<String>,
+    /// The account to log in to over SSH, for the mesh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Its SSH shortcut on every machine (default: `z` + its id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// The smart plug it is on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plug: Option<Plug>,
     /// Network card address for Wake-on-LAN (`1c:69:7a:aa:bb:cc`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
@@ -42,7 +77,31 @@ pub struct Device {
     pub role: Option<String>,
 }
 
+/// A smart plug feeding a machine (a Tapo P110 and its kind).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Plug {
+    /// Its address on the machine's network.
+    pub address: String,
+    /// The machine to reach it through (a device id), when the coordinator is not on that
+    /// network: an SSH tunnel, so the login stays here and the password never leaves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+}
+
 impl Device {
+    /// An address to ping it on: its kimo's, else ZeroTier's, else Tailscale's.
+    pub fn address(&self) -> Option<String> {
+        host_of(&self.kimo)
+            .or_else(|| self.zerotier.clone())
+            .or_else(|| self.tailscale.clone())
+    }
+
+    /// Does it run a kimo the coordinator can use?
+    pub fn has_kimo(&self) -> bool {
+        !self.kimo.is_empty()
+    }
+
     /// Its labels, with its role.
     pub fn all_labels(&self) -> Vec<String> {
         let mut l = self.labels.clone();
@@ -60,6 +119,8 @@ impl Device {
 pub enum Wake {
     /// Wake-on-LAN from the coordinator's network.
     Wol,
+    /// Power from its smart plug (for a machine set to start when power returns).
+    Plug,
     /// Never woken: used when it is on (a laptop, a board left on).
     #[default]
     Never,
@@ -183,6 +244,42 @@ pub fn host_of(url: &str) -> Option<String> {
 
 /// Read `devices.yaml`, with the problems a person can fix in plain words.
 pub fn parse(text: &str) -> Result<Registry, String> {
+    let r = parse_one(text)?;
+    check_links(&r)?;
+    Ok(r)
+}
+
+/// What one machine's entry says about others: only checkable with every file read.
+fn check_links(r: &Registry) -> Result<(), String> {
+    for id in &r.mesh.restricted {
+        if !r.devices.contains_key(id) {
+            return Err(format!(
+                "devices.yaml: mesh.restricted names {id}, which is not a machine here"
+            ));
+        }
+    }
+    for (id, d) in &r.devices {
+        let Some(via) = d.plug.as_ref().and_then(|p| p.via.as_ref()) else {
+            continue;
+        };
+        match r.devices.get(via) {
+            Some(hop) if hop.user.is_some() && hop.address().is_some() => {}
+            Some(_) => {
+                return Err(format!(
+                "devices.yaml: {id}: the plug goes through {via}, which needs user and an address"
+            ))
+            }
+            None => {
+                return Err(format!(
+                    "devices.yaml: {id}: the plug goes through {via}, which is not a machine here"
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_one(text: &str) -> Result<Registry, String> {
     let r: Registry = if text.trim().is_empty() {
         Registry::default()
     } else {
@@ -194,12 +291,32 @@ pub fn parse(text: &str) -> Result<Registry, String> {
                 "devices.yaml: '{id}' is not a device id (letters, digits, - and _)"
             ));
         }
-        if !(d.kimo.starts_with("http://") || d.kimo.starts_with("https://"))
+        if d.kimo.is_empty() {
+            if d.zerotier.is_none() && d.tailscale.is_none() {
+                return Err(format!(
+                    "devices.yaml: {id}: it needs an address: kimo, zerotier or tailscale"
+                ));
+            }
+        } else if !(d.kimo.starts_with("http://") || d.kimo.starts_with("https://"))
             || host_of(&d.kimo).is_none()
         {
             return Err(format!(
                 "devices.yaml: {id}: kimo must be its address, like http://10.147.17.21:7777"
             ));
+        }
+        if d.power.wake == Wake::Plug && d.plug.is_none() {
+            return Err(format!(
+                "devices.yaml: {id}: wake: plug needs a plug (its address)"
+            ));
+        }
+        if let Some(plug) = &d.plug {
+            if plug.address.parse::<std::net::IpAddr>().is_err()
+                && plug.address.parse::<std::net::SocketAddr>().is_err()
+            {
+                return Err(format!(
+                    "devices.yaml: {id}: the plug's address must be an IP, like 192.168.1.50"
+                ));
+            }
         }
         if d.power.wake == Wake::Wol {
             match &d.mac {
@@ -227,9 +344,9 @@ pub fn parse(text: &str) -> Result<Registry, String> {
 /// `devices.yaml` with the machines added from the Fleet tab (`devices.d/<id>.yaml`, one
 /// each, so the hand-written file is never rewritten). A machine in both is a mistake.
 pub fn merge(main: &str, added: &[(String, String)]) -> Result<Registry, String> {
-    let mut r = parse(main)?;
+    let mut r = parse_one(main)?;
     for (file, text) in added {
-        let extra = parse(text).map_err(|e| e.replace("devices.yaml", file))?;
+        let extra = parse_one(text).map_err(|e| e.replace("devices.yaml", file))?;
         for (id, d) in extra.devices {
             if r.devices.contains_key(&id) {
                 return Err(format!("{file}: {id} is already in devices.yaml"));
@@ -237,6 +354,7 @@ pub fn merge(main: &str, added: &[(String, String)]) -> Result<Registry, String>
             r.devices.insert(id, d);
         }
     }
+    check_links(&r)?;
     Ok(r)
 }
 
@@ -279,6 +397,11 @@ mod tests {
         let main = "devices:\n  nuc:\n    kimo: http://10.0.0.2:7777\n";
         let d = Device {
             kimo: "http://10.0.0.3:7777".into(),
+            zerotier: None,
+            tailscale: None,
+            user: None,
+            alias: None,
+            plug: None,
             mac: None,
             broadcast: None,
             power: PowerPolicy::default(),
@@ -331,9 +454,53 @@ devices:
     }
 
     #[test]
+    fn machines_on_plugs_and_without_a_kimo() {
+        let text = r#"
+mesh: { restricted: [nano] }
+devices:
+  lab:
+    kimo: http://10.147.17.21:7777
+    zerotier: 10.147.17.21
+    tailscale: lab-ts
+    user: demo
+    mac: "1c:69:7a:aa:bb:cc"
+    plug: { address: 192.168.1.50 }
+    power: { wake: plug, sleep: shutdown }
+  remote:
+    zerotier: 10.147.17.40
+    user: demo
+    plug: { address: 172.16.0.40, via: remote }
+  nano:
+    zerotier: 10.147.17.50
+"#;
+        let r = parse(text).unwrap();
+        assert_eq!(r.devices["lab"].power.wake, Wake::Plug);
+        assert_eq!(r.devices["lab"].address().as_deref(), Some("10.147.17.21"));
+        assert_eq!(
+            r.devices["remote"].plug.as_ref().unwrap().via.as_deref(),
+            Some("remote")
+        );
+        assert!(!r.devices["remote"].has_kimo());
+        assert_eq!(r.devices["nano"].address().as_deref(), Some("10.147.17.50"));
+        assert_eq!(r.mesh.restricted, ["nano"]);
+    }
+
+    #[test]
     fn mistakes_are_explained() {
         let no_mac = "devices:\n  nuc:\n    kimo: http://10.0.0.2:7777\n    power: { wake: wol }\n";
         assert!(parse(no_mac).unwrap_err().contains("needs the mac"));
+        let nowhere = "devices:\n  zero:\n    labels: [arm64]\n";
+        assert!(parse(nowhere).unwrap_err().contains("needs an address"));
+        let plug_wake =
+            "devices:\n  nuc:\n    kimo: http://10.0.0.2:7777\n    power: { wake: plug }\n";
+        assert!(parse(plug_wake).unwrap_err().contains("needs a plug"));
+        let bad_plug =
+            "devices:\n  nuc:\n    kimo: http://10.0.0.2:7777\n    plug: { address: nope }\n";
+        assert!(parse(bad_plug).unwrap_err().contains("must be an IP"));
+        let lost_hop = "devices:\n  nuc:\n    kimo: http://10.0.0.2:7777\n    plug: { address: 10.0.0.9, via: gone }\n";
+        assert!(parse(lost_hop).unwrap_err().contains("not a machine"));
+        let lost_member = "mesh: { restricted: [gone] }\ndevices: {}\n";
+        assert!(parse(lost_member).unwrap_err().contains("restricted"));
         let bad_url = "devices:\n  nuc:\n    kimo: 10.0.0.2\n";
         assert!(parse(bad_url).unwrap_err().contains("its address"));
         let typo = "devices:\n  nuc:\n    kimo: http://10.0.0.2:7777\n    lables: [x]\n";

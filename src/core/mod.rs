@@ -6,6 +6,7 @@ pub mod awake;
 pub mod daily;
 pub mod files;
 pub mod git;
+pub mod glb;
 pub mod history;
 pub mod hostname;
 pub mod jobs;

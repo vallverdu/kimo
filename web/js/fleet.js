@@ -1,5 +1,7 @@
 // Fleet view: the machines the coordinator beside this kimo manages (wake, switch off, keep
 // on, take control, pair), the jobs and workflows placed on them, and what happened lately.
+import { meshMatrix } from './map-data.js';
+import { plugAction, plugButtons, plugDone, plugLine } from './power-actions.js';
 import { $, esc, mb, toast } from './ui.js';
 
 const STATE_BADGE = {
@@ -38,14 +40,14 @@ function factsLine(d) {
 
 export function initFleet({ api, state, run }) {
   let timer = null, logTimer = null;
-  const data = { status: null, devices: [], jobs: [], workflows: [], events: [] };
+  const data = { status: null, devices: [], jobs: [], workflows: [], events: [], mesh: null };
   const previews = new Map();
   const fleet = api.fleet;
 
   async function load() {
     try {
-      [data.status, data.devices, data.jobs, data.workflows, data.events] = await Promise.all([
-        fleet.status(), fleet.devices(), fleet.jobs(), fleet.workflows(), fleet.events({ limit: 25 }),
+      [data.status, data.devices, data.jobs, data.workflows, data.events, data.mesh] = await Promise.all([
+        fleet.status(), fleet.devices(), fleet.jobs(), fleet.workflows(), fleet.events({ limit: 25 }), fleet.mesh().catch(() => null),
       ]);
       render();
     } catch (e) {
@@ -83,6 +85,7 @@ export function initFleet({ api, state, run }) {
         ? '<button class="ui-button ghost k-small" data-do="release">let it sleep</button>'
         : '<button class="ui-button ghost k-small" data-do="keep">keep on 2 h</button>') : '',
       `<button class="ui-button ghost k-small" data-do="${d.manual ? 'auto' : 'manual'}">${d.manual ? 'automatic' : 'manual'}</button>`,
+      data.status?.plug_credential ? plugButtons(d.id, d.plug) : '',
       d.added ? '<button class="ui-button ghost k-small k-danger" data-do="remove">remove</button>' : '',
     ].join('');
     return `<li data-device="${esc(d.id)}">
@@ -90,8 +93,42 @@ export function initFleet({ api, state, run }) {
       <div class="k-meta">${d.registry.role ? `<span>${esc(d.registry.role)}</span>` : ''}<span>${esc(d.labels.filter(l => l !== d.registry.role).join(' · '))}</span>${d.facts?.model ? `<span>${esc(d.facts.model)}</span>` : ''}</div>
       ${factsLine(d) ? `<div class="k-meta"><span>${esc(factsLine(d))}</span></div>` : ''}
       ${note.length ? `<div class="k-meta"><span>${esc(note.join(' · '))}</span></div>` : ''}
+      ${networksLine(d) ? `<div class="k-meta"><span>${esc(networksLine(d))}</span></div>` : ''}
+      ${d.plug ? `<div class="k-meta"><span>plug ${esc(d.plug.address)}${d.plug.via ? ` through ${esc(d.plug.via)}` : ''}: ${esc(plugLine(d.plug))}</span></div>` : ''}
       ${error ? `<div class="k-meta"><span class="k-warn">${esc(error)}</span></div>` : ''}
       <div class="k-actions">${actions}</div></li>`;
+  }
+
+  function networksLine(d) {
+    const r = d.registry;
+    return [r.zerotier && `ZeroTier ${r.zerotier}`, r.tailscale && `Tailscale ${r.tailscale}`, r.user && `ssh ${r.alias || `z${d.id}`}`].filter(Boolean).join(' · ');
+  }
+
+  function renderMesh() {
+    const report = data.mesh;
+    if (!report?.nodes?.length) {
+      $('fleet-mesh').innerHTML = '<p class="k-hint">No machine has <code>user</code> and an address in the registry yet.</p>';
+      return;
+    }
+    const { ids, rows } = meshMatrix(report);
+    const when = report.running ? 'checking…' : report.at ? `checked ${ago(report.at)}` : 'not checked yet';
+    const lines = [
+      ...(report.violations || []).map(v => `<span class="k-warn">Not allowed: ${esc(v)}</span>`),
+      ...(report.untested || []).map(u => `Could not test from ${esc(u.id)}: ${esc(u.why)}`),
+    ];
+    $('fleet-mesh').innerHTML = `<table><thead><tr><th>from \\ to</th>${ids.map(i => `<th>${esc(i)}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `<tr><th>${esc(r.from)}</th>${r.cells.map(c => `<td data-state="${c.state}">${esc(c.word)}</td>`).join('')}</tr>`).join('')}</tbody></table>
+      <p class="k-hint">${esc(when)}</p>${lines.map(l => `<p class="k-hint">${l}</p>`).join('')}`;
+  }
+
+  function renderPlugs() {
+    const set = data.status?.plug_credential;
+    const any = data.devices.some(d => d.plug);
+    $('fleet-plugs').innerHTML = !any
+      ? '<p class="k-hint">No machine has a <code>plug</code> in the registry.</p>'
+      : set
+        ? '<p class="k-hint">The coordinator holds a hash of your TP-Link password. <button class="ui-button ghost k-small" type="button" data-plug-forget>forget it</button></p>'
+        : '<form class="k-actions" id="fleet-plug-form"><label>TP-Link account password<input type="password" name="password" autocomplete="off" required></label><button class="ui-button k-small">save</button></form><p class="k-hint">Tapo plugs log in with it. The coordinator keeps only a hash, on its own disk.</p>';
   }
 
   function jobRow(j) {
@@ -129,6 +166,8 @@ export function initFleet({ api, state, run }) {
       !data.devices.length ? `<div class="ui-alert info"><span>No machines yet. Find them on Tailscale or ZeroTier and add them from here, or write them in ${esc(st?.registry || 'devices.yaml')} on the coordinator.</span></div>` : '',
     ].join('');
     $('fleet-devices').innerHTML = data.devices.map(deviceRow).join('') || '<li class="ui-empty">No machines.</li>';
+    renderMesh();
+    if (!$('fleet-plug-form')?.contains(document.activeElement)) renderPlugs();
     const waiting = data.jobs.filter(j => j.state === 'awaiting_approval');
     const recent = [...waiting, ...data.jobs.filter(j => j.state !== 'awaiting_approval')].slice(0, 30);
     $('fleet-jobs').innerHTML = recent.map(jobRow).join('') || '<li class="ui-empty">No jobs yet. Tap + to run one on whichever machine fits.</li>';
@@ -159,11 +198,32 @@ export function initFleet({ api, state, run }) {
     return r;
   }
 
+  $('fleet-mesh-check').addEventListener('click', () => act(fleet.checkMesh(), 'Checking the mesh'));
+  $('fleet-mesh-apply').addEventListener('click', () => {
+    if (!confirm('Set up the shortcuts on every machine and hand out keys as the registry says? It takes back keys it handed out earlier that no longer fit the rule; other keys stay.')) return;
+    act(fleet.applyMesh(), 'Shortcuts and keys set');
+  });
+  $('fleet-plugs').addEventListener('submit', e => {
+    e.preventDefault();
+    const password = new FormData(e.target).get('password');
+    e.target.reset();
+    act(fleet.setPlugPassword(password), 'Saved');
+  });
+  $('fleet-plugs').addEventListener('click', e => {
+    if (e.target.closest('[data-plug-forget]')) act(fleet.forgetPlugPassword(), 'Forgotten');
+  });
+
   $('fleet-devices').addEventListener('click', e => {
-    const what = e.target.closest('[data-do]')?.dataset.do;
+    const what = e.target.closest('[data-do]')?.dataset.do || e.target.closest('[data-plug]')?.dataset.plug;
     const id = e.target.closest('li[data-device]')?.dataset.device;
     if (!what || !id) return;
     const d = data.devices.find(x => x.id === id);
+    const plug = e.target.closest('[data-plug]')?.dataset.plug;
+    if (plug && id) {
+      return plugAction(fleet, id, plug)
+        .then(r => { if (r) toast(plugDone(id, plug)); load(); })
+        .catch(err => toast(err.message, true));
+    }
     if (what === 'wake') return act(fleet.wake(id), `Waking ${id}`);
     if (what === 'shutdown') {
       if (!confirm(`Switch ${id} off? Its kimo refuses while terminals, jobs or people are on it.`)) return;

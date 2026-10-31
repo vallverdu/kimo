@@ -10,11 +10,49 @@ pub fn claude_dir_name(path: &str) -> String {
         .collect()
 }
 
+/// A conversation's short handle, to say and type: the first 8 characters of its id
+/// (`c9c7d155` for `c9c7d155-162c-…`), like a short git hash.
+pub fn short_id(id: &str) -> &str {
+    id.char_indices().nth(8).map_or(id, |(at, _)| &id[..at])
+}
+
+/// The one id that `prefix` names (at least 4 characters, or the whole id).
+pub fn resolve<'a>(ids: &[&'a str], prefix: &str) -> Result<&'a str, String> {
+    let prefix = prefix.trim();
+    if let Some(id) = ids.iter().find(|id| **id == prefix) {
+        return Ok(id);
+    }
+    if prefix.len() < 4 {
+        return Err("give at least 4 characters of the conversation id".into());
+    }
+    let mut found: Vec<&str> = ids
+        .iter()
+        .copied()
+        .filter(|id| id.starts_with(prefix))
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    match found.as_slice() {
+        [one] => Ok(one),
+        [] => Err(format!("no conversation {prefix}")),
+        many => Err(format!(
+            "{prefix} names {} conversations ({}): give more of it",
+            many.len(),
+            many.iter()
+                .map(|id| short_id(id))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
 /// What one conversation is about, from its log lines.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Summary {
     pub id: Option<String>,
     pub cwd: Option<String>,
+    /// The folder of its latest line: where it went on after being moved or continued elsewhere.
+    pub last_cwd: Option<String>,
     pub title: Option<String>,
     /// First user prompt, a fallback title.
     pub first_prompt: Option<String>,
@@ -63,6 +101,9 @@ pub fn claude_line(s: &mut Summary, line: &str) {
     let Ok(v) = serde_json::from_str::<Value>(line) else {
         return;
     };
+    if let Some(c) = v["cwd"].as_str() {
+        s.last_cwd = Some(c.to_string());
+    }
     match v["type"].as_str() {
         Some("ai-title") => s.title = v["aiTitle"].as_str().map(String::from).or(s.title.take()),
         Some("summary") if s.title.is_none() => s.title = v["summary"].as_str().map(String::from),
@@ -98,6 +139,7 @@ pub fn codex_line(s: &mut Summary, line: &str) {
                 .or(p["session_id"].as_str())
                 .map(String::from);
             s.cwd = p["cwd"].as_str().map(String::from);
+            s.last_cwd.clone_from(&s.cwd);
         }
         (Some("event_msg"), Some("item_completed")) if p["item"]["type"] == "UserMessage" => {
             if let Some(t) = prompt_text(&p["item"]["content"]) {
@@ -180,6 +222,37 @@ mod tests {
             .chars()
             .count(),
             90
+        );
+    }
+
+    #[test]
+    fn short_ids_and_prefixes() {
+        assert_eq!(short_id("c9c7d155-162c-412f-a4c9-0ea2c7798f92"), "c9c7d155");
+        assert_eq!(short_id("019a"), "019a");
+        let ids = ["c9c7d155-162c", "c9c7aaaa-0000", "4ce978b3-055c"];
+        assert_eq!(resolve(&ids, "4ce9"), Ok("4ce978b3-055c"));
+        assert_eq!(resolve(&ids, "c9c7d155-162c"), Ok("c9c7d155-162c"));
+        assert!(resolve(&ids, "c9c7")
+            .unwrap_err()
+            .contains("(c9c7aaaa, c9c7d155)"));
+        assert!(resolve(&ids, "4ce").is_err());
+        assert!(resolve(&ids, "ffff")
+            .unwrap_err()
+            .starts_with("no conversation"));
+    }
+
+    #[test]
+    fn a_moved_conversation_remembers_where_it_went() {
+        let mut s = Summary::default();
+        for line in [
+            r#"{"type":"user","cwd":"/a","sessionId":"x","message":{"role":"user","content":"hi"}}"#,
+            r#"{"type":"user","cwd":"/a/b","message":{"role":"user","content":"go on"}}"#,
+        ] {
+            claude_line(&mut s, line);
+        }
+        assert_eq!(
+            (s.cwd.as_deref(), s.last_cwd.as_deref()),
+            (Some("/a"), Some("/a/b"))
         );
     }
 }

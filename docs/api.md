@@ -76,8 +76,9 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | DELETE | `/projects/{id}/worktrees?path=` | `git worktree remove` (refused with uncommitted changes, or while agents run there; the branch stays); its stopped sessions are removed → `{sessions_removed}` |
 | GET | `/fs?path=` | subfolders, for folder pickers |
 | POST | `/fs` | `{parent, name}`: create a folder (start a project from nothing) → its listing |
-| GET | `/conversations?path=` | earlier Claude and Codex conversations in a folder, newest first: `agent`, `id`, `title`, `updated_at`, `messages` (your prompts), `session` (when attached) |
-| POST | `/conversations/continue` | `{agent, cwd, id, name?, start? = true}`: continue one as a session (an attached one is reused) |
+| GET | `/conversations?path=` | earlier Claude and Codex conversations in a folder, newest first: `agent`, `id`, `short` (its first 8 characters, to say and type), `cwd`, `title`, `updated_at`, `messages` (your prompts), `session` (when attached). One that started elsewhere and went on here is listed too |
+| GET | `/conversations/find?id=` | the conversation whose id starts with `id` (at least 4 characters; `short` is plenty), in any folder: the same fields, `cwd` = where it went on last. 404 when none or several match |
+| POST | `/conversations/continue` | `{id, agent?, cwd?, name?, start? = true}`: continue one as a session (an attached one is reused). `id` may be its beginning; `agent` and `cwd` default to the conversation's own. A Claude conversation continued in another folder is copied there first (never over a copy), since Claude Code resumes only what it keeps for its folder |
 
 ## Accounts and usage
 
@@ -119,6 +120,7 @@ and on every change (status, account, activity, usage every ~2 s while agents ru
 | DELETE | `/peers/{id}` | forget a paired kimo |
 | GET | `/peers/keys` | paired kimos with their keys (for the owner's own apps) |
 | POST | `/peers/accept` | used by another kimo during pairing |
+| GET | `/models`, `/models/{file}` | the device models this kimo holds (`~/.kimo/models`, see `scripts/device-models`): `{models: [{kind, file, label, size_m, triangles, bytes}]}`, empty until built; a model's `.glb` |
 | any | `/fleet/…` | the fleet coordinator beside this kimo (`kimo serve --fleet http://127.0.0.1:7780`; `/status` says `fleet: true`): its API, for the owner only. See [fleet.md](fleet.md) |
 | any | `/hosts/{host}/…` | the same API on a paired kimo (`host`: its id or name from `/peers`), through this one with this kimo's key there: calls, `/events` and terminal websockets. A phone paired with one kimo uses all of them |
 
@@ -194,7 +196,7 @@ kimo.subscribe(({ sessions, accounts }) => …);        // live updates; returns
 kimo.projects(); kimo.createProject(p); kimo.updateProject(id, { name, color });
 kimo.deleteProject(id); kimo.browse(path); kimo.makeFolder(parent, name);
 kimo.addWorktree(id, { name, agent }); kimo.removeWorktree(id, path);
-kimo.conversations(path); kimo.continueConversation({ agent, cwd, id });
+kimo.conversations(path); kimo.findConversation("c9c7d155"); kimo.continueConversation({ id, cwd });
 kimo.accounts(); kimo.usage(); kimo.dailyUsage(days); kimo.moveSessions(from, to);
 kimo.setActiveAccount(provider, account, { move });   // new agents start on it
 kimo.hosts();                                           // paired kimos (owner only)
@@ -228,7 +230,7 @@ kimo new <claude|codex|shell> [--name N] [--cwd DIR] [--account A] [--prompt TEX
 kimo whoami
 kimo usage [--days 14] [--json]       tokens per day, project and subscription
 kimo history [folder]                 earlier Claude and Codex conversations here
-kimo continue <conversation> [--folder DIR]
+kimo continue <id> [--folder DIR]    continue one here (its first 8 characters, from any folder)
 kimo peers
 kimo peer add <url> <code> [--my-url URL]
 kimo peer remove <id>

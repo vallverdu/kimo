@@ -280,6 +280,23 @@ was confirmed. Fixes and the remaining acceptance work are open.
 - [x] Map demo data: `web/js/map-demo.js` is a stand-in for the SDK calls the map makes over the invented world of `scripts/demo/world.mjs` (the one the screenshots show: agents starting and finishing on every poll, a training job, wake), so `initMap({ api: demoApi(world) })` runs without a kimo. Checked through the map's data layer in Node; shown live on the website.
 - [x] Map and fleet together: hardware models and roles from the coordinator's registry pick the 3D model and the role label; tailnet machines not in the fleet get *add to the fleet*, which opens the Fleet tab's finder (`tests/js/map-data.mjs`). Seen at phone width in the screenshots (`phone-map.png`).
 - [x] Demo kit (`scripts/demo/`): a real kimo with an isolated HOME, invented projects, terminals, accounts, usage logs and history, behind a proxy that answers what cannot be real on one machine (the tailnet, paired kimos, the fleet) from `world.mjs`. `--capture` takes the phone screenshots (headless Chrome) and the window's (`KIMO_CAPTURE`), light and dark. Nothing in them is real.
+- [x] Device models: `scripts/device-models/build.py` (STEP or GLB to small plain GLB), `GET /api/models`, `web/js/glb.js`, `src/core/glb.rs`; drawn in the Map tab with the shapes as fallback. Verified in Chrome on a Mac with seven real models.
+- [x] Network view in the window (`src/desktop/network.rs`): machines in 3D with depth, mesh, power, plug, add and remove. Verified by capture on a Mac (`KIMO_CAPTURE_VIEW=network`); not clicked through by hand; not run on Linux.
+- [x] SSH mesh (`core/mesh.rs`, `services/mesh.rs`, `/mesh`, Fleet table, map lines): check verified on 8 real machines. `mesh apply` verified only on a temporary home.
+- [x] Smart plugs (`core/tapo.rs`, `services/plugs.rs`, `/devices/{id}/plug`): TPAP checked against a reference vector and a stand-in plug, and the first steps against real P110s. **Not yet logged in to a real plug or switched one**: needs the owner's password and a window when a machine may lose power.
+- [ ] Plugs: check on real plugs that `add_countdown_rule` with `on: true` works while the plug is on (a restart through itself depends on it, and refuses to cut if the plug does not keep the timer).
+- [ ] Plugs: fall back to the plug when Wake-on-LAN does not bring a machine up by its deadline.
+- [ ] Plugs: a plug stops answering locally for some minutes after losing power until it gets discovery traffic (UDP 20002); send that when one does not answer.
+- [ ] Mesh: run `kimo-fleet mesh apply` on the real machines (they were set up by hand in `~/.ssh/config.d/zerotier`) and move them to `kimo-mesh`.
+- [ ] Models: a model for the Jetson's case and the Pi 5 AI HAT+; a detail view (explode, x-ray, ports), from the per-part CAD models.
+- [ ] Network view on a host other than the first: it always shows this machine's kimo and fleet.
+- [x] CI: run `tests/js/*.mjs`.
+- [x] Plugs: a wake through the plug cuts power only when the machine's kimo and a ping agree it is off (`may_act` before the cycle); switching back on after a restart is retried 3 times and a person is notified if it stays off; 409 vs 400 from a typed `Refused`, read by status in the window. Stand-in plug tests only.
+- [x] Model readers (`src/core/glb.rs`, `web/js/glb.js`): node loops, overlapping accessors and more than 4M vertices are refused (`hostile_files_stop_early`).
+- [x] CAD sources live in `~/.kimo/models/source/` (with `models.json` and the vendors' STEP files), never in a repository; `build.py` rebuilds `~/.kimo/models` from there. A rebuild from that list was not run yet.
+- [x] Short conversation ids: `short` (8 characters) in `/conversations`, `GET /conversations/find?id=`, `continue` by id from any folder (Claude transcripts copied to the new folder), `kimo continue <id>`, *continue here* in the PWA history, short ids in `kimo agents`/`history` and the window (`tests/sessions.rs`). Not yet tried with a real Codex conversation moved between folders.
+- [ ] From the older stand-alone tailnet map (kept privately in `~/.kimo/models/source/tailnet-map`): live stats for machines that cannot run kimo, from a read-only SSH script (CPU, GPU, memory, temperatures, disks, top processes, containers), in `fleet/`.
+- [ ] Map: working/idle from load (GPU ≥ 30 % or CPU ≥ 75 %, 3-sample average with hysteresis) for machines without agents; group by place, kind, status, role or OS; `/` to search; click a zone to frame it; place a machine by hand.
 - [ ] Map: show which machine runs each fleet job as a moving pulse from the coordinator; check it on a real phone with paired kimos and a coordinator.
 
 ## Fleet: several machines, power, jobs and workflows (2026-10-28)

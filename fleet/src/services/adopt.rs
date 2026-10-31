@@ -269,7 +269,14 @@ impl Fleet {
                 )),
             }
         }
-        let device = hardware::entry(model, &role, &url, Some(&facts), wol);
+        let mut device = hardware::entry(model, &role, &url, Some(&facts), wol);
+        // The mesh and the map need to know its networks and its account.
+        match bind.as_str() {
+            "tailscale" => device.tailscale = Some(address.to_string()),
+            "zerotier" => device.zerotier = Some(address.to_string()),
+            _ => {}
+        }
+        device.user = req.ssh_user.clone();
         let file = self.added_dir().join(format!("{id}.yaml"));
         std::fs::create_dir_all(self.added_dir())?;
         let note = format!(

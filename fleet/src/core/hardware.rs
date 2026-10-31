@@ -101,6 +101,45 @@ pub const MODELS: &[Model] = &[
         notes: NUC_BIOS,
     },
     Model {
+        id: "nuc-13-extreme",
+        name: "Intel NUC 13 Extreme (NUC13RNG) with a GPU",
+        kind: "nuc13Extreme",
+        role: "gpu-worker",
+        labels: &["x86_64", "linux"],
+        wake: Wake::Wol,
+        sleep: Sleep::Shutdown,
+        gpu: 1,
+        cpu_slots: 4,
+        cost: 45.0,
+        notes: NUC_BIOS,
+    },
+    Model {
+        id: "gaming-laptop",
+        name: "Laptop with an NVIDIA GPU (MSI Katana and the like)",
+        kind: "laptop",
+        role: "build-worker",
+        labels: &["x86_64", "linux"],
+        wake: Wake::Never,
+        sleep: Sleep::Never,
+        gpu: 1,
+        cpu_slots: 4,
+        cost: 15.0,
+        notes: "Never woken over the network: used when it is open and plugged in.",
+    },
+    Model {
+        id: "rpi-zero-2w",
+        name: "Raspberry Pi Zero 2 W",
+        kind: "zero2",
+        role: "spare",
+        labels: &["linux"],
+        wake: Wake::Never,
+        sleep: Sleep::Never,
+        gpu: 0,
+        cpu_slots: 0,
+        cost: 1.0,
+        notes: "Too small for kimo (512 MB, 32-bit): watched over the network, given no work.",
+    },
+    Model {
         id: "jetson-orin-nano",
         name: "NVIDIA Jetson Orin Nano",
         kind: "jetson",
@@ -251,6 +290,15 @@ pub fn guess(c: &Clues) -> &'static Model {
     if f["jetson_l4t"].is_string() || has("jetson") || has("orin") {
         return pick("jetson-orin-nano");
     }
+    if has("zero") {
+        return pick("rpi-zero-2w");
+    }
+    if has("katana") {
+        return pick("gaming-laptop");
+    }
+    if has("nuc13") || has("raptor") {
+        return pick("nuc-13-extreme");
+    }
     if has("raspberry pi 5") || has("rpi5") || has("pi5") {
         return if f["hailo"].is_string() || has("hailo") || has("hat") {
             pick("rpi5-hailo")
@@ -317,6 +365,11 @@ pub fn entry(
     };
     Device {
         kimo: kimo.to_string(),
+        zerotier: None,
+        tailscale: None,
+        user: None,
+        alias: None,
+        plug: None,
         mac,
         broadcast,
         power: PowerPolicy {
@@ -408,6 +461,9 @@ mod tests {
         assert_eq!(g("jordis-macbook-air", "macOS"), "macbook-air");
         assert_eq!(g("studio-mini", "macOS"), "mac-mini");
         assert_eq!(g("box", "linux"), "linux-pc");
+        assert_eq!(g("rpizero2w", "linux"), "rpi-zero-2w");
+        assert_eq!(g("katana15", "linux"), "gaming-laptop");
+        assert_eq!(g("NUC13RNG", "linux"), "nuc-13-extreme");
         let f = |facts: serde_json::Value| {
             guess(&Clues {
                 name: "ubuntu",

@@ -4,6 +4,7 @@
 mod app;
 mod chart;
 mod input;
+mod network;
 mod terminal;
 mod theme;
 
@@ -133,6 +134,8 @@ pub fn run(port: u16, data_dir: &std::path::Path) -> Result<()> {
             .with_min_inner_size([760.0, 480.0])
             .with_drag_and_drop(true)
             .with_icon(std::sync::Arc::new(window_icon(dark_icon))),
+        // The Network view draws in 3D.
+        depth_buffer: 24,
         ..Default::default()
     };
     let prefs = data_dir.join("window.json");

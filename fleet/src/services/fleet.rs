@@ -59,6 +59,10 @@ pub struct Config {
     /// Where new machines get kimo from, and which release (default: this coordinator's).
     pub install_url: String,
     pub kimo_version: Option<String>,
+    /// How long a plug stays off in a restart (tests shorten it).
+    pub plug_off_seconds: Option<u64>,
+    /// Check the SSH mesh this often (0: only when asked).
+    pub mesh_every_ms: u64,
 }
 
 impl Config {
@@ -76,6 +80,8 @@ impl Config {
             zerotier: true,
             install_url: crate::core::setup::INSTALL_URL.into(),
             kimo_version: Some(format!("v{}", env!("CARGO_PKG_VERSION"))),
+            plug_off_seconds: None,
+            mesh_every_ms: 30 * 60_000,
         }
     }
 }
@@ -222,6 +228,9 @@ pub struct DeviceView {
     pub jobs: Vec<String>,
     /// Added from the Fleet tab (`devices.d/`): it can be removed from there too.
     pub added: bool,
+    /// The smart plug it is on, and what that last said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plug: Option<plugs::PlugView>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -256,6 +265,10 @@ struct Inner {
     jobs: BTreeMap<String, Job>,
     workflows: BTreeMap<String, WorkflowRun>,
     pruned_at: u64,
+    /// What each smart plug last said, and when it was last read.
+    plugs: BTreeMap<String, plugs::PlugView>,
+    plug_looked: BTreeMap<String, u64>,
+    mesh_checked: u64,
 }
 
 pub struct Fleet {
@@ -265,18 +278,24 @@ pub struct Fleet {
     inner: Mutex<Inner>,
     /// Machines being added (installing, pairing), and how that went.
     adoptions: Mutex<BTreeMap<String, adopt::Adoption>>,
+    /// The last check of the SSH mesh.
+    mesh: Mutex<mesh::Report>,
 }
 
 #[path = "adopt.rs"]
 pub mod adopt;
 #[path = "discover.rs"]
 pub mod discover;
+#[path = "mesh.rs"]
+pub mod mesh;
+#[path = "plugs.rs"]
+pub mod plugs;
 #[path = "runs.rs"]
 mod runs;
 
 fn policy(d: &Device) -> Policy {
     Policy {
-        can_wake: d.power.wake == Wake::Wol,
+        can_wake: matches!(d.power.wake, Wake::Wol | Wake::Plug),
         auto_shutdown: d.power.sleep == Sleep::Shutdown,
         idle_ms: (d.power.idle_minutes.max(0.0) * 60_000.0) as u64,
         boot_ms: d.power.boot_deadline_s * 1000,
@@ -397,6 +416,7 @@ impl Fleet {
             keys,
             inner: Mutex::new(inner),
             adoptions: Mutex::new(BTreeMap::new()),
+            mesh: Mutex::new(mesh::Report::default()),
         });
         fleet.reload()?;
         Ok(fleet)
@@ -446,6 +466,11 @@ impl Fleet {
                 Err(anyhow!(e))
             }
         }
+    }
+
+    /// The machines as they are in the registry now.
+    pub fn registry(&self) -> Registry {
+        self.lock().registry.clone()
     }
 
     pub fn registry_error(&self) -> Option<String> {
@@ -555,6 +580,12 @@ impl Fleet {
                 .map(|j| j.id.clone())
                 .collect(),
             added: false,
+            plug: d.plug.as_ref().map(|p| {
+                let mut v = inner.plugs.get(id).cloned().unwrap_or_default();
+                v.address = p.address.clone();
+                v.via = p.via.clone();
+                v
+            }),
         }
     }
 
@@ -793,6 +824,12 @@ impl Fleet {
                     let Ok((d, _)) = self.device_of(id) else {
                         continue;
                     };
+                    if d.power.wake == Wake::Plug {
+                        if let Err(e) = self.wake_by_plug(id, &d) {
+                            self.notify(Some(id), None, &format!("cannot power it: {e:#}"));
+                        }
+                        continue;
+                    }
                     let sent = d
                         .mac
                         .as_deref()
@@ -854,12 +891,24 @@ impl Fleet {
             inner.looking.insert(id.clone());
             let d = &inner.registry.devices[&id];
             let (url, key) = (d.kimo.clone(), inner.keys.get(&id).cloned());
-            let host = registry::host_of(&d.kimo).unwrap_or_default();
+            let host = d.address().unwrap_or_default();
             let (me, ping) = (self.clone(), self.cfg.ping);
             let spawned = std::thread::Builder::new()
                 .name("fleet-look".into())
                 .spawn(move || {
-                    let seen = look_at(&url, key.as_deref(), &host, ping);
+                    // Too small for a kimo: it is up when it answers pings.
+                    let seen = if url.is_empty() {
+                        if net::ping(&host) {
+                            Seen2::Kimo {
+                                facts: None,
+                                error: None,
+                            }
+                        } else {
+                            Seen2::Nothing("it does not answer pings".into())
+                        }
+                    } else {
+                        look_at(&url, key.as_deref(), &host, ping)
+                    };
                     me.apply(&id, seen);
                     me.lock().looking.remove(&id);
                 });
@@ -879,7 +928,7 @@ impl Fleet {
             };
             let (seen, error) = match seen {
                 Seen2::Kimo { facts, error } => {
-                    let ready = facts.as_ref().is_some_and(|f| facts_ready(&d, f));
+                    let ready = !d.has_kimo() || facts.as_ref().is_some_and(|f| facts_ready(&d, f));
                     if let Some(f) = facts {
                         if inner
                             .sampled
@@ -966,6 +1015,8 @@ impl Fleet {
             .registry
             .devices
             .iter()
+            // Only watched: nothing could run there.
+            .filter(|(_, d)| d.has_kimo())
             .map(|(id, d)| {
                 let st = inner.states.get(id).cloned().unwrap_or_default();
                 let facts = inner.facts.get(id);
@@ -1814,10 +1865,29 @@ impl Fleet {
     pub fn tick(self: &Arc<Self>) {
         let now = now_ms();
         self.look(now);
+        self.look_at_plugs(now);
+        self.mesh_due(now);
         self.advance(now);
         self.schedule(now);
         self.follow();
         self.prune(now);
+    }
+
+    /// Check the mesh every so often, if there is one.
+    fn mesh_due(self: &Arc<Self>, now: u64) {
+        if self.cfg.mesh_every_ms == 0 {
+            return;
+        }
+        {
+            let mut inner = self.lock();
+            if now < inner.mesh_checked + self.cfg.mesh_every_ms
+                || crate::core::mesh::nodes(&inner.registry).is_empty()
+            {
+                return;
+            }
+            inner.mesh_checked = now;
+        }
+        self.mesh_check();
     }
 
     /// What the status page shows.
@@ -1830,6 +1900,7 @@ impl Fleet {
             "devices": inner.registry.devices.len(),
             "registry": self.registry_path(),
             "registry_error": inner.registry_error,
+            "plug_credential": self.plug_credential_set(),
             "jobs": {
                 "ready": count(JobState::Ready),
                 "waiting_device": count(JobState::WaitingDevice),

@@ -158,7 +158,9 @@ kimo runs the agent CLIs you already have: install
 
 In the native window, dropping a folder on the projects panel adds it. If Claude or Codex
 already worked there, kimo continues their latest conversations; earlier ones are in the
-project's *history*. Add more accounts in Subscriptions, and install the bundled
+project's *history*. Every conversation has a short id (`c9c7d155`, its first 8 characters),
+shown in *history*, on each agent and by `kimo agents`: `kimo continue c9c7d155`, or *continue
+here* in a project's history, continues it in that project from whatever folder it started in. Add more accounts in Subscriptions, and install the bundled
 `kimo-agents` skill from Skills to teach agents how to work together.
 
 ## Agents working together
@@ -264,6 +266,23 @@ is on the tailnet but not in the fleet can be added from there.
 | Map | Fleet |
 |---|---|
 | <a href="docs/screenshots/phone-map-dark.png#gh-dark-mode-only"><img src="docs/screenshots/phone-map-dark.png" alt="Every machine and phone on the tailnet in 3D"></a><a href="docs/screenshots/phone-map.png#gh-light-mode-only"><img src="docs/screenshots/phone-map.png" alt="Every machine and phone on the tailnet in 3D"></a> | <a href="docs/screenshots/phone-fleet-dark.png#gh-dark-mode-only"><img src="docs/screenshots/phone-fleet-dark.png" alt="Machines, jobs and workflows in the Fleet tab"></a><a href="docs/screenshots/phone-fleet.png#gh-light-mode-only"><img src="docs/screenshots/phone-fleet.png" alt="Machines, jobs and workflows in the Fleet tab"></a> |
+
+Plugs, the SSH mesh, and your own hardware in 3D:
+
+- **Smart plugs:** give a machine a `plug` and switch it, restart it or wake it through its power,
+  with its watts on the map. Tapo P110 today, over an unofficial protocol that firmware updates
+  can change. Cutting power is refused while work runs there.
+- **SSH mesh:** the coordinator checks who reaches whom over ZeroTier and Tailscale, shows it as a
+  table and as lines on the map, and can set up shortcuts and keys to match your rule, including
+  machines that can be logged in to but cannot log in out.
+- **Your hardware:** `scripts/device-models/` turns STEP files into small models in `~/.kimo/models`,
+  and both the map and the window's **Network** view draw them. They are not in this repository:
+  most vendors' CAD files may not be redistributed. Keep the sources in `~/.kimo/models/source/`.
+
+<a href="docs/screenshots/app-network-dark.png#gh-dark-mode-only"><img src="docs/screenshots/app-network-dark.png" alt="The window's Network view: machines in 3D, the SSH mesh and plug power"></a><a href="docs/screenshots/app-network.png#gh-light-mode-only"><img src="docs/screenshots/app-network.png" alt="The window's Network view: machines in 3D, the SSH mesh and plug power"></a>
+
+*The window's Network view, with invented machines: the mesh's lines, plug watts, and the
+machine list beside it.*
 
 ## Phone and web
 

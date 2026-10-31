@@ -29,6 +29,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # needs none.
 ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 uuid = { version = "1", features = ["v4"] }
+# Tapo plugs (core/tapo.rs): SPAKE2+ on P-256, then AES-128-CCM. RustCrypto, no C.
+aes = "0.8"
+base64 = "0.22"
+ccm = "0.5"
+hkdf = "0.12"
+hmac = "0.12"
+p256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha1 = "0.10"
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"

@@ -12,14 +12,19 @@ on paired machines. The `kimo` command talks to them. `KIMO_SESSION` is your own
 
 ```bash
 kimo whoami                       # your id, name and folder
-kimo agents                       # every agent: ID, NAME, KIND, STATE, RESUME ID, FOLDER
+kimo agents                       # every agent: ID, NAME, KIND, STATE, RESUME, FOLDER
 kimo send <id|name> "message"     # type a message into another agent (signed with your id)
 kimo wait <id|name>               # block until it stops working (idle, needs input or stopped)
 kimo read <id|name>               # its last answer (from its own transcript)
 kimo read <id|name> --screen      # its recent terminal screen instead
 kimo new claude --name reviewer --prompt "Review src/parser.rs and report problems"
 kimo new codex --cwd ~/dev/api --prompt "…"   # start a helper agent in another folder
+kimo history                      # earlier conversations here, each with an 8-character ID
+kimo continue c9c7d155            # continue one (from any folder) here, as a kimo agent
 ```
+
+When the person asks how to come back to a conversation, give its 8-character id (RESUME in
+`kimo agents`): `kimo continue <id>` works from any folder, and moves it there.
 
 Ids from paired machines look like `gpu-lab/api-refactor-1a2b`; use them the same way.
 

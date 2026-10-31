@@ -119,6 +119,9 @@ notices, revokes that key and stops, so update kimo there first.
 |---|---|---|---|
 | `nuc-11-extreme` | gpu-worker | woken, off when idle | BIOS: Wake-on-LAN from S5 |
 | `nuc-11-enthusiast` | build-worker | woken, off when idle | same BIOS settings |
+| `nuc-13-extreme` | gpu-worker | woken, off when idle | same BIOS settings |
+| `gaming-laptop` | build-worker | never woken | used when open and plugged in |
+| `rpi-zero-2w` | spare | left on | too small for kimo: watched by ping |
 | `linux-gpu-pc` | gpu-worker | woken, off when idle | `ethtool -s <card> wol g` |
 | `jetson-orin-nano` | edge-target | always on | no Wake-on-LAN |
 | `rpi5`, `rpi5-hailo` | agent-host | always on | about 3 W |
@@ -149,12 +152,20 @@ devices:
     cost: 40                                # idle watts: cheaper machines are chosen first
     model: nuc-11-extreme                   # hardware model (optional; the map draws it)
     role: gpu-worker                        # also a label (optional)
+    zerotier: 10.147.17.21                  # its addresses, for the mesh and the map (optional)
+    tailscale: nuc-extreme
+    user: demo                              # its account, for the mesh (optional)
+    alias: znuc                             # its SSH shortcut (default: z + its id)
+    plug: { address: 192.168.1.50 }         # its smart plug (optional)
   macbook-air:
     kimo: http://10.147.17.30:7777
     power: { wake: never, sleep: never }    # used when awake, never woken
     labels: [macos, arm64, xcode]
 ```
 
+- **`kimo`** can be left out if `zerotier` or `tailscale` is there: a board too small to run it,
+  watched by ping and given no work.
+- **`power.wake`**: `wol`, `plug` or `never`.
 - **`labels`** add to what the machine reports itself:
   - `x86_64`/`arm64`, `linux`/`macos`
   - `cuda`, `jetson` + `tensorrt`, `rpi`, `hailo-10h`, `xcode`
@@ -196,6 +207,80 @@ A machine's state is one of:
   - wake now, or switch off now (refused while jobs run there).
 - **Limits.** At most `boots_per_day` automatic cold boots. Machines that cannot be woken
   (laptops, boards) are used when they answer, and jobs for them wait.
+
+## Smart plugs
+
+A machine can sit on a smart plug (a Tapo P110 and the like):
+
+```yaml
+nuc-extreme:
+  kimo: http://10.147.17.21:7777
+  plug: { address: 192.168.1.50 }
+remote-nuc:
+  kimo: http://10.147.17.40:7777
+  user: demo
+  zerotier: 10.147.17.40
+  plug: { address: 172.16.0.40, via: remote-nuc }   # on another LAN: an SSH tunnel through that machine
+```
+
+- **Login.** Run `kimo-fleet plug-login` once, or use the Fleet tab, with your TP-Link account's
+  password. Only its hash is kept (`plug-credential`, mode 600), and it never leaves the
+  coordinator, even through a tunnel.
+- **Reading.** Each plug is read every minute (every 5 through a tunnel): on or off, watts,
+  today's energy. `devices` carries it as `plug`.
+- **Switching.** `kimo-fleet plug <id> on|off|restart`, the Fleet tab, the map or the window.
+  Restart switches off for 8 seconds and on again, so set the machine's BIOS to start when
+  power returns.
+- **Waking.** `power: { wake: plug }` makes a wake go through the plug: on if it is off, off and
+  on if it is on and the machine is not (only when its kimo does not answer and it does not
+  answer a ping either). Switching the plug back on is tried three times; if it stays off you
+  are told.
+
+Cutting power is like pulling the cable, so:
+
+| Situation | What happens |
+|---|---|
+| jobs, agents, terminals or logins on it | refused (409), naming them; `force` overrules |
+| it is up with no kimo to ask | refused (409); `force` overrules |
+| the plug is reached through the machine it powers | **off** refused, even with `force`: nothing could switch it on again. **Restart** arms the plug's own timer first, and checks the plug kept it, before cutting |
+| the coordinator runs on it | the same |
+
+A machine that is off cannot be its own tunnel: `via` itself restarts a machine that is on, but
+cannot start one that is off. For that, keep an always-on machine on the same network and
+use it as `via`.
+
+These plugs have no public local API. kimo speaks TPAP (SPAKE2+ then AES-128-CCM), what they use
+since firmware 1.4, worked out by the community; a firmware update can change it. Older
+firmware that speaks KLAP is not supported. A plug can also stop answering locally for
+some minutes after it loses power itself.
+
+## The SSH mesh
+
+For agents to use several machines as one, each should reach the others directly. Give machines
+an account and an address, and say who is restricted:
+
+```yaml
+mesh:
+  restricted: [guest]     # can be logged in to; needs a password to reach the others
+devices:
+  nuc-extreme: { kimo: "http://10.147.17.21:7777", zerotier: 10.147.17.21, tailscale: nuc-extreme, user: demo, alias: znuc }
+  guest: { zerotier: 10.147.17.60, user: demo, alias: guest }
+```
+
+- **Check** (`kimo-fleet mesh`, *check now*, and every 30 minutes): the coordinator logs in to each
+  machine and has it try all the others, on each network they share. Nothing is changed or
+  saved on them. The result is a table in the Fleet tab and lines on the map. `pw` is a restricted
+  machine needing a password, as intended; a passwordless login out of one is a violation.
+- **Apply** (`kimo-fleet mesh apply`, *set up shortcuts and keys*): writes
+  `~/.ssh/config.d/kimo-mesh` with every shortcut and one `Include` line in `~/.ssh/config`, makes
+  a key on machines without a usable one (`zt_ed25519` when their own has a passphrase), and
+  sets `authorized_keys` to match the rule. It takes back only keys it handed out itself,
+  from `mesh-keys.json`: a machine removed or made restricted loses access; your other keys stay.
+  Restricted machines get shortcuts and no key. The first run backs up what it changes
+  (`*.bak-before-kimo-mesh`).
+- **The coordinator** needs SSH access to every machine with its own key first.
+- A `check` result on Tailscale means Tailscale SSH wants a browser approval there. ZeroTier goes
+  to the machine's OpenSSH instead. Keys on other accounts, such as `root`, are not looked at.
 
 ## Jobs and workflows
 
@@ -284,7 +369,10 @@ kimo-fleet add <address> [--model m --role r --user u --id id --code CODE --rein
 kimo-fleet remove <id>           a machine added with `add` (entry and keys)
 kimo-fleet models                hardware models and roles
 kimo-fleet pair <id> <code>      pair with a machine (code from `kimo pair` there)
-kimo-fleet wake <id>             Wake-on-LAN
+kimo-fleet wake <id>             Wake-on-LAN, or its plug
+kimo-fleet plug <id> [on|off|restart] [--force]   read or switch its smart plug
+kimo-fleet plug-login            keep a hash of your TP-Link password (asks for it)
+kimo-fleet mesh [check|apply]    who reaches whom over SSH; make it match the registry
 kimo-fleet shutdown <id>         switch off (refused while work runs there)
 kimo-fleet hold <id> --hours 2 | --never | --manual | --auto
 kimo-fleet run <file.yaml>       a job or a workflow
@@ -306,6 +394,10 @@ All calls are under `/api` on the coordinator, and under `/api/fleet` on its kim
 | GET | `/devices`, `/devices/{id}` | machines: `{id, state, power, labels, facts, jobs, paired, can_wake, auto_shutdown, shutdown_at, keep_on_until, never_auto_shutdown, manual, boots_today, last_seen, error, registry}` |
 | POST | `/devices/{id}/wake`, `/shutdown` | wake it; switch it off |
 | POST | `/devices/{id}/hold` | `{hours?, never?, manual?}` |
+| GET, POST | `/devices/{id}/plug` | what its plug says now: `{address, via, status: {on, watts, today_wh, month_wh, model, firmware, on_seconds}, at, error}`; POST `{action: on\|off\|cycle, force?}` switches it (409: work runs there, `force` overrules) |
+| GET, PUT, DELETE | `/plug-credential` | `{set}`; PUT `{password}` keeps its hash; DELETE forgets it |
+| GET | `/mesh` | the last check: `{running, at, nodes, links: [{from, to, network, expect: key\|password\|either, found: ok\|nokey\|blocked\|off\|check\|down, as_intended}], untested, violations}` |
+| POST | `/mesh/check`, `/mesh/apply` | check again (in the background); make the machines match the registry |
 | POST | `/devices/{id}/pair` | `{code}`; DELETE `/devices/{id}/key` forgets the key |
 | GET | `/hardware` | hardware models and roles |
 | GET | `/discover` | machines on Tailscale and ZeroTier: `{tailscale, zerotier, notes, machines: [{name, address, network, os, online, self, can_run_kimo, id, in_fleet, kimo, ssh, model, role}]}` |
@@ -325,6 +417,7 @@ All calls are under `/api` on the coordinator, and under `/api/fleet` on its kim
 - **The coordinator's data dir** (`~/.kimo-fleet/`):
   - `devices.yaml`
   - `keys.json` (mode 600)
+  - `plug-credential` (mode 600), `mesh-keys.json`
   - `fleet.db` (SQLite: events, samples, machine states, jobs, workflows)
   - `logs/`
   - `artifacts/` (unused ones go after 30 days)
@@ -351,8 +444,15 @@ machines on local ports:
 **Verified by hand** on a Mac: the Fleet tab in a phone-sized browser (pair state, approve, a
 job's log, a job queued from the phone).
 
+**Verified on real machines (a Mac as coordinator, 8 machines):** the SSH mesh check over ZeroTier and
+Tailscale, and reading each plug's protocol without logging in. **By tests only:** the plug's login,
+switching and guards, against a stand-in on a local port and a vector from a reference
+implementation, and `mesh apply` (its scripts, on a temporary home).
+
 **Not verified:**
 
+- logging in to and switching a real plug, the plug's own timer used by a restart through itself,
+  and `kimo-fleet mesh apply` on real machines;
 - real Wake-on-LAN on the NUCs;
 - `systemctl poweroff` under a user service;
 - `nvidia-smi`, Jetson and Hailo facts on real hardware;

@@ -49,6 +49,55 @@ export const MACHINES = [
     facts: null,
   },
 ];
+// Every machine is also on a ZeroTier network (10.144.10.x, invented): the second way in.
+for (const [i, m] of MACHINES.entries()) Object.assign(m, { zt: `10.144.10.${11 + i}`, user: 'demo' });
+
+/** Smart plugs (Tapo P110s on the LAN, invented addresses). watch-pi starts when its plug comes on. */
+export const PLUGS = {
+  'gpu-box': { address: '192.168.50.61', watts: 186, today_wh: 2140 },
+  builder: { address: '192.168.50.62', watts: 14, today_wh: 310 },
+  'watch-pi': { address: '192.168.50.63', via: 'builder', watts: 3, today_wh: 62 },
+};
+
+/** A machine's plug as the coordinator reports it (`plug` on a device), or null. */
+export function plug(m) {
+  const p = PLUGS[m.id];
+  if (!p) return null;
+  const on = m.state !== 'off';
+  const watts = !on ? 0 : m.state === 'busy' ? p.watts : Math.max(1, Math.round(p.watts * 0.35));
+  return {
+    address: p.address, via: p.via, at: Date.now() - 20_000,
+    status: { on, watts, today_wh: p.today_wh, month_wh: p.today_wh * 23, model: 'P110', firmware: '1.4.1', on_seconds: on ? 9 * 3600 : 0 },
+  };
+}
+
+/**
+ * The last SSH mesh check: every machine that is up tries every other on both networks.
+ * watch-pi is restricted (it can be logged in to, but needs a password to reach the others);
+ * Tailscale SSH on the jetson asks for a browser check, which ZeroTier shows is not a problem.
+ */
+export function mesh() {
+  const up = MACHINES.filter(m => m.state !== 'off' && m.state !== 'waking');
+  const restricted = ['watch-pi'];
+  const links = [];
+  for (const from of up) {
+    for (const to of up) {
+      if (from === to) continue;
+      const expect = restricted.includes(from.id) ? 'password' : 'key';
+      for (const network of ['zerotier', 'tailscale']) {
+        const found = expect === 'password' ? 'nokey' : network === 'tailscale' && to.id === 'jetson' ? 'check' : 'ok';
+        links.push({ from: from.id, to: to.id, network, expect, found, as_intended: found !== 'check' });
+      }
+    }
+  }
+  return {
+    running: false, at: now - 6 * min,
+    nodes: MACHINES.map(m => ({ id: m.id, alias: `z${m.id}`, user: m.user, zerotier: m.zt, tailscale: m.ip, restricted: restricted.includes(m.id) })),
+    links,
+    untested: MACHINES.filter(m => !up.includes(m)).map(m => ({ id: m.id, why: 'it is off' })),
+    violations: [],
+  };
+}
 
 /** Screens on the tailnet: they reach the fleet through the hub's kimo. */
 export const SCREENS = [
@@ -151,8 +200,8 @@ export function fleetDevices() {
   return MACHINES.map(m => {
     const facts = node(m);
     const registry = {
-      kimo: `http://${m.ip}:7777`, mac: m.mac, broadcast: m.mac ? '192.168.50.255' : undefined,
-      power: m.mac ? { wake: 'wol', sleep: 'shutdown', idle_minutes: 20, boot_deadline_s: 180, boots_per_day: 10 } : { wake: 'never', sleep: 'never', idle_minutes: 20, boot_deadline_s: 180, boots_per_day: 10 },
+      kimo: `http://${m.ip}:7777`, zerotier: m.zt, user: m.user, plug: PLUGS[m.id] ? { address: PLUGS[m.id].address, via: PLUGS[m.id].via } : undefined, mac: m.mac, broadcast: m.mac ? '192.168.50.255' : undefined,
+      power: m.id === 'watch-pi' ? { wake: 'plug', sleep: 'never', idle_minutes: 20, boot_deadline_s: 180, boots_per_day: 10 } : m.mac ? { wake: 'wol', sleep: 'shutdown', idle_minutes: 20, boot_deadline_s: 180, boots_per_day: 10 } : { wake: 'never', sleep: 'never', idle_minutes: 20, boot_deadline_s: 180, boots_per_day: 10 },
       labels: ROLE_LABEL[m.role] || [], resources: { gpu: facts?.gpus?.length || 0, cpu_slots: m.role === 'spare' ? 0 : 2 },
       cost: { 'gpu-worker': 40, 'build-worker': 18, 'agent-host': 3, 'edge-target': 5, 'apple-builder': 4, spare: 3 }[m.role],
       model: m.model, role: m.role,
@@ -161,8 +210,8 @@ export function fleetDevices() {
       id: m.id, kimo: registry.kimo, labels: [...new Set([...(registry.labels || []), m.role, ...(facts?.labels || [])])], registry,
       state: m.state, power: m.state, since: now - 40 * min, manual: false, never_auto_shutdown: false,
       shutdown_at: m.state === 'idle' ? now + 14 * min : undefined, last_seen: m.state === 'off' ? now - (m.seen || 0) : now - 5000,
-      paired: true, can_wake: !!m.mac, auto_shutdown: !!m.mac, boots_today: m.mac ? 1 : 0,
-      facts, jobs: m.id === 'gpu-box' ? ['j-train-v3'] : [], added: ['jetson', 'watch-pi'].includes(m.id),
+      paired: true, can_wake: !!m.mac || m.id === 'watch-pi', plug: plug(m), auto_shutdown: !!m.mac, boots_today: m.mac ? 1 : 0,
+      facts, jobs: m.id === 'gpu-box' && m.state !== 'off' ? ['j-train-v3'] : [], added: ['jetson', 'watch-pi'].includes(m.id),
     };
   });
 }
@@ -210,7 +259,7 @@ export function fleetEvents() {
   ].sort((a, b) => b.at - a.at);
 }
 
-export const FLEET_STATUS = { version: '0.1.15', host: 'studio', devices: MACHINES.length, registry: '~/.kimo-fleet/devices.yaml', jobs: { ready: 0, waiting_device: 1, running: 1, awaiting_approval: 0 } };
+export const FLEET_STATUS = { version: '0.1.15', host: 'studio', devices: MACHINES.length, registry: '~/.kimo-fleet/devices.yaml', plug_credential: true, jobs: { ready: 0, waiting_device: 1, running: 1, awaiting_approval: 0 } };
 
 /** Plan limits for the subscriptions (`/api/usage`). */
 export function usage() {

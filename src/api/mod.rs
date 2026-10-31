@@ -149,6 +149,7 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/projects/{id}/git/push", post(files::push))
         .route("/projects/{id}/git/pr", post(files::pull_request))
         .route("/conversations", get(list_conversations))
+        .route("/conversations/find", get(find_conversation))
         .route("/conversations/continue", post(continue_conversation))
         .route("/fs", get(browse).post(make_folder))
         .route("/network", get(network))
@@ -165,6 +166,8 @@ pub fn router(manager: Arc<Manager>, options: Options) -> Router {
         .route("/update", get(check_update).post(install_update))
         .route("/ports", get(ports))
         .route("/node", get(node))
+        .route("/models", get(device_models))
+        .route("/models/{file}", get(device_model))
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/{id}", get(get_job).delete(delete_job))
         .route("/jobs/{id}/log", get(job_log))
@@ -936,6 +939,36 @@ async fn node(State(app): State<App>) -> ApiResult<serde_json::Value> {
     Ok(Json(json!(node)))
 }
 
+/// The device models this machine holds (`scripts/device-models`): `{models: [{kind, file, …}]}`.
+/// None on a fresh install: clients then draw their own shapes.
+async fn device_models(State(app): State<App>) -> Json<serde_json::Value> {
+    let path = app.manager.cfg.data_dir.join("models").join("index.json");
+    let index = std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .filter(|v| v["models"].is_array());
+    Json(index.unwrap_or_else(|| json!({ "models": [] })))
+}
+
+/// One model's file. They change only when rebuilt, and the index gives their size to ask by.
+async fn device_model(State(app): State<App>, Path(file): Path<String>) -> Response {
+    if !access::safe_model_file(&file) {
+        return denied(StatusCode::NOT_FOUND, "no such model");
+    }
+    let path = app.manager.cfg.data_dir.join("models").join(&file);
+    match tokio::fs::read(path).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, "model/gltf-binary"),
+                (header::CACHE_CONTROL, "private, max-age=86400"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => denied(StatusCode::NOT_FOUND, "no such model"),
+    }
+}
+
 /// Run a blocking manager call off the async threads.
 async fn blocking<T: Send + 'static>(
     app: &App,
@@ -1222,10 +1255,28 @@ async fn list_conversations(
     Ok(Json(json!(list)))
 }
 
+/// `?id=`: the conversation whose id starts with it (8 characters are plenty), in any folder.
+async fn find_conversation(
+    State(app): State<App>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<serde_json::Value> {
+    let id = q.get("id").cloned().ok_or_else(|| not_found("id"))?;
+    let found = blocking(&app, move |m| m.find_conversation(&id))
+        .await
+        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.1))?;
+    Ok(Json(json!(found)))
+}
+
 #[derive(Deserialize)]
 struct ContinueBody {
-    agent: crate::core::models::SessionKind,
-    cwd: String,
+    /// Found from `id` when left out.
+    #[serde(default)]
+    agent: Option<crate::core::models::SessionKind>,
+    /// Where to continue it (default: where it went on last). Claude's transcript is copied
+    /// there when it lives in another folder.
+    #[serde(default)]
+    cwd: Option<String>,
+    /// Its id, or the beginning of it.
     id: String,
     #[serde(default)]
     name: Option<String>,
@@ -1240,7 +1291,21 @@ async fn continue_conversation(
 ) -> ApiResult<serde_json::Value> {
     let manager = app.manager.clone();
     let session = tokio::task::spawn_blocking(move || {
-        manager.continue_conversation(b.agent, &b.cwd, &b.id, b.name, b.start)
+        let (agent, cwd, id) = match (b.agent, b.cwd) {
+            (Some(agent), Some(cwd)) if b.id.len() >= 32 => (agent, cwd, b.id),
+            (agent, cwd) => {
+                let found = manager.find_conversation(&b.id)?;
+                (
+                    agent.unwrap_or(found.agent),
+                    cwd.unwrap_or(found.cwd),
+                    found.id,
+                )
+            }
+        };
+        if cwd.is_empty() {
+            anyhow::bail!("say which folder to continue it in");
+        }
+        manager.continue_conversation(agent, &cwd, &id, b.name, b.start)
     })
     .await
     .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;

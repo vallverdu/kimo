@@ -746,3 +746,55 @@ async fn sign_in_terminals_go_away_when_done() {
     assert!(m.session(&left.spec.id).is_none());
     assert_eq!(m.accounts().len(), 1, "the account itself stays");
 }
+
+#[tokio::test]
+async fn a_conversation_is_found_by_its_short_id_and_moves_where_it_continues() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let (first, second) = (tmp.path().join("first"), tmp.path().join("second"));
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    fake_agents();
+    let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap().display().to_string();
+    let (first, second) = (canon(&first), canon(&second));
+    let id = "c9c7d155-162c-412f-a4c9-0ea2c7798f92";
+    let projects = home.join(".claude/projects");
+    let from = projects.join(kimo::core::history::claude_dir_name(&first));
+    std::fs::create_dir_all(&from).unwrap();
+    std::fs::write(
+        from.join(format!("{id}.jsonl")),
+        serde_json::json!({"type":"user","cwd":first,"sessionId":id,"message":{"content":"Set up the mesh"}})
+            .to_string(),
+    )
+    .unwrap();
+
+    let m = manager(tmp.path());
+    let found = m.find_conversation("c9c7d155").unwrap();
+    assert_eq!((found.id.as_str(), found.short.as_str()), (id, "c9c7d155"));
+    assert_eq!(found.cwd, first);
+    assert!(m.find_conversation("c9c").is_err(), "too short to be sure");
+    assert!(m.find_conversation("../c9c7").is_err());
+
+    // Continued in another folder: Claude finds it there because kimo copied it.
+    let s = m
+        .continue_conversation(SessionKind::Claude, &second, &found.id, None, true)
+        .unwrap();
+    wait_for(&m, &s.spec.id, &format!("ARGS=--resume {id}")).await;
+    let to = projects.join(kimo::core::history::claude_dir_name(&second));
+    assert!(to.join(format!("{id}.jsonl")).exists());
+    assert!(
+        from.join(format!("{id}.jsonl")).exists(),
+        "the original stays"
+    );
+    // Once it goes on there, it is one of that folder's conversations.
+    std::fs::write(
+        to.join(format!("{id}.jsonl")),
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"user","cwd":first,"sessionId":id,"message":{"content":"Set up the mesh"}}),
+            serde_json::json!({"type":"user","cwd":second,"message":{"content":"And now here"}})
+        ),
+    )
+    .unwrap();
+    assert_eq!(m.conversations(&second)[0].short, "c9c7d155");
+}

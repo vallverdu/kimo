@@ -96,6 +96,22 @@ pub enum Command {
     Wake { device: String },
     /// Switch a machine off (refused while work runs there).
     Shutdown { device: String },
+    /// A machine's smart plug: what it says, or on / off / restart.
+    Plug {
+        device: String,
+        /// on, off or restart (default: show it).
+        action: Option<String>,
+        /// Cut the power even if something runs there.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Keep the hash of your TP-Link account's password, for the plugs (asks for it).
+    PlugLogin,
+    /// The SSH mesh: check who reaches whom (default), or `apply` the registry's rule.
+    Mesh {
+        /// check or apply.
+        action: Option<String>,
+    },
     /// Keep a machine on, never switch it off, take control, or give it back.
     Hold {
         device: String,

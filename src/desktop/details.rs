@@ -992,8 +992,9 @@ impl KimoApp {
                     );
                     ui.label(
                         RichText::new(format!(
-                            "{} · {} · {} ask{}{}",
+                            "{} · {} · {} · {} ask{}{}",
                             s(c, "agent"),
+                            s(c, "short"),
                             ago(now_ms, c["updated_at"].as_u64().unwrap_or(0)),
                             c["messages"].as_u64().unwrap_or(0),
                             if c["messages"].as_u64() == Some(1) {

@@ -1,8 +1,9 @@
 // Demonstration data for the map: a stand-in for the SDK calls the map makes (status, tailnet,
-// hosts, sessions, fleet devices, and each kimo's projects and node facts) over an invented
-// world, so the map runs without a kimo, e.g. on the website. Pass it the world of
-// scripts/demo/world.mjs, the same one the screenshots show. Agents start and finish work on
-// every poll, and "wake" brings an off machine up a few polls later. Nothing here is real.
+// hosts, sessions, fleet devices, the SSH mesh, smart plugs, and each kimo's projects and node
+// facts) over an invented world, so the map runs without a kimo, e.g. on the website. Pass it
+// the world of scripts/demo/world.mjs, the same one the screenshots show. Agents start and
+// finish work on every poll; "wake" or a plug brings an off machine up a few polls later, and a
+// plug can switch one off. Nothing here is real.
 
 /** A stand-in for `new Kimo(...)` with the calls the map makes, over `world`. */
 export function demoApi(world) {
@@ -38,10 +39,23 @@ export function demoApi(world) {
       m.facts ||= { os: 'macos', arch: 'aarch64', model: 'Mac16,12', cpus: 10, mem: 16, free: 9.2, load: 0.6, disk: [512, 301] };
       delete m.seen;
     }
-    for (const m of MACHINES) if (m.state === 'waking' && m.wakeIn <= 0) m.state = 'ready';
+    // Back up: gpu-box picks its training up again.
+    for (const m of MACHINES) if (m.state === 'waking' && m.wakeIn <= 0) m.state = m.id === 'gpu-box' ? 'busy' : 'ready';
     settle();
   }
   settle();
+
+  // A plug, switched: cutting power where the training job runs needs `force`, as on a real coordinator.
+  function plugAction(m, action, force) {
+    if (!m || !world.PLUGS[m.id]) throw new Error(`${m?.name || 'that machine'} has no plug`);
+    const cuts = action === 'off' || action === 'cycle';
+    if (cuts && !force && m.id === 'gpu-box' && m.state !== 'off') {
+      throw Object.assign(new Error('segmentation train runs on gpu-box: cutting the power stops it.'), { status: 409 });
+    }
+    if (action === 'off') m.state = 'off';
+    else if (action === 'cycle' || m.state === 'off') Object.assign(m, { state: 'waking', wakeIn: 3 });
+    return world.plug(m);
+  }
 
   const answers = m => (m && m.state !== 'off' && m.state !== 'waking' && m.facts ? Promise.resolve() : Promise.reject(new Error(`${m?.name} does not answer`)));
   const host = name => {
@@ -61,15 +75,21 @@ export function demoApi(world) {
         }
         throw new Error(`the demo has no ${method} ${path}`);
       },
+      models: async () => ({ models: [] }),
+      modelBytes: async () => { throw new Error('the demo has no device models'); },
       projects: () => answers(m).then(projects),
       node: () => answers(m).then(() => world.node(m)),
       fleet: {
         devices: async () => world.fleetDevices(),
+        status: async () => world.FLEET_STATUS,
+        mesh: async () => world.mesh(),
         wake: async id => {
           const w = byName(id);
           if (w && w.state === 'off') Object.assign(w, { state: 'waking', wakeIn: 3 });
           return { ok: true };
         },
+        plug: async id => world.plug(byName(id)),
+        plugAction: async (id, action, { force = false } = {}) => plugAction(byName(id), action, force),
       },
     };
   };

@@ -101,6 +101,12 @@
 			<div id="fleet-alerts"></div>
 			<h3 class="ui-section-title">Machines</h3>
 			<ul class="k-sessions" id="fleet-devices"></ul>
+			<h3 class="ui-section-title">SSH mesh</h3>
+			<p class="k-hint">Each machine tries to log in to every other, over ZeroTier. <b>ok</b> no password, <b>pw</b> needs a password as intended, <b>key</b> reachable but no key, <b>fw</b> pings but SSH is blocked, <b>off</b> SSH not running, <b>check</b> Tailscale SSH wants a browser check, <b>down</b> no answer.</p>
+			<div class="k-mesh" id="fleet-mesh"></div>
+			<div class="k-actions"><button class="ui-button k-small" type="button" id="fleet-mesh-check">check now</button><button class="ui-button ghost k-small" type="button" id="fleet-mesh-apply">set up shortcuts and keys</button></div>
+			<h3 class="ui-section-title">Smart plugs</h3>
+			<div id="fleet-plugs"></div>
 			<h3 class="ui-section-title">Jobs</h3>
 			<ul class="k-sessions" id="fleet-jobs"></ul>
 			<h3 class="ui-section-title">Workflows</h3>
@@ -110,7 +116,7 @@
 		</section>
 		<section id="view-map" hidden>
 			<h1 class="ui-page-title">Map</h1>
-			<p class="ui-lead">Every machine and phone on your tailnet, what each one runs, and work moving between them. Live while this page is open.</p>
+			<p class="ui-lead">Every machine and phone on your networks, what each one runs, who can reach whom, and work moving between them. Live while this page is open.</p>
 			<div id="map-alerts"></div>
 			<p class="k-map-summary" id="map-summary"></p>
 			<div class="k-map-wrap">
@@ -121,6 +127,7 @@
 						<button class="ui-button ghost k-small" id="map-all" type="button">All</button>
 						<button class="ui-button ghost k-small" id="map-top" type="button" aria-pressed="false">Top</button>
 						<label class="k-map-check"><input type="checkbox" id="map-labels" checked> Labels</label>
+						<label class="k-map-check"><input type="checkbox" id="map-mesh" checked> Mesh</label>
 					</div>
 				</div>
 				<aside class="k-map-panel" id="map-panel"><p class="k-hint">Tap a machine to see what it runs.</p></aside>
@@ -305,6 +312,7 @@ steps:
 	<dialog class="ui-sheet" id="sheet-history"><form method="dialog">
 		<h3 id="history-title">Earlier conversations</h3>
 		<ul class="k-history" id="history-list"></ul>
+		<div class="k-new-folder"><input id="history-id" placeholder="id from another folder, e.g. c9c7d155" autocomplete="off" autocapitalize="off" spellcheck="false"><button type="button" class="ui-button ghost k-small" data-do="continue-id">continue here</button></div>
 		<div class="ui-sheet-actions"><button type="button" class="ui-button ghost" value="cancel">Close</button></div>
 	</form></dialog>
 

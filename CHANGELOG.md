@@ -3,6 +3,48 @@
 Changes since the last release collect under *Unreleased*; a release renames it to its
 version, and that section becomes the GitHub release notes.
 
+## Unreleased
+
+- **Your real hardware on the map.** The Map tab and a new **Network** view in the window draw
+  each machine from its CAD model when this kimo holds one, and from its usual shape when it does
+  not. `scripts/device-models/build.py` turns STEP or GLB files into small models in
+  `~/.kimo/models`; they stay out of the repository because most vendors' files may not be
+  redistributed. New `GET /api/models`, `GET /api/models/{file}` and SDK `models()`, `modelBytes()`.
+- **The window has a map.** **Network**: every machine in 3D with depth, its status, the SSH mesh,
+  its power and its plug; find, add and remove machines. Same data as the Map tab, through the API.
+- **SSH mesh.** The coordinator has each machine try to log in to every other, on ZeroTier and
+  Tailscale, and shows the result as a table in the Fleet tab and as lines on the map.
+  `mesh: { restricted: [...] }` in the registry names machines that can be logged in to but must
+  need a password to reach the others; a passwordless login out of one is reported as a problem.
+  *set up shortcuts and keys* (`kimo-fleet mesh apply`) makes the machines match: one shortcut
+  file on all of them and keys where the rule allows, taking back only keys it handed out itself.
+  New `GET /mesh`, `POST /mesh/check`, `POST /mesh/apply`.
+- **Smart plugs.** `plug: { address, via }` on a machine: read its power and switch it (on, off,
+  restart) from the Fleet tab, the map, the window, `kimo-fleet plug` or SDK `plugAction()`. Speaks
+  TPAP, what Tapo P110s use since firmware 1.4; unofficial, so a firmware update can break it.
+  `power: { wake: plug }` boots a machine set to start when power returns. Cutting power is
+  refused while work runs there (`force` overrules that) and never allowed when nothing could
+  bring the machine back; `via` reaches a plug on another LAN through an SSH tunnel. Only a hash
+  of the TP-Link password is kept (`kimo-fleet plug-login`, mode 600).
+- **Machines without a kimo.** A registry entry can have `zerotier` or `tailscale` instead of
+  `kimo`, for boards too small to run it: watched by ping, given no work. Also `user`, `alias`.
+- New hardware models: `nuc-13-extreme`, `gaming-laptop`, `rpi-zero-2w`.
+- **Short conversation ids.** Every Claude and Codex conversation has an 8-character id
+  (`c9c7d155`) in *history*, on each agent and in `kimo agents` / `kimo history`.
+  `kimo continue <id>` and *continue here* in a project's history find it in any folder and
+  continue it there, copying a Claude transcript over so `--resume` finds it. A conversation that
+  started in one folder and went on in another is listed in both. New
+  `GET /api/conversations/find?id=` and SDK `findConversation()`; `POST /conversations/continue`
+  takes just an id.
+- **Safer plugs.** A wake through a plug cuts power only when nothing says the machine is up
+  (its kimo, or a ping); switching a plug back on after a restart is retried, and a person is
+  told when it stays off. The window and the API tell a refusal `force` can overrule (409) from one
+  it cannot by its type, not its wording.
+- **Device models can't take a window down.** The model readers (window and web) refuse files
+  with node loops, overlapping items or more than 4 million vertices instead of hanging or
+  running out of memory; the map draws that machine's shape.
+- CI runs the web client tests (`tests/js/*.mjs`).
+
 ## 0.1.15
 
 - **Map tab**: every machine and phone on your tailnet in 3D, drawn to scale and linked to

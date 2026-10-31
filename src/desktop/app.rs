@@ -26,6 +26,7 @@ enum View {
     Skills,
     Settings,
     Devices,
+    Network,
 }
 
 /// Results of background calls.
@@ -249,6 +250,8 @@ pub struct KimoApp {
     peer_code: String,
     /// The history dialog: project name, folder, conversations.
     history: Option<(String, String, Vec<Value>)>,
+    /// A conversation id typed in that dialog, to continue in its project from any folder.
+    history_id: String,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     view: View,
@@ -325,6 +328,8 @@ pub struct KimoApp {
     last_usage: Instant,
     /// CPU of each project over the last minutes (bottom bar, resources).
     cpu_history: std::collections::HashMap<String, std::collections::VecDeque<f32>>,
+    /// The machines in 3D, their mesh and their power.
+    network_view: super::network::NetworkView,
     /// A capture for the README (`KIMO_CAPTURE`): when it started, and how far it got.
     capture_started: Option<Instant>,
     capture_step: u8,
@@ -482,11 +487,13 @@ impl KimoApp {
             peer_url: String::new(),
             peer_code: String::new(),
             history: None,
+            history_id: String::new(),
             logo,
             ctx,
             tx,
             rx,
             view: View::Terminals,
+            network_view: Default::default(),
             projects: vec![],
             status: Value::Null,
             settings: None,
@@ -609,6 +616,7 @@ impl KimoApp {
                 Some("skills") => View::Skills,
                 Some("settings") => View::Settings,
                 Some("devices") => View::Devices,
+                Some("network") => View::Network,
                 _ => View::Terminals,
             };
             self.refresh_view();
@@ -1028,6 +1036,7 @@ impl KimoApp {
                 self.job(|c| Ok(Msg::Network(c.get("/network")?)));
                 self.job(|c| Ok(Msg::Apps(c.get("/clients")?)));
             }
+            View::Network => self.network_view.refresh(),
         }
     }
 
@@ -1215,6 +1224,7 @@ impl KimoApp {
                 (View::Skills, "Skills"),
                 (View::Settings, "Settings"),
                 (View::Devices, "Devices"),
+                (View::Network, "Network"),
             ] {
                 let selected = self.view == view;
                 let text = RichText::new(label).size(13.0).color(if selected {
@@ -4219,6 +4229,7 @@ impl KimoApp {
         };
         let mut open = true;
         let mut action: Option<(Value, bool)> = None;
+        let mut moved: Option<String> = None;
         egui::Window::new(format!("Earlier conversations · {name}"))
             .open(&mut open)
             .collapsible(false)
@@ -4264,7 +4275,8 @@ impl KimoApp {
                                         let asks = c["messages"].as_u64().unwrap_or(0);
                                         ui.label(
                                             RichText::new(format!(
-                                                "{ago} · {asks} ask{}",
+                                                "{} · {ago} · {asks} ask{}",
+                                                s(c, "short"),
                                                 if asks == 1 { "" } else { "s" }
                                             ))
                                             .size(10.5)
@@ -4294,7 +4306,25 @@ impl KimoApp {
                             ui.separator();
                         }
                     });
+                // A conversation from any folder, by its id: moved to this project.
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.history_id)
+                            .hint_text("id from another folder, e.g. c9c7d155")
+                            .desired_width(260.0),
+                    );
+                    if ui.button("continue here").clicked() && !self.history_id.trim().is_empty() {
+                        moved = Some(self.history_id.trim().to_string());
+                    }
+                });
             });
+        if let Some(id) = moved {
+            self.history = None;
+            self.history_id.clear();
+            let body = json!({ "id": id, "cwd": folder, "start": true });
+            self.job(move |cl| Ok(Msg::Open(cl.post("/conversations/continue", body)?)));
+            return;
+        }
         if let Some((c, attached)) = action {
             self.history = None;
             if attached {
@@ -5167,6 +5197,11 @@ impl eframe::App for KimoApp {
                 View::Skills => self.skills_view(ui),
                 View::Settings => self.settings_view(ui),
                 View::Devices => self.devices_view(ui),
+                // The fleet and the models belong to this machine's kimo, whichever host is shown.
+                View::Network => {
+                    let client = self.hosts[0].client.clone();
+                    self.network_view.ui(ui, &client);
+                }
             });
         self.project_dialog(&ctx);
         self.history_dialog(&ctx);
@@ -5378,6 +5413,7 @@ mod tests {
             View::Skills,
             View::Settings,
             View::Devices,
+            View::Network,
             View::Terminals,
         ] {
             app.view = view;
