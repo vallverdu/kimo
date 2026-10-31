@@ -165,8 +165,19 @@ impl Fleet {
         mesh::nodes(&self.registry())
     }
 
-    /// Start a check in the background (no-op if one is running). Follow it with `mesh_report`.
+    /// Start a check of every machine in the background (no-op if one is running). Follow it
+    /// with `mesh_report`.
     pub fn mesh_check(self: &Arc<Self>) {
+        self.start_check(false);
+    }
+
+    /// The periodic check: restricted machines (often someone else's, on their network) are
+    /// neither logged in to nor tried from; their links from the last full check are kept.
+    pub(super) fn mesh_check_automatic(self: &Arc<Self>) {
+        self.start_check(true);
+    }
+
+    fn start_check(self: &Arc<Self>, automatic: bool) {
         {
             let mut r = self.mesh.lock().unwrap_or_else(|e| e.into_inner());
             if r.running {
@@ -178,7 +189,7 @@ impl Fleet {
         let spawned = std::thread::Builder::new()
             .name("fleet-mesh".into())
             .spawn(move || {
-                let report = me.run_check();
+                let report = me.run_check(automatic);
                 let mut problems = report.violations.clone();
                 problems.extend(
                     report
@@ -195,13 +206,18 @@ impl Fleet {
         }
     }
 
-    fn run_check(self: &Arc<Self>) -> Report {
+    fn run_check(self: &Arc<Self>, automatic: bool) -> Report {
         let nodes = self.mesh_nodes();
-        let handles: Vec<_> = nodes
+        let tried = if automatic {
+            mesh::periodic(&nodes)
+        } else {
+            nodes.clone()
+        };
+        let handles: Vec<_> = tried
             .iter()
             .cloned()
             .map(|n| {
-                let (me, all) = (self.clone(), nodes.clone());
+                let (me, all) = (self.clone(), tried.clone());
                 std::thread::spawn(move || {
                     let args = mesh::probe_args(&n, &all);
                     let out = me.on_node(&n, &[], mesh::PROBE, &args, 60);
@@ -218,12 +234,16 @@ impl Fleet {
         for h in handles {
             let Ok((n, out)) = h.join() else { continue };
             match out {
-                Ok(text) => report.links.extend(mesh::parse_probe(&n, &nodes, &text)),
+                Ok(text) => report.links.extend(mesh::parse_probe(&n, &tried, &text)),
                 Err(e) => report.untested.push(Untested {
                     id: n.id.clone(),
                     why: format!("{e:#}"),
                 }),
             }
+        }
+        if automatic {
+            let links = std::mem::take(&mut report.links);
+            report.links = mesh::with_restricted_from(links, self.mesh_report().links, &nodes);
         }
         report.violations = report
             .links

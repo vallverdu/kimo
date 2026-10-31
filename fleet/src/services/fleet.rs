@@ -268,6 +268,10 @@ struct Inner {
     /// What each smart plug last said, and when it was last read.
     plugs: BTreeMap<String, plugs::PlugView>,
     plug_looked: BTreeMap<String, u64>,
+    /// Background reads that failed in a row, per plug: they slow down.
+    plug_failures: BTreeMap<String, u32>,
+    /// The plugs refused the password: no background logins until it is set again.
+    plug_refused: bool,
     mesh_checked: u64,
 }
 
@@ -1873,7 +1877,7 @@ impl Fleet {
         self.prune(now);
     }
 
-    /// Check the mesh every so often, if there is one.
+    /// Check the mesh every so often, if there is one (restricted machines only when asked).
     fn mesh_due(self: &Arc<Self>, now: u64) {
         if self.cfg.mesh_every_ms == 0 {
             return;
@@ -1887,7 +1891,7 @@ impl Fleet {
             }
             inner.mesh_checked = now;
         }
-        self.mesh_check();
+        self.mesh_check_automatic();
     }
 
     /// What the status page shows.

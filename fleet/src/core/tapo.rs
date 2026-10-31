@@ -268,6 +268,23 @@ pub fn command(method: &str, params: Option<serde_json::Value>) -> Vec<u8> {
 }
 
 /// A plug's error codes, in plain words where they mean something to its owner.
+/// The plug says the password is wrong. Typed, so the fleet stops logging in again and again
+/// (a lockout would be worse than a missing reading).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasswordRefused;
+
+impl std::fmt::Display for PasswordRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&error_text(-1501))
+    }
+}
+
+impl std::error::Error for PasswordRefused {}
+
+pub fn refuses_password(code: i64) -> bool {
+    matches!(code, -1501 | -2202 | -2203 | -1503)
+}
+
 pub fn error_text(code: i64) -> String {
     match code {
         -1501 | -2202 | -2203 | -1503 => {

@@ -136,6 +136,7 @@ fn post_json(agent: &ureq::Agent, base: &str, params: Value) -> Result<Value> {
         .map_err(|_| anyhow!("the plug answered {status} with something that is not JSON"))?;
     match v["error_code"].as_i64().unwrap_or(0) {
         0 => Ok(v["result"].clone()),
+        code if tapo::refuses_password(code) => Err(tapo::PasswordRefused.into()),
         code => bail!("{}", tapo::error_text(code)),
     }
 }
@@ -173,7 +174,7 @@ impl Session {
             Attempt::Done(c, s, q) => (c, s, q),
             Attempt::Refused(error) => match Self::login(&agent, &base, credential, true)? {
                 Attempt::Done(c, s, q) => (c, s, q),
-                Attempt::Refused(_) => bail!("{error}"),
+                Attempt::Refused(_) => return Err(error),
             },
         };
         Ok(Self {
@@ -243,7 +244,7 @@ impl Session {
         let share = match share {
             Ok(s) => s,
             // The other hash is only worth trying when the two differ.
-            Err(e) if login.ambiguous() && !full => return Ok(Attempt::Refused(e.to_string())),
+            Err(e) if login.ambiguous() && !full => return Ok(Attempt::Refused(e)),
             Err(e) => return Err(e),
         };
         let confirm = share["dev_confirm"]
@@ -327,7 +328,7 @@ impl Session {
 
 enum Attempt {
     Done(Cipher, String, u32),
-    Refused(String),
+    Refused(anyhow::Error),
 }
 
 /// How long the power stays off in a restart (a NUC needs a moment to notice).
@@ -360,7 +361,10 @@ impl Fleet {
 
     pub fn set_plug_password(&self, password: &str) -> Result<()> {
         save_password(&self.cfg.data_dir, password)?;
-        self.lock().plug_looked.clear();
+        let mut inner = self.lock();
+        inner.plug_looked.clear();
+        inner.plug_failures.clear();
+        inner.plug_refused = false;
         Ok(())
     }
 
@@ -417,18 +421,35 @@ impl Fleet {
         let mut view = self.plug_view(id, &d);
         let now = now_ms();
         view.at = Some(now);
+        let mut refused_now = false;
         let answer = match result {
             Ok(status) => {
                 view.status = Some(status);
                 view.error = None;
+                let mut inner = self.lock();
+                inner.plug_failures.remove(id);
+                inner.plug_refused = false;
                 Ok(view.clone())
             }
             Err(e) => {
                 view.error = Some(format!("{e:#}"));
+                let mut inner = self.lock();
+                *inner.plug_failures.entry(id.to_string()).or_default() += 1;
+                if e.downcast_ref::<tapo::PasswordRefused>().is_some() && !inner.plug_refused {
+                    inner.plug_refused = true;
+                    refused_now = true;
+                }
                 Err(e)
             }
         };
         self.lock().plugs.insert(id.to_string(), view);
+        if refused_now {
+            self.notify(
+                Some(id),
+                None,
+                "the plugs refused the TP-Link password: kimo stopped reading them until you set it again",
+            );
+        }
         answer
     }
 
@@ -443,7 +464,7 @@ impl Fleet {
 
     /// Read each plug every so often (watts for the map), on threads of their own.
     pub(super) fn look_at_plugs(self: &Arc<Self>, now: u64) {
-        if !self.plug_credential_set() {
+        if !self.plug_credential_set() || self.lock().plug_refused {
             return;
         }
         let devices = self.registry().devices;
@@ -456,6 +477,9 @@ impl Fleet {
             };
             {
                 let mut inner = self.lock();
+                // A plug that keeps failing is asked less often: 2, 4, 8, then 16 times later.
+                let failures = inner.plug_failures.get(&id).copied().unwrap_or(0).min(4);
+                let every = every << failures;
                 if inner.plug_looked.get(&id).is_some_and(|t| now < t + every) {
                     continue;
                 }
@@ -828,6 +852,30 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.to_string().contains("refused the password"), "{e}");
+    }
+
+    #[test]
+    fn a_refused_password_stops_the_background_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let plug = Arc::new(Mutex::new(Plug::default()));
+        let port = stand_in(plug.clone());
+        let fleet = fleet_with(
+            dir.path(),
+            &format!("devices:\n  nuc:\n    zerotier: 192.0.2.1\n    user: me\n    plug: {{ address: \"127.0.0.1:{port}\" }}\n"),
+        );
+        fleet.set_plug_password("not the one").unwrap();
+        let e = fleet.plug_status("nuc").unwrap_err();
+        assert!(e.downcast_ref::<tapo::PasswordRefused>().is_some(), "{e:#}");
+        assert!(fleet.lock().plug_refused);
+        // The minute's reads no longer log in: a lockout is worse than a missing reading.
+        fleet.lock().plug_looked.clear();
+        fleet.look_at_plugs(now_ms());
+        assert!(fleet.lock().plug_looked.is_empty());
+        // A new password starts them again.
+        fleet.set_plug_password(PASSWORD).unwrap();
+        assert!(!fleet.lock().plug_refused);
+        assert!(fleet.plug_status("nuc").is_ok());
+        assert!(fleet.lock().plug_failures.is_empty());
     }
 
     #[test]

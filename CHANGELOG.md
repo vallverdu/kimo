@@ -44,6 +44,12 @@ version, and that section becomes the GitHub release notes.
   with node loops, overlapping items or more than 4 million vertices instead of hanging or
   running out of memory; the map draws that machine's shape.
 - CI runs the web client tests (`tests/js/*.mjs`).
+- **Restricted machines are checked only when you ask.** The mesh's 30-minute check no longer logs
+  in to restricted machines or tries from them; *check now* still covers every machine, and
+  their last results stay on the map.
+- **Plugs back off.** A refused TP-Link password stops the background reads (no lockout from
+  logging in every minute) until the password is set again, and says so once; a plug that keeps
+  failing is read less often.
 
 ## 0.1.15
 

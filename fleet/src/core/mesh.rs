@@ -129,6 +129,22 @@ pub struct Link {
     pub as_intended: bool,
 }
 
+/// The machines a periodic check logs in to and tries: not the restricted ones, which are often
+/// someone else's on their network (a check asked for by a person covers every machine).
+pub fn periodic(nodes: &[Node]) -> Vec<Node> {
+    nodes.iter().filter(|n| !n.restricted).cloned().collect()
+}
+
+/// A periodic check's links, plus the restricted machines' links from the last full check.
+pub fn with_restricted_from(mut links: Vec<Link>, last: Vec<Link>, nodes: &[Node]) -> Vec<Link> {
+    let restricted = |id: &str| nodes.iter().any(|n| n.restricted && n.id == id);
+    links.extend(
+        last.into_iter()
+            .filter(|l| restricted(&l.from) || restricted(&l.to)),
+    );
+    links
+}
+
 /// The check, run on each machine with `id network user@address` triples as arguments. Prints
 /// `id network status` per target. Needs only ssh, ping and perl. Host keys are not checked
 /// and not saved: the one remote command is `true`, and BatchMode sends no password.
@@ -448,6 +464,35 @@ devices:
         // A restricted machine can be logged in to by personal machines.
         let (add, _) = keys_for(node(&all, "guest"), &all, &keys, &known);
         assert_eq!(add.len(), 2);
+    }
+
+    #[test]
+    fn periodic_checks_leave_restricted_machines_alone() {
+        let all = world();
+        let tried = periodic(&all);
+        assert!(tried.iter().all(|n| !n.restricted));
+        assert_eq!(tried.len(), 2); // lab and pi; guest and nano only when asked
+                                    // Nobody is told to try a restricted machine either.
+        let args = probe_args(node(&tried, "lab"), &tried);
+        assert!(!args.iter().any(|a| a == "guest" || a == "nano"));
+        // Their links from the last full check stay on the map.
+        let link = |from: &str, to: &str| Link {
+            from: from.into(),
+            to: to.into(),
+            network: "zerotier",
+            expect: Expect::Key,
+            found: Reached::Ok,
+            as_intended: true,
+        };
+        let kept = with_restricted_from(
+            vec![link("lab", "pi")],
+            vec![link("lab", "pi"), link("lab", "guest"), link("guest", "pi")],
+            &all,
+        );
+        assert_eq!(
+            kept,
+            [link("lab", "pi"), link("lab", "guest"), link("guest", "pi")]
+        );
     }
 
     #[test]

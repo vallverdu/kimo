@@ -227,7 +227,9 @@ remote-nuc:
   password. Only its hash is kept (`plug-credential`, mode 600), and it never leaves the
   coordinator, even through a tunnel.
 - **Reading.** Each plug is read every minute (every 5 through a tunnel): on or off, watts,
-  today's energy. `devices` carries it as `plug`.
+  today's energy. `devices` carries it as `plug`. A plug that keeps failing is read less often
+  (up to 16 times less). If the plugs refuse the password, kimo stops reading them and tells you,
+  until you set the password again: repeated wrong logins could lock the account.
 - **Switching.** `kimo-fleet plug <id> on|off|restart`, the Fleet tab, the map or the window.
   Restart switches off for 8 seconds and on again, so set the machine's BIOS to start when
   power returns.
@@ -268,7 +270,9 @@ devices:
 ```
 
 - **Check** (`kimo-fleet mesh`, *check now*, and every 30 minutes): the coordinator logs in to each
-  machine and has it try all the others, on each network they share. Nothing is changed or
+  machine and has it try all the others, on each network they share. The 30-minute check leaves
+  restricted machines alone (often someone else's, on their network): they are logged in to
+  and tried from only when you ask, and their last results stay on the map. Nothing is changed or
   saved on them. The result is a table in the Fleet tab and lines on the map. `pw` is a restricted
   machine needing a password, as intended; a passwordless login out of one is a violation.
 - **Apply** (`kimo-fleet mesh apply`, *set up shortcuts and keys*): writes
